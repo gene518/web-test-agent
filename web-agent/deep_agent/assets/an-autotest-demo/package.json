@@ -1,0 +1,27 @@
+{
+  "name": "an-autotest-demo",
+  "version": "1.0.0",
+  "description": "Demo Playwright mobile H5 automation project following an-autotest conventions",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test; npx playwright show-report \"$(ls -1dt test-results/*/html-report 2>/dev/null | head -1)\"",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report",
+    "codegen": "playwright codegen https://www.jk.cn"
+  },
+  "keywords": [
+    "playwright",
+    "automation",
+    "testing",
+    "mobile-h5"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^25.5.0"
+  }
+}

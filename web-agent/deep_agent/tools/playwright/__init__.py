@@ -1,0 +1,21 @@
+"""Playwright 相关 MCP provider 与工具配置导出。"""
+
+from deep_agent.tools.playwright.allowlists import (
+    GENERATOR_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS,
+    HEALER_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS,
+    PLAN_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS,
+)
+from deep_agent.tools.playwright.mcp_provider import (
+    PLAYWRIGHT_TEST_MCP_PROVIDER,
+    PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+    PlaywrightTestMCPProvider,
+)
+
+__all__ = [
+    "GENERATOR_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS",
+    "HEALER_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS",
+    "PLAN_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS",
+    "PLAYWRIGHT_TEST_MCP_PROVIDER",
+    "PLAYWRIGHT_TEST_MCP_SERVER_NAME",
+    "PlaywrightTestMCPProvider",
+]

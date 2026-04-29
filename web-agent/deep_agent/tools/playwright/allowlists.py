@@ -1,0 +1,58 @@
+"""各 Specialist 可调用的 Playwright Test MCP 工具精确名单。"""
+
+PLAN_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS: tuple[str, ...] = (
+    "playwright-test/browser_click",
+    "playwright-test/browser_close",
+    "playwright-test/browser_console_messages",
+    "playwright-test/browser_drag",
+    "playwright-test/browser_evaluate",
+    "playwright-test/browser_file_upload",
+    "playwright-test/browser_handle_dialog",
+    "playwright-test/browser_hover",
+    "playwright-test/browser_navigate",
+    "playwright-test/browser_navigate_back",
+    "playwright-test/browser_network_requests",
+    "playwright-test/browser_press_key",
+    "playwright-test/browser_run_code",
+    "playwright-test/browser_select_option",
+    "playwright-test/browser_snapshot",
+    "playwright-test/browser_take_screenshot",
+    "playwright-test/browser_type",
+    "playwright-test/browser_wait_for",
+    "playwright-test/planner_setup_page",
+    "playwright-test/planner_save_plan",
+)
+
+GENERATOR_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS: tuple[str, ...] = (
+    "playwright-test/browser_click",
+    "playwright-test/browser_drag",
+    "playwright-test/browser_evaluate",
+    "playwright-test/browser_file_upload",
+    "playwright-test/browser_handle_dialog",
+    "playwright-test/browser_hover",
+    "playwright-test/browser_navigate",
+    "playwright-test/browser_press_key",
+    "playwright-test/browser_run_code",
+    "playwright-test/browser_select_option",
+    "playwright-test/browser_snapshot",
+    "playwright-test/browser_type",
+    "playwright-test/browser_verify_element_visible",
+    "playwright-test/browser_verify_list_visible",
+    "playwright-test/browser_verify_text_visible",
+    "playwright-test/browser_verify_value",
+    "playwright-test/browser_wait_for",
+    "playwright-test/generator_read_log",
+    "playwright-test/generator_setup_page",
+    "playwright-test/generator_write_test",
+)
+
+HEALER_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS: tuple[str, ...] = (
+    "playwright-test/browser_console_messages",
+    "playwright-test/browser_evaluate",
+    "playwright-test/browser_generate_locator",
+    "playwright-test/browser_network_requests",
+    "playwright-test/browser_snapshot",
+    "playwright-test/test_debug",
+    "playwright-test/test_list",
+    "playwright-test/test_run",
+)

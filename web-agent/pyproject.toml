@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-autotest-agent"
+version = "0.1.0"
+description = "A LangChain + LangGraph + Deep Agents baseline for web automation specialists."
+requires-python = ">=3.11"
+dependencies = [
+  "deepagents",
+  "langchain",
+  "langchain-mcp-adapters",
+  "langchain-openai",
+  "langgraph",
+  "mcp",
+  "pydantic",
+  "pydantic-settings",
+]
+
+[project.optional-dependencies]
+dev = [
+  "langgraph-cli[inmem]",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deep_agent*"]
