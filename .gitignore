@@ -17,3 +17,4 @@ dist/
 /web-agent/README.md
 /web-agent/.langgraph_api/
 /web-agent/baidu-web/
+/web-agent/tests/debug/*.log
