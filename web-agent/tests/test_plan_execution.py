@@ -195,4 +195,4 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             mcp_manager=FakeMCPManager(self.tools),
         )
 
-        self.assertEqual(agent._truncate("x" * 20), "xxxxxxxxxxxx...")
+        self.assertEqual(agent.log_truncate("x" * 20), "xxxxxxxxxxxx...")

@@ -14,16 +14,13 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.agent.query_filters import PLAN_QUERY_FILTER_CONFIG
+from deep_agent.agent.specialist_query_config import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
-from deep_agent.core.project_workspace import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
-from deep_agent.core.runtime_logging import debug_max_chars, format_value_for_log, get_logger, log_debug_event, log_title, with_trace_context
+from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
+from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
 from deep_agent.agent.state import WorkflowState
 from deep_agent.agent.plan.prompts.plan import PLAN_SYSTEM_PROMPT
 from deep_agent.tools.playwright import PLAN_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS
-
-
-logger = get_logger(__name__)
 
 
 PLAN_RUNTIME_CONFIG = SpecialistRuntimeConfig(
@@ -159,22 +156,21 @@ class PlanAgent(BaseSpecialistAgent):
                 ),
                 version="v2",
             ):
-                self._log_stream_event(event, execution_context.trace_context)
+                self.log_stream_event(event, execution_context.trace_context)
                 final_output = self._capture_final_output(final_output, event)
                 planner_save_succeeded, planner_save_error = self._update_planner_save_state(
                     planner_save_succeeded,
                     planner_save_error,
                     event,
                 )
-                self._log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
+                self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
         except Exception as exc:  # noqa: BLE001
             if planner_save_succeeded and self._is_expected_browser_close_error(exc):
-                logger.info("%s event=browser_close_expected trace=%s error=%s",
-                    log_title("执行", "事件流", node_name=execution_context.trace_context.get("node_name") or f"{self.agent_type}_node"), self._event_trace_context(execution_context.trace_context, "browser_close_expected"), self._truncate(str(exc)),)
+                self.log_browser_close_expected(execution_context.trace_context, exc)
                 return {"messages": [AIMessage(content="测试计划已保存，浏览器已按预期关闭。")]}
             raise
 
-        log_debug_event(logger, self._settings, log_title("执行", "事件流"), "plan_final_output", self._event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=final_output)
+        log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=final_output)
 
         # 即使模型说“已经完成”，只要没观察到 `planner_save_plan` 成功事件，这次执行也必须判定失败。
         if not planner_save_succeeded:
@@ -193,46 +189,6 @@ class PlanAgent(BaseSpecialistAgent):
         if not new_messages:
             new_messages = [AIMessage(content="测试计划已保存。")]
         return {"messages": new_messages}
-
-    def _log_stream_event(self, event: dict[str, Any], trace_context: dict[str, Any] | None = None) -> None:
-        """打印关键的模型与工具调用日志。
-
-        只记录和排查最相关的模型/工具事件，目的是在保留执行轨迹的同时避免事件流日志噪音过大。
-        """
-
-        event_name = event.get("event", "")
-        name = event.get("name", "")
-        base_trace_context = trace_context or {}
-        node_name = base_trace_context.get("node_name") or f"{self.agent_type}_node"
-
-        if event_name == "on_chat_model_start":
-            logger.info("%s event=model_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "model_start"), name, format_value_for_log(event.get("data", {}).get("input"), self._settings),)
-            return
-
-        if event_name == "on_chat_model_end":
-            logger.info("%s event=model_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "model_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
-            return
-
-        if event_name == "on_tool_start":
-            logger.info("%s event=tool_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "tool_start"), name, format_value_for_log(event.get("data", {}).get("input"), self._settings),)
-            return
-
-        if event_name == "on_tool_end":
-            logger.info("%s event=tool_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "tool_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
-            return
-
-        if event_name == "on_tool_error":
-            logger.warning("%s event=tool_error trace=%s name=%s error=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "tool_error"), name, format_value_for_log(event.get("data", {}).get("error"), self._settings),)
-            return
-
-        if event_name == "on_chain_end" and not event.get("parent_ids"):
-            logger.info("%s event=deep_agent_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self._event_trace_context(base_trace_context, "deep_agent_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
 
     def _capture_final_output(
         self,
@@ -270,18 +226,18 @@ class PlanAgent(BaseSpecialistAgent):
 
         # 这里只关注 `planner_save_plan`，其他工具无论成功失败都不改变最终完成判定。
         if event.get("event") == "on_tool_error":
-            return False, self._truncate(event.get("data", {}).get("error"))
+            return False, self.log_truncate(event.get("data", {}).get("error"))
 
         if event.get("event") != "on_tool_end":
             return planner_save_succeeded, planner_save_error
 
         output = event.get("data", {}).get("output")
         if self._tool_output_is_error(output):
-            return False, self._truncate(output)
+            return False, self.log_truncate(output)
 
         return True, None
 
-    def _log_planner_save_state(
+    def log_planner_save_state(
         self,
         event: dict[str, Any],
         planner_save_succeeded: bool,
@@ -294,8 +250,12 @@ class PlanAgent(BaseSpecialistAgent):
             return
 
         status = "success" if planner_save_succeeded else "error"
-        logger.info("%s event=planner_save_plan trace=%s status=%s error=%s",
-            log_title("执行", "事件流", node_name=trace_context.get("node_name") or f"{self.agent_type}_node"), self._event_trace_context(trace_context, "planner_save_plan"), status, planner_save_error,)
+        self.log_tool_state(
+            trace_context=trace_context,
+            event_name="planner_save_plan",
+            status=status,
+            error=planner_save_error,
+        )
 
     def _tool_output_is_error(self, output: Any) -> bool:
         """判断工具输出是否表示失败。
@@ -335,19 +295,3 @@ class PlanAgent(BaseSpecialistAgent):
             "browser has been closed",
         )
         return any(fragment in text for fragment in expected_fragments)
-
-    def _event_trace_context(self, trace_context: dict[str, Any], event_name: str) -> dict[str, Any]:
-        """复用节点 trace 标识，只替换当前事件名。"""
-
-        event_trace_context = dict(trace_context)
-        event_trace_context["event_name"] = event_name
-        return event_trace_context
-
-    def _truncate(self, value: Any, max_length: int | None = None) -> str:
-        """压缩日志输出长度。"""
-
-        resolved_max_length = max_length if max_length is not None else debug_max_chars(self._settings)
-        text = value if isinstance(value, str) else repr(value)
-        if len(text) <= resolved_max_length:
-            return text
-        return f"{text[:resolved_max_length]}..."

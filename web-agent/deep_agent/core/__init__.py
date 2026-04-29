@@ -1,7 +1,7 @@
 """Deep Agent 公共基础设施导出。"""
 
 from deep_agent.core.config import AppSettings, get_settings
-from deep_agent.core.project_workspace import (
+from deep_agent.core.autotest_project_directory import (
     DEFAULT_AUTOTEST_DEMO_PROJECT_NAME,
     copy_template_project,
     ensure_demo_project,

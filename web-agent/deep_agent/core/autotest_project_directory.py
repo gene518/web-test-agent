@@ -1,4 +1,4 @@
-"""Plan / Generator 共用的自动化项目目录解析辅助方法。"""
+"""自动化项目目录解析、模板引导与工程初始化辅助方法。"""
 
 from __future__ import annotations
 

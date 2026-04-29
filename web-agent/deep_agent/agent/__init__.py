@@ -6,7 +6,7 @@ from deep_agent.agent.base_agent import (
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
 )
-from deep_agent.agent.query_filters import AgentQueryFilterConfig
+from deep_agent.agent.specialist_query_config import SpecialistQueryFilterConfig
 from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
 from deep_agent.agent.master import MasterAgent
@@ -16,7 +16,7 @@ from deep_agent.agent.state import WorkflowState
 __all__ = [
     "BaseAgent",
     "BaseSpecialistAgent",
-    "AgentQueryFilterConfig",
+    "SpecialistQueryFilterConfig",
     "GENERATOR_RUNTIME_CONFIG",
     "GeneratorAgent",
     "HEALER_RUNTIME_CONFIG",

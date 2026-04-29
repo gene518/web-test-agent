@@ -23,7 +23,7 @@ AGENT_DEBUG_MAX_CHARS=12000
 
 `langgraph dev` 没有独立的 `--log-file` 参数，因此使用本目录的启动脚本把 stdout/stderr 导出到文件。
 脚本会自动切到 `web-agent` 目录启动 LangGraph，并默认写入 `tests/debug/langgraph-dev.log`。
-同时它会把第三方日志里的 UTC `Z` 时间戳转成本地时间，并过滤 `watchfiles.main` 的文件变更噪声。
+同时它会把第三方日志里的 UTC `Z` 时间戳转成本地时间，并过滤 `watchfiles.main` 的文件变更噪声；另外会把 Uvicorn 的 `WatchFiles detected changes in ...` 超长变更列表压缩成摘要，避免日志被刷屏。
 默认会优先尝试端口 `2024`；如果该端口清理后仍不可绑定，则自动省略 `--port`，交给 `langgraph dev` 自己选择可用端口。
 
 ```bash
@@ -37,9 +37,13 @@ tests/debug/dev.sh
 PORT=2025 tests/debug/dev.sh
 LOG_FILE=/tmp/langgraph-dev.log tests/debug/dev.sh
 PORT_STRICT=1 tests/debug/dev.sh
+NO_RELOAD=1 tests/debug/dev.sh
+SERVER_LOG_LEVEL=ERROR tests/debug/dev.sh
 ```
 
 - `PORT_STRICT=1`: 如果首选端口不可用则直接失败，不走 auto-discover 回退。
+- `NO_RELOAD=1`: 关闭热更新（避免 WatchFiles 监控与自动重启）。
+- `SERVER_LOG_LEVEL=ERROR`: 仅输出 server error（可进一步压制 Uvicorn/WatchFiles 的 warning，但也会隐藏 server warning）。
 
 ## 3. 在 Studio 发起对话
 

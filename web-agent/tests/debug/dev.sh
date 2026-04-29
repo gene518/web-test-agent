@@ -11,6 +11,8 @@ LANGGRAPH_BIN="${LANGGRAPH_BIN:-$PROJECT_ROOT/.venv/bin/langgraph}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python3}"
 PORT_WAIT_SECONDS="${PORT_WAIT_SECONDS:-15}"
 PORT_STRICT="${PORT_STRICT:-0}"
+NO_RELOAD="${NO_RELOAD:-0}"
+SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-}"
 
 if [ ! -x "$LANGGRAPH_BIN" ]; then
   echo "Cannot find langgraph. Install dev dependencies or set LANGGRAPH_BIN." >&2
@@ -101,6 +103,12 @@ if port_is_bindable; then
   echo "Starting langgraph dev on $HOST:$PORT..."
 else
   echo "Starting langgraph dev on $HOST with auto-discovered port (preferred $PORT)..."
+fi
+if [ "$NO_RELOAD" = "1" ]; then
+  LANGGRAPH_ARGS+=(--no-reload)
+fi
+if [ -n "$SERVER_LOG_LEVEL" ]; then
+  LANGGRAPH_ARGS+=(--server-log-level "$SERVER_LOG_LEVEL")
 fi
 echo "Writing log to $LOG_FILE"
 echo "Filtering watchfiles logs and localizing UTC timestamps"

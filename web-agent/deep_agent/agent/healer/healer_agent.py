@@ -19,27 +19,21 @@ from deep_agent.agent.base_agent import (
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
 )
-from deep_agent.agent.query_filters import HEALER_QUERY_FILTER_CONFIG
+from deep_agent.agent.specialist_query_config import HEALER_QUERY_FILTER_CONFIG
 from deep_agent.agent.healer.prompts.healer import HEALER_SYSTEM_PROMPT
 from deep_agent.agent.healer.prompts.mobile_ui_conventions import MOBILE_UI_CONVENTIONS_PROMPT
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.runtime_logging import (
-    debug_max_chars,
-    format_value_for_log,
-    get_logger,
     log_debug_event,
     log_title,
     with_trace_context,
 )
-from deep_agent.core.project_workspace import (
+from deep_agent.core.autotest_project_directory import (
     DEFAULT_AUTOTEST_DEMO_PROJECT_NAME,
     normalize_runtime_text,
     resolve_autotest_project_dir,
 )
 from deep_agent.tools.playwright import HEALER_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS
-
-
-logger = get_logger(__name__)
 
 
 HEALER_RUNTIME_CONFIG = SpecialistRuntimeConfig(
@@ -144,29 +138,20 @@ class HealerAgent(BaseSpecialistAgent):
                 ),
                 version="v2",
             ):
-                self._log_stream_event(event, execution_context.trace_context)
+                self.log_stream_event(event, execution_context.trace_context)
                 final_output = self._capture_final_output(final_output, event)
         except Exception as exc:  # noqa: BLE001
             if final_output is not None and self._is_expected_browser_close_error(exc):
-                logger.info(
-                    "%s event=browser_close_expected trace=%s error=%s",
-                    log_title(
-                        "执行",
-                        "事件流",
-                        node_name=execution_context.trace_context.get("node_name") or f"{self.agent_type}_node",
-                    ),
-                    self._event_trace_context(execution_context.trace_context, "browser_close_expected"),
-                    self._truncate(str(exc)),
-                )
+                self.log_browser_close_expected(execution_context.trace_context, exc)
                 return self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成，浏览器已按预期关闭。")
             raise
 
         log_debug_event(
-            logger,
+            self.log_get_logger(),
             self._settings,
             log_title("执行", "事件流"),
             "healer_final_output",
-            self._event_trace_context(execution_context.trace_context, "healer_final_output"),
+            self.log_event_trace_context(execution_context.trace_context, "healer_final_output"),
             final_output=final_output,
         )
 
@@ -264,73 +249,6 @@ class HealerAgent(BaseSpecialistAgent):
 
         raise RuntimeError(f"Healer 模式待调试脚本目录 `{directory}` 下未找到可用的 `.spec.ts` 文件，无法继续。")
 
-    def _log_stream_event(self, event: dict[str, Any], trace_context: dict[str, Any] | None = None) -> None:
-        """打印和 Healer 结果回传最相关的模型与工具事件。"""
-
-        event_name = event.get("event", "")
-        name = event.get("name", "")
-        base_trace_context = trace_context or {}
-        node_name = base_trace_context.get("node_name") or f"{self.agent_type}_node"
-
-        if event_name == "on_chat_model_start":
-            logger.info(
-                "%s event=model_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "model_start"),
-                name,
-                format_value_for_log(event.get("data", {}).get("input"), self._settings),
-            )
-            return
-
-        if event_name == "on_chat_model_end":
-            logger.info(
-                "%s event=model_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "model_end"),
-                name,
-                format_value_for_log(event.get("data", {}).get("output"), self._settings),
-            )
-            return
-
-        if event_name == "on_tool_start":
-            logger.info(
-                "%s event=tool_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "tool_start"),
-                name,
-                format_value_for_log(event.get("data", {}).get("input"), self._settings),
-            )
-            return
-
-        if event_name == "on_tool_end":
-            logger.info(
-                "%s event=tool_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "tool_end"),
-                name,
-                format_value_for_log(event.get("data", {}).get("output"), self._settings),
-            )
-            return
-
-        if event_name == "on_tool_error":
-            logger.warning(
-                "%s event=tool_error trace=%s name=%s error=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "tool_error"),
-                name,
-                format_value_for_log(event.get("data", {}).get("error"), self._settings),
-            )
-            return
-
-        if event_name == "on_chain_end" and not event.get("parent_ids"):
-            logger.info(
-                "%s event=deep_agent_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name),
-                self._event_trace_context(base_trace_context, "deep_agent_end"),
-                name,
-                format_value_for_log(event.get("data", {}).get("output"), self._settings),
-            )
-
     def _capture_final_output(
         self,
         current_output: dict[str, Any] | None,
@@ -374,19 +292,3 @@ class HealerAgent(BaseSpecialistAgent):
             "browser has been closed",
         )
         return any(fragment in text for fragment in expected_fragments)
-
-    def _event_trace_context(self, trace_context: dict[str, Any], event_name: str) -> dict[str, Any]:
-        """复用节点 trace 标识，只替换当前事件名。"""
-
-        event_trace_context = dict(trace_context)
-        event_trace_context["event_name"] = event_name
-        return event_trace_context
-
-    def _truncate(self, value: Any, max_length: int | None = None) -> str:
-        """压缩日志输出长度。"""
-
-        resolved_max_length = max_length if max_length is not None else debug_max_chars(self._settings)
-        text = value if isinstance(value, str) else repr(value)
-        if len(text) <= resolved_max_length:
-            return text
-        return f"{text[:resolved_max_length]}..."

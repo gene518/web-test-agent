@@ -1,4 +1,4 @@
-"""各 Specialist 的文件查询过滤配置。"""
+"""各 Specialist 的文件查询限制配置。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class AgentQueryFilterConfig:
-    """描述单个 Agent 的文件查询过滤规则。
+class SpecialistQueryFilterConfig:
+    """描述单个 Specialist 的文件查询限制规则。
 
     `blocked_path_globs` 用于屏蔽明显无关或高风险的大目录；
     `blocked_file_extensions` 用于屏蔽容易把上下文打爆的文件类型。
@@ -39,24 +39,24 @@ SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS: tuple[str, ...] = (
 )
 
 
-PLAN_QUERY_FILTER_CONFIG = AgentQueryFilterConfig(
+PLAN_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
-GENERATOR_QUERY_FILTER_CONFIG = AgentQueryFilterConfig(
+GENERATOR_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
-HEALER_QUERY_FILTER_CONFIG = AgentQueryFilterConfig(
+HEALER_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
 
 __all__ = [
-    "AgentQueryFilterConfig",
+    "SpecialistQueryFilterConfig",
     "GENERATOR_QUERY_FILTER_CONFIG",
     "HEALER_QUERY_FILTER_CONFIG",
     "PLAN_QUERY_FILTER_CONFIG",
