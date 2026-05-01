@@ -150,7 +150,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     def _create_template_dir(self) -> Path:
         template_dir = self.root_path / "bundled-template"
         (template_dir / "test_case" / "shared").mkdir(parents=True, exist_ok=True)
-        (template_dir / "package.json").write_text('{"name":"an-autotest-demo"}', encoding="utf-8")
+        (template_dir / "package.json").write_text('{"name":"demo"}', encoding="utf-8")
         (template_dir / "playwright.config.ts").write_text("export default {};\n", encoding="utf-8")
         (template_dir / "test_case" / "shared" / "base-test.ts").write_text("export const base = true;\n", encoding="utf-8")
         return template_dir
@@ -264,10 +264,50 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             DummyTool(name="test_run"),
         ]
 
-    def _create_generator_plan_file(self, project_dir: Path, relative_path: str) -> Path:
+    def _create_generator_plan_file(
+        self,
+        project_dir: Path,
+        relative_path: str,
+        *,
+        case_names: list[str] | None = None,
+    ) -> Path:
         plan_file = project_dir / relative_path
         plan_file.parent.mkdir(parents=True, exist_ok=True)
-        plan_file.write_text("# Demo Plan\n\n## Test Scenarios\n", encoding="utf-8")
+        resolved_case_names = case_names or ["a_case"]
+        plan_identifier = plan_file.stem.removeprefix("aaa_")
+        planning_dir = plan_file.parent.name
+        scenario_blocks = []
+        for index, case_name in enumerate(resolved_case_names, start=1):
+            scenario_blocks.append(
+                "\n".join(
+                    [
+                        f"#### 1.{index}. {case_name}",
+                        "",
+                        f"**File:** `test_case/{planning_dir}/{case_name}.spec.ts`",
+                        "",
+                        "**Steps:**",
+                        "1. 执行步骤",
+                        "   - expect:",
+                        "     - 断言结果",
+                    ]
+                )
+            )
+        plan_file.write_text(
+            "\n".join(
+                [
+                    f"# {plan_identifier} Plan",
+                    "",
+                    "## Test Scenarios",
+                    "",
+                    "### 1. Demo Suite",
+                    "**Seed:** `test_case/seed.spec.ts`",
+                    "",
+                    "\n\n".join(scenario_blocks),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         return plan_file
 
     def _create_healer_script_file(self, project_dir: Path, relative_path: str) -> Path:
@@ -286,7 +326,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         expected_dir = (self.root_path / "projects" / "baidu-demo").resolve()
-        demo_dir = (self.root_path / "projects" / "an-autotest-demo").resolve()
+        demo_dir = (self.root_path / "projects" / "demo").resolve()
         self.assertEqual(context.workspace_dir, expected_dir)
         self.assertTrue(expected_dir.is_dir())
         self.assertTrue((expected_dir / "package.json").is_file())
@@ -444,7 +484,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         expected_dir = (self.root_path / "projects" / "baidu-demo").resolve()
-        demo_dir = (self.root_path / "projects" / "an-autotest-demo").resolve()
+        demo_dir = (self.root_path / "projects" / "demo").resolve()
         self.assertEqual(context.workspace_dir, expected_dir)
         self.assertTrue(expected_dir.is_dir())
         self.assertTrue((expected_dir / "package.json").is_file())
@@ -452,6 +492,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(demo_dir.is_dir())
         self.assertIn(relative_plan_path, context.system_prompt)
         self.assertIn("generator_setup_page", context.system_prompt)
+        self.assertIn("expected_test_scripts", context.system_prompt)
+        self.assertIn("expected_case_count", context.system_prompt)
+        self.assertIn("test_case/baidu-demo/a_case.spec.ts", context.system_prompt)
         self.assertNotIn("## 完成条件", context.system_prompt)
         self.assertIn("## 额外运行时约束", context.system_prompt)
         self.assertEqual(manager.server_names, [PLAYWRIGHT_TEST_MCP_SERVER_NAME])
@@ -480,6 +523,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(relative_plan_path, context.system_prompt)
         self.assertNotIn("README.md", context.system_prompt)
+        self.assertIn("test_case/baidu-demo/a_case.spec.ts", context.system_prompt)
 
     async def test_generator_and_healer_prompts_include_system_prompt_parts(self) -> None:
         project_dir = self.root_path / "generator-project"
@@ -561,7 +605,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         expected_dir = (self.root_path / "projects" / "baidu-demo").resolve()
-        demo_dir = (self.root_path / "projects" / "an-autotest-demo").resolve()
+        demo_dir = (self.root_path / "projects" / "demo").resolve()
         self.assertEqual(context.workspace_dir, expected_dir)
         self.assertTrue(expected_dir.is_dir())
         self.assertTrue((expected_dir / "package.json").is_file())
@@ -661,6 +705,183 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("a_case.spec.ts", result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
         self.assertEqual(fake_deep_agent.inputs[0][2], "v2")
+
+    async def test_generator_execute_fails_when_only_subset_of_expected_scripts_are_written(self) -> None:
+        project_dir = self.root_path / "generator-partial"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path, case_names=["a_case", "b_case"])
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakePartialStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/a_case.spec.ts",
+                            "code": (
+                                "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                "test.describe('Demo', () => {\n"
+                                "  test('a_case', async () => {});\n"
+                                "});\n"
+                            ),
+                        }
+                    },
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {"output": {"status": "success", "content": "ok"}},
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="generator-finished")] }},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakePartialStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertIn("状态：exception", result["messages"][0].content)
+        self.assertIn("test_case/demo/b_case.spec.ts", result["messages"][0].content)
+
+    async def test_generator_execute_succeeds_when_all_expected_scripts_are_written(self) -> None:
+        project_dir = self.root_path / "generator-complete"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path, case_names=["a_case", "b_case"])
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakeCompleteStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                for case_name in ("a_case", "b_case"):
+                    yield {
+                        "event": "on_tool_start",
+                        "name": "generator_write_test",
+                        "parent_ids": [],
+                        "data": {
+                            "input": {
+                                "fileName": f"test_case/demo/{case_name}.spec.ts",
+                                "code": (
+                                    "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                    "test.describe('Demo', () => {\n"
+                                    f"  test('{case_name}', async () => {{}});\n"
+                                    "});\n"
+                                ),
+                            }
+                        },
+                    }
+                    yield {
+                        "event": "on_tool_end",
+                        "name": "generator_write_test",
+                        "parent_ids": [],
+                        "data": {"output": {"status": "success", "content": "ok"}},
+                    }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="generator-finished")] }},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeCompleteStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertIn("a_case.spec.ts", result["messages"][0].content)
+        self.assertIn("b_case.spec.ts", result["messages"][0].content)
+        self.assertEqual(
+            result["latest_artifacts"]["generator"]["output_files"],
+            ["test_case/demo/a_case.spec.ts", "test_case/demo/b_case.spec.ts"],
+        )
+
+    async def test_generator_execute_only_requires_requested_test_case_subset(self) -> None:
+        project_dir = self.root_path / "generator-subset"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path, case_names=["a_case", "b_case", "c_case"])
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakeSubsetStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/b_case.spec.ts",
+                            "code": (
+                                "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                "test.describe('Demo', () => {\n"
+                                "  test('b_case', async () => {});\n"
+                                "});\n"
+                            ),
+                        }
+                    },
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {"output": {"status": "success", "content": "ok"}},
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="generator-finished")] }},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeSubsetStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                        "test_cases": ["b_case"],
+                    },
+                }
+            )
+
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertEqual(
+            result["latest_artifacts"]["generator"]["output_files"],
+            ["test_case/demo/b_case.spec.ts"],
+        )
 
     async def test_generator_execute_treats_expected_browser_close_after_write_as_success(self) -> None:
         project_dir = self.root_path / "generator-close"

@@ -67,7 +67,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         fake_manager = FakeMCPManager(self.tools)
         planner_payload = {
             "overview": "登录页测试概览",
-            "name": "Demo Plan",
+            "name": "demo",
             "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
             "suites": [
                 {
@@ -76,7 +76,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     "tests": [
                         {
                             "name": "a_login_success",
-                            "file": "test_case/demo/a_login_success.spec.ts",
+                            "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
                             "steps": [
                                 {"perform": "打开登录页", "expect": ["显示登录表单"]},
                             ],
@@ -139,7 +139,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["artifact_history"][0]["output_files"], ["test_case/aaaplanning_demo/aaa_demo.md"])
         self.assertEqual(
             result["latest_artifacts"]["plan"]["saved_test_case_files"],
-            ["test_case/demo/a_login_success.spec.ts"],
+            ["test_case/aaaplanning_demo/a_login_success.spec.ts"],
         )
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
@@ -148,7 +148,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         fake_manager = FakeMCPManager(self.tools)
         planner_payload = {
             "overview": "登录页测试概览",
-            "name": "Demo Plan",
+            "name": "demo",
             "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
             "suites": [
                 {
@@ -157,7 +157,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     "tests": [
                         {
                             "name": "a_login_success",
-                            "file": "test_case/demo/a_login_success.spec.ts",
+                            "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
                             "steps": [
                                 {"perform": "打开登录页", "expect": ["显示登录表单"]},
                             ],
@@ -275,6 +275,108 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Plan 阶段", result["messages"][0].content)
         self.assertIn("状态：exception", result["messages"][0].content)
         self.assertIn("planner_save_plan.suites", result["messages"][0].content)
+
+    async def test_plan_execute_rejects_plan_markdown_outside_aaaplanning_directory(self) -> None:
+        fake_manager = FakeMCPManager(self.tools)
+        fake_agent = FakeEventAgent(
+            [
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {
+                        "input": {
+                            "overview": "invalid plan path",
+                            "name": "demo",
+                            "fileName": "test_case/aaa_demo.md",
+                            "suites": [
+                                {
+                                    "name": "登录场景",
+                                    "seedFile": "test_case/specs/seed.spec.ts",
+                                    "tests": [
+                                        {
+                                            "name": "a_login_success",
+                                            "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
+                                            "steps": [{"perform": "打开登录页", "expect": ["显示登录表单"]}],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    "parent_ids": ["root"],
+                },
+                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+            ]
+        )
+        agent = PlanAgent(self.settings, mcp_manager=fake_manager)
+        state = {
+            "messages": [],
+            "extracted_params": {
+                "project_name": "invalid-plan-path",
+                "url": "https://example.com",
+                "project_dir": str(self.root_path / "invalid-plan-path"),
+            },
+        }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+        ):
+            result = await agent.execute(state)
+
+        self.assertIn("状态：exception", result["messages"][0].content)
+        self.assertIn("aaaplanning_{plan-name}", result["messages"][0].content)
+
+    async def test_plan_execute_rejects_case_file_outside_matching_aaaplanning_directory(self) -> None:
+        fake_manager = FakeMCPManager(self.tools)
+        fake_agent = FakeEventAgent(
+            [
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {
+                        "input": {
+                            "overview": "invalid case path",
+                            "name": "demo",
+                            "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+                            "suites": [
+                                {
+                                    "name": "登录场景",
+                                    "seedFile": "test_case/specs/seed.spec.ts",
+                                    "tests": [
+                                        {
+                                            "name": "a_login_success",
+                                            "file": "test_case/demo/a_login_success.spec.ts",
+                                            "steps": [{"perform": "打开登录页", "expect": ["显示登录表单"]}],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                    "parent_ids": ["root"],
+                },
+                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+            ]
+        )
+        agent = PlanAgent(self.settings, mcp_manager=fake_manager)
+        state = {
+            "messages": [],
+            "extracted_params": {
+                "project_name": "invalid-case-path",
+                "url": "https://example.com",
+                "project_dir": str(self.root_path / "invalid-case-path"),
+            },
+        }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+        ):
+            result = await agent.execute(state)
+
+        self.assertIn("状态：exception", result["messages"][0].content)
+        self.assertIn("test_case/aaaplanning_demo/a_login_success.spec.ts", result["messages"][0].content)
 
     async def test_plan_event_truncation_uses_debug_max_chars(self) -> None:
         agent = PlanAgent(

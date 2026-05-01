@@ -9,6 +9,8 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 - 新建且尚未实现脚本的计划保存到 `test_case/aaaplanning_{plan-name}/`。
 - 计划文档名统一为 `aaa_{plan-name}.md`，确保目录排序靠前。
 - Plan 阶段只生成或更新 Markdown 测试计划，不创建 `.spec.ts`。
+- `planner_save_plan.fileName = test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`
+- `planner_save_plan.suites[].tests[].file = test_case/aaaplanning_{plan-name}/{case-name}.spec.ts`
 - `planner_save_plan.fileName` 必须使用相对 `project_dir` 的路径。
 - `planner_save_plan.suites[].tests[].steps[].expect` 必须始终传字符串数组；即使只有一条预期，也要写成 `["..."]`。
 
@@ -34,7 +36,7 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 **Seed:** `seed.spec.ts`
 
 #### 1.1. a_{具体场景名}
-**File:** `{plan-name}/a_{case-name}.spec.ts`
+**File:** `test_case/aaaplanning_{plan-name}/a_{case-name}.spec.ts`
 
 **Steps:**
 1. {操作描述}

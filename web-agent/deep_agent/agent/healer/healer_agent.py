@@ -14,7 +14,10 @@ from deepagents.middleware import FilesystemPermission
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import extract_healer_artifact_from_snapshot_and_runs, snapshot_workspace_manifest
+from deep_agent.agent.artifacts import (
+    extract_healer_artifact_from_snapshot_and_runs,
+    snapshot_workspace_manifest_async,
+)
 from deep_agent.agent.base_agent import (
     BaseSpecialistAgent,
     SpecialistExecutionContext,
@@ -136,7 +139,7 @@ class HealerAgent(BaseSpecialistAgent):
             workspace_dir.name if workspace_dir is not None else "unknown-project"
         )
         input_scripts = self._normalized_test_scripts(extracted_params.get("test_scripts"))
-        before_manifest = snapshot_workspace_manifest(workspace_dir)
+        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
         validation_runs: list[str] = []
         stage_artifact: dict[str, Any] | None = None
 
@@ -162,7 +165,7 @@ class HealerAgent(BaseSpecialistAgent):
                 if workspace_dir is not None:
                     stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
                         before_manifest=before_manifest,
-                        after_manifest=snapshot_workspace_manifest(workspace_dir),
+                        after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
                         workspace_dir=workspace_dir,
                         project_name=project_name,
                         input_files=input_scripts,
@@ -185,7 +188,7 @@ class HealerAgent(BaseSpecialistAgent):
         if workspace_dir is not None:
             stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
                 before_manifest=before_manifest,
-                after_manifest=snapshot_workspace_manifest(workspace_dir),
+                after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
                 workspace_dir=workspace_dir,
                 project_name=project_name,
                 input_files=input_scripts,

@@ -37,10 +37,6 @@ host = sys.argv[1]
 port = int(sys.argv[2])
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    # Align the probe with typical dev servers on macOS/BSD, where a port may be
-    # immediately reusable for a new listener even if the kernel is still
-    # draining recently closed connections.
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind((host, port))
     except OSError:

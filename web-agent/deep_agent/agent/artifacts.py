@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import re
 from typing import Any, Literal
@@ -26,6 +27,10 @@ PLAN_MARKDOWN_RE = re.compile(r"^aaa_.+\.md$", re.IGNORECASE)
 TEST_DESCRIBE_RE = re.compile(r"""test\.describe\(\s*(['"])(?P<title>.+?)\1""")
 TEST_TITLE_RE = re.compile(r"""test(?:\.\w+)?\(\s*(['"])(?P<title>.+?)\1""")
 SPEC_SOURCE_RE = re.compile(r"""//\s*spec:\s*(?P<path>.+)$""", re.MULTILINE)
+PLAN_CASE_HEADER_RE = re.compile(r"^\s*####\s+.*?(?P<case_name>[a-z][a-z0-9_]*(?:_[a-z0-9_]+)*)\s*$")
+PLAN_FILE_LINE_RE = re.compile(r"^\s*\*\*File:\*\*\s*`(?P<file>[^`]+)`\s*$", re.IGNORECASE)
+PLANNING_DIR_PREFIX = "aaaplanning_"
+PLAN_FILE_PREFIX = "aaa_"
 
 
 class ArtifactItem(TypedDict, total=False):
@@ -196,6 +201,12 @@ def snapshot_workspace_manifest(workspace_dir: Path | None) -> WorkspaceManifest
     return manifest
 
 
+async def snapshot_workspace_manifest_async(workspace_dir: Path | None) -> WorkspaceManifest:
+    """Build a workspace manifest without blocking the event loop."""
+
+    return await asyncio.to_thread(snapshot_workspace_manifest, workspace_dir)
+
+
 def diff_workspace_manifest(before: WorkspaceManifest, after: WorkspaceManifest) -> dict[str, list[str]]:
     """Compute added / modified / removed files between two manifests."""
 
@@ -222,6 +233,7 @@ def resolve_stage_inputs(
     stage: StageName,
     extracted_params: dict[str, Any],
     latest_artifacts: Any,
+    previous_stage: StageName | None = None,
 ) -> dict[str, Any]:
     """Merge explicit and historical files for a stage before parameter completion."""
 
@@ -250,6 +262,11 @@ def resolve_stage_inputs(
         merged_plan_files = merge_file_lists(resolved.get(PLAN_FILE_FIELD), inherited_plan_files)
         if merged_plan_files:
             resolved[PLAN_FILE_FIELD] = merged_plan_files
+        _align_generator_test_cases_with_latest_plan(
+            resolved,
+            preferred_artifacts,
+            previous_stage=previous_stage,
+        )
         return resolved
 
     inherited_scripts = _collect_script_files(preferred_artifacts)
@@ -282,6 +299,10 @@ def extract_plan_artifact_from_planner_payload(
         expected_suffix=".md",
         field_name="planner_save_plan.fileName",
     )
+    plan_identifier = _validate_planner_markdown_layout(
+        plan_file,
+        field_name="planner_save_plan.fileName",
+    )
     overview = _require_non_empty_text(payload.get("overview"), field_name="planner_save_plan.overview")
     plan_name = _require_non_empty_text(payload.get("name"), field_name="planner_save_plan.name")
 
@@ -307,6 +328,12 @@ def extract_plan_artifact_from_planner_payload(
                 test_case.get("file"),
                 project_dir=project_dir,
                 expected_suffix=".spec.ts",
+                field_name="planner_save_plan.suites[].tests[].file",
+            )
+            _validate_planner_case_file_layout(
+                target_file,
+                case_name=case_name,
+                plan_identifier=plan_identifier,
                 field_name="planner_save_plan.suites[].tests[].file",
             )
             steps = test_case.get("steps")
@@ -486,6 +513,62 @@ def extract_spec_source_from_code(code_text: str) -> str | None:
     return source_path or None
 
 
+def extract_expected_generator_test_scripts_from_plan_files(
+    *,
+    plan_files: list[Path],
+    project_dir: Path,
+    selected_test_cases: Any = None,
+) -> list[str]:
+    """Parse plan markdown files and resolve the script files Generator must produce."""
+
+    if not plan_files:
+        raise RuntimeError("Generator 模式未提供可解析的测试计划文件。")
+
+    resolved_project_dir = project_dir.resolve()
+    requested_test_cases = _normalize_string_list(selected_test_cases)
+    requested_case_set = set(requested_test_cases)
+    matched_requested_cases: set[str] = set()
+    expected_output_files: list[str] = []
+
+    for plan_file in plan_files:
+        resolved_plan_file = plan_file.resolve()
+        try:
+            relative_plan_file = resolved_plan_file.relative_to(resolved_project_dir).as_posix()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Generator 模式测试计划文件 `{resolved_plan_file}` 不在项目目录 `{resolved_project_dir}` 下，无法继续。"
+            ) from exc
+
+        if not resolved_plan_file.is_file():
+            raise RuntimeError(f"Generator 模式测试计划文件 `{relative_plan_file}` 不存在，无法继续。")
+
+        plan_entries = _extract_plan_case_targets_from_markdown(
+            plan_text=resolved_plan_file.read_text(encoding="utf-8"),
+            plan_file=relative_plan_file,
+            project_dir=project_dir,
+        )
+        if not plan_entries:
+            raise RuntimeError(f"Generator 模式测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。")
+
+        for case_name, planned_script in plan_entries:
+            candidate_case_names = {case_name, Path(planned_script).stem}
+            if requested_case_set and candidate_case_names.isdisjoint(requested_case_set):
+                continue
+            matched_requested_cases.update(candidate_case_names & requested_case_set)
+            expected_output_files.append(_normalize_generator_output_file_from_plan_target(planned_script))
+
+    if requested_case_set:
+        missing_requested_cases = [case_name for case_name in requested_test_cases if case_name not in matched_requested_cases]
+        if missing_requested_cases:
+            missing_case_text = "、".join(f"`{case_name}`" for case_name in missing_requested_cases)
+            raise RuntimeError(f"Generator 模式在测试计划中未找到指定的 `test_cases`：{missing_case_text}。")
+
+    deduplicated_output_files = _dedupe(expected_output_files)
+    if not deduplicated_output_files:
+        raise RuntimeError("Generator 模式未从测试计划中解析出任何目标脚本。")
+    return deduplicated_output_files
+
+
 def build_stage_summary(
     *,
     stage: StageName,
@@ -574,6 +657,19 @@ def next_pipeline_stage(state: dict[str, Any]) -> StageName | None:
     return requested_pipeline[next_index]
 
 
+def previous_pipeline_stage(state: dict[str, Any]) -> StageName | None:
+    """Return the previous pipeline stage, if any."""
+
+    requested_pipeline = normalize_requested_pipeline(state.get("requested_pipeline"), default_stage=state.get("agent_type"))
+    pipeline_cursor = state.get("pipeline_cursor", 0)
+    if not isinstance(pipeline_cursor, int):
+        return None
+    previous_index = pipeline_cursor - 1
+    if previous_index < 0 or previous_index >= len(requested_pipeline):
+        return None
+    return requested_pipeline[previous_index]
+
+
 def clear_current_turn_buffers(state: dict[str, Any]) -> dict[str, Any]:
     """Reset per-turn summary buffers after finalization."""
 
@@ -626,6 +722,71 @@ def _collect_script_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
         if artifact.get("stage") == "healer":
             collected.extend(_normalize_string_list(artifact.get("input_files")))
     return _dedupe(collected)
+
+
+def _collect_saved_case_names(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
+    """Collect saved case names from upstream plan artifacts."""
+
+    collected: list[str] = []
+    for artifact in artifacts:
+        saved_test_cases = artifact.get("saved_test_cases")
+        if not isinstance(saved_test_cases, list):
+            continue
+        for item in saved_test_cases:
+            if not isinstance(item, dict):
+                continue
+            case_name = _normalize_optional_text(item.get("case_name"))
+            if case_name:
+                collected.append(case_name)
+    return _dedupe(collected)
+
+
+def _align_generator_test_cases_with_latest_plan(
+    resolved_params: dict[str, Any],
+    artifacts: list[ArtifactHistoryEntry],
+    *,
+    previous_stage: StageName | None,
+) -> None:
+    """Replace selector-like `test_cases` text with concrete plan case names on plan->generator handoff."""
+
+    requested_test_cases = _normalize_string_list(resolved_params.get("test_cases"))
+    if previous_stage != "plan" or len(requested_test_cases) != 1:
+        return
+
+    planned_case_names = _collect_saved_case_names(artifacts)
+    if not planned_case_names:
+        return
+
+    requested_case = requested_test_cases[0]
+    if requested_case in set(planned_case_names):
+        return
+    if not _looks_like_case_selector_text(requested_case):
+        return
+
+    resolved_params["test_cases"] = planned_case_names
+
+
+def _looks_like_case_selector_text(value: str) -> bool:
+    """Heuristically detect natural-language case selectors such as '高优先级三条用例'."""
+
+    normalized_value = (value or "").strip().lower()
+    if not normalized_value:
+        return False
+
+    selector_keywords = (
+        "用例",
+        "测试",
+        "优先级",
+        "全部",
+        "所有",
+        "前三",
+        "前3",
+        "top",
+        "highest",
+        "high priority",
+        "first three",
+    )
+    return any(keyword in normalized_value for keyword in selector_keywords)
 
 
 def _build_plan_stage_summary(artifact: ArtifactHistoryEntry) -> str:
@@ -777,6 +938,116 @@ def _normalize_stage_name(value: Any) -> StageName | None:
     return None
 
 
+def _extract_plan_case_targets_from_markdown(
+    *,
+    plan_text: str,
+    plan_file: str,
+    project_dir: Path,
+) -> list[tuple[str, str]]:
+    """Extract `(case_name, target_file)` tuples from a saved markdown test plan."""
+
+    current_case_name: str | None = None
+    extracted_targets: list[tuple[str, str]] = []
+
+    for line in plan_text.splitlines():
+        heading_case_name = _extract_case_name_from_plan_heading(line)
+        if heading_case_name is not None:
+            current_case_name = heading_case_name
+            continue
+
+        file_match = PLAN_FILE_LINE_RE.match(line)
+        if file_match is None:
+            continue
+
+        target_file = _validate_relative_workspace_path(
+            file_match.group("file"),
+            project_dir=project_dir,
+            expected_suffix=".spec.ts",
+            field_name=f"{plan_file} **File:**",
+        )
+        extracted_targets.append((current_case_name or Path(target_file).stem, target_file))
+        current_case_name = None
+
+    return extracted_targets
+
+
+def _extract_case_name_from_plan_heading(line: str) -> str | None:
+    """Extract the case identifier from a markdown heading like `#### 1.1. a_case_name`."""
+
+    match = PLAN_CASE_HEADER_RE.match(line)
+    if match is None:
+        return None
+    return _normalize_optional_text(match.group("case_name"))
+
+
+def _validate_planner_markdown_layout(relative_plan_file: str, *, field_name: str) -> str:
+    """Enforce the `test_case/aaaplanning_{plan}/aaa_{plan}.md` plan layout."""
+
+    path = Path(relative_plan_file)
+    if len(path.parts) != 3 or path.parts[0] != "test_case":
+        raise RuntimeError(
+            f"`{field_name}` 必须保存到 `test_case/aaaplanning_{{plan-name}}/aaa_{{plan-name}}.md`，当前收到：`{relative_plan_file}`。"
+        )
+
+    planning_dir = path.parts[1]
+    if not planning_dir.startswith(PLANNING_DIR_PREFIX):
+        raise RuntimeError(
+            f"`{field_name}` 必须保存到 `test_case/aaaplanning_{{plan-name}}/aaa_{{plan-name}}.md`，当前收到：`{relative_plan_file}`。"
+        )
+
+    plan_identifier = planning_dir.removeprefix(PLANNING_DIR_PREFIX)
+    if not plan_identifier:
+        raise RuntimeError(f"`{field_name}` 缺少合法的 `plan-name` 标识，当前收到：`{relative_plan_file}`。")
+
+    expected_file_name = f"{PLAN_FILE_PREFIX}{plan_identifier}.md"
+    if path.name != expected_file_name:
+        raise RuntimeError(
+            f"`{field_name}` 文件名必须与计划目录标识一致，期望 `{expected_file_name}`，当前收到：`{relative_plan_file}`。"
+        )
+    return plan_identifier
+
+
+def _validate_planner_case_file_layout(
+    relative_case_file: str,
+    *,
+    case_name: str,
+    plan_identifier: str,
+    field_name: str,
+) -> None:
+    """Enforce the `test_case/aaaplanning_{plan}/{case}.spec.ts` plan case layout."""
+
+    path = Path(relative_case_file)
+    expected_dir_name = f"{PLANNING_DIR_PREFIX}{plan_identifier}"
+    if len(path.parts) != 3 or path.parts[0] != "test_case" or path.parts[1] != expected_dir_name:
+        raise RuntimeError(
+            f"`{field_name}` 必须保存到 `test_case/{expected_dir_name}/{case_name}.spec.ts`，当前收到：`{relative_case_file}`。"
+        )
+    file_name = path.name
+    if not file_name.endswith(".spec.ts"):
+        raise RuntimeError(
+            f"`{field_name}` 必须保存到 `test_case/{expected_dir_name}/{case_name}.spec.ts`，当前收到：`{relative_case_file}`。"
+        )
+    actual_case_name = file_name.removesuffix(".spec.ts")
+    if actual_case_name != case_name:
+        raise RuntimeError(
+            f"`{field_name}` 文件名必须与用例名 `{case_name}` 一致，当前收到：`{relative_case_file}`。"
+        )
+
+
+def _normalize_generator_output_file_from_plan_target(planned_script_file: str) -> str:
+    """Convert a plan-time script path into the runtime output path Generator should write."""
+
+    path = Path(planned_script_file)
+    normalized_parts = list(path.parts)
+    for index, part in enumerate(normalized_parts):
+        if part.startswith(PLANNING_DIR_PREFIX):
+            normalized_plan_dir = part.removeprefix(PLANNING_DIR_PREFIX)
+            if normalized_plan_dir:
+                normalized_parts[index] = normalized_plan_dir
+            break
+    return Path(*normalized_parts).as_posix()
+
+
 def _validate_relative_workspace_path(
     value: Any,
     *,
@@ -808,4 +1079,3 @@ def _should_skip_snapshot_path(relative_path: Path) -> bool:
     """Whether a path should be skipped from manifests."""
 
     return any(part in SKIPPED_SNAPSHOT_DIR_NAMES for part in relative_path.parts)
-

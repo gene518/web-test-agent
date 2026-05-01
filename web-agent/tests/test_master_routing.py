@@ -153,6 +153,81 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
 
+    async def test_resolve_stage_files_node_expands_selector_like_test_cases_from_latest_plan(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "generator",
+                "pending_agent_type": "generator",
+                "requested_pipeline": ["plan", "generator"],
+                "pipeline_cursor": 1,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                    "test_cases": ["优先级高的三条用例"],
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "output_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "saved_test_cases": [
+                            {"case_name": "a_search_submit_success"},
+                            {"case_name": "b_search_suggestion_navigate"},
+                            {"case_name": "c_empty_search_guard"},
+                        ],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(result["next_action"], "generator")
+        self.assertEqual(
+            result["extracted_params"]["test_cases"],
+            [
+                "a_search_submit_success",
+                "b_search_suggestion_navigate",
+                "c_empty_search_guard",
+            ],
+        )
+
+    async def test_resolve_stage_files_node_keeps_explicit_matching_test_cases(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "generator",
+                "pending_agent_type": "generator",
+                "requested_pipeline": ["plan", "generator"],
+                "pipeline_cursor": 1,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                    "test_cases": ["b_search_suggestion_navigate"],
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "output_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "saved_test_cases": [
+                            {"case_name": "a_search_submit_success"},
+                            {"case_name": "b_search_suggestion_navigate"},
+                            {"case_name": "c_empty_search_guard"},
+                        ],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(
+            result["extracted_params"]["test_cases"],
+            ["b_search_suggestion_navigate"],
+        )
+
     async def test_master_graph_interrupts_for_missing_params_and_resume_keeps_intent(self) -> None:
         service = FakeMasterService(initial_params={"url": "https://example.com"})
         graph = self._build_outer_graph(service)

@@ -12,7 +12,11 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import extract_generator_artifact_from_writes_and_snapshot, snapshot_workspace_manifest
+from deep_agent.agent.artifacts import (
+    extract_expected_generator_test_scripts_from_plan_files,
+    extract_generator_artifact_from_writes_and_snapshot,
+    snapshot_workspace_manifest_async,
+)
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.config.specialist_file_filter import GENERATOR_QUERY_FILTER_CONFIG
 from deep_agent.agent.generator.prompts.generator_conventions import GENERATOR_BUSINESS_PROMPT
@@ -81,12 +85,11 @@ class GeneratorAgent(BaseSpecialistAgent):
 
         extracted_params = state.get("extracted_params", {})
         project_name = self._normalized_project_name(extracted_params.get("project_name")) or workspace_dir.name
-        resolved_test_plan_files = self._resolve_test_plan_files(
+        resolved_test_plan_files, normalized_test_cases, expected_test_scripts = self._resolve_generation_targets(
             workspace_dir=workspace_dir,
-            raw_test_plan_files=extracted_params.get("test_plan_files"),
+            extracted_params=extracted_params,
         )
         relative_test_plan_files = [path.relative_to(workspace_dir).as_posix() for path in resolved_test_plan_files]
-        test_cases = extracted_params.get("test_cases", [])
 
         prompt_sections = [
             "## 本次运行上下文",
@@ -95,9 +98,12 @@ class GeneratorAgent(BaseSpecialistAgent):
             f"- automation_root_dir: `{self._settings.resolved_default_automation_project_root.resolve()}`",
             f"- test_plan_files: {self._format_prompt_value(relative_test_plan_files)}",
             f"- resolved_test_plan_files: {self._format_prompt_value([str(path) for path in resolved_test_plan_files])}",
-            f"- test_cases: {self._format_prompt_value(test_cases)}",
+            f"- test_cases: {self._format_prompt_value(normalized_test_cases)}",
+            f"- expected_test_scripts: {self._format_prompt_value(expected_test_scripts)}",
+            f"- expected_case_count: {len(expected_test_scripts)}",
             "## 额外运行时约束",
             f"- 本次共解析出 {len(resolved_test_plan_files)} 个测试计划文件；请按 `test_plan_files` 给出的顺序逐个处理，不要遗漏。",
+            f"- 只有当 `expected_test_scripts` 中列出的 {len(expected_test_scripts)} 个脚本都通过 `generator_write_test` 成功写出后，本阶段才算完成。",
             "- 如需查询文件，先从 `test_plan_files` 所在目录用 `ls` 建立目录感知，再缩小到最小必要的计划文件或共享目录。",
             "- 上述测试计划文件都已校验位于当前 `project_dir` 下；生成出的脚本也必须写回同一工程目录。",
         ]
@@ -140,6 +146,26 @@ class GeneratorAgent(BaseSpecialistAgent):
             seen.add(normalized_item)
             normalized_files.append(normalized_item)
         return normalized_files
+
+    def _normalized_test_cases(self, value: Any) -> list[str]:
+        """把测试用例筛选参数归一化为去重后的字符串列表。"""
+
+        if isinstance(value, (list, tuple)):
+            candidate_values = value
+        elif value is None:
+            candidate_values = []
+        else:
+            candidate_values = [value]
+
+        normalized_cases: list[str] = []
+        seen: set[str] = set()
+        for item in candidate_values:
+            normalized_item = self._normalized_runtime_text(item)
+            if not normalized_item or normalized_item in seen:
+                continue
+            seen.add(normalized_item)
+            normalized_cases.append(normalized_item)
+        return normalized_cases
 
     def _resolve_test_plan_files(self, *, workspace_dir: Path, raw_test_plan_files: Any) -> list[Path]:
         """把测试计划文件或目录解析成项目目录下的绝对路径，并展开成计划文件列表。"""
@@ -194,6 +220,26 @@ class GeneratorAgent(BaseSpecialistAgent):
 
         raise RuntimeError(f"Generator 模式测试计划目录 `{directory}` 下未找到可用的 Markdown 测试计划文件，无法继续。")
 
+    def _resolve_generation_targets(
+        self,
+        *,
+        workspace_dir: Path,
+        extracted_params: dict[str, Any],
+    ) -> tuple[list[Path], list[str], list[str]]:
+        """解析本次脚本生成所需的计划文件、用例筛选和预期输出脚本。"""
+
+        resolved_test_plan_files = self._resolve_test_plan_files(
+            workspace_dir=workspace_dir,
+            raw_test_plan_files=extracted_params.get("test_plan_files"),
+        )
+        normalized_test_cases = self._normalized_test_cases(extracted_params.get("test_cases"))
+        expected_test_scripts = extract_expected_generator_test_scripts_from_plan_files(
+            plan_files=resolved_test_plan_files,
+            project_dir=workspace_dir,
+            selected_test_cases=normalized_test_cases,
+        )
+        return resolved_test_plan_files, normalized_test_cases, expected_test_scripts
+
     async def _run_deep_agent(
         self,
         specialist_agent: Any,
@@ -207,14 +253,21 @@ class GeneratorAgent(BaseSpecialistAgent):
         final_output: dict[str, Any] | None = None
         generator_write_succeeded = False
         generator_write_error: str | None = None
-        write_payloads: list[dict[str, str]] = []
+        pending_write_payloads: list[dict[str, str]] = []
+        successful_write_payloads: list[dict[str, str]] = []
         workspace_dir = execution_context.workspace_dir
         extracted_params = state.get("extracted_params", {})
         project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
             workspace_dir.name if workspace_dir is not None else "unknown-project"
         )
         input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
-        before_manifest = snapshot_workspace_manifest(workspace_dir)
+        expected_test_scripts: list[str] = []
+        if workspace_dir is not None:
+            _, _, expected_test_scripts = self._resolve_generation_targets(
+                workspace_dir=workspace_dir,
+                extracted_params=extracted_params,
+            )
+        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
         stage_artifact: dict[str, Any] | None = None
 
         try:
@@ -235,10 +288,12 @@ class GeneratorAgent(BaseSpecialistAgent):
                         file_name = self._normalized_runtime_text(payload.get("fileName"))
                         code = payload.get("code")
                         if file_name and isinstance(code, str):
-                            write_payloads.append({"fileName": file_name, "code": code})
+                            pending_write_payloads.append({"fileName": file_name, "code": code})
                 generator_write_succeeded, generator_write_error = self._update_generator_write_state(
                     generator_write_succeeded,
                     generator_write_error,
+                    pending_write_payloads,
+                    successful_write_payloads,
                     event,
                 )
                 self.log_generator_write_state(
@@ -248,16 +303,16 @@ class GeneratorAgent(BaseSpecialistAgent):
                     execution_context.trace_context,
                 )
         except Exception as exc:  # noqa: BLE001
-            if generator_write_succeeded and self._is_expected_browser_close_error(exc):
+            if successful_write_payloads and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
                 if workspace_dir is not None:
-                    stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
-                        writes=write_payloads,
+                    stage_artifact = await self._build_generator_stage_artifact(
+                        successful_write_payloads=successful_write_payloads,
                         before_manifest=before_manifest,
-                        after_manifest=snapshot_workspace_manifest(workspace_dir),
                         workspace_dir=workspace_dir,
                         project_name=project_name,
                         input_files=input_plan_files,
+                        expected_test_scripts=expected_test_scripts,
                     )
                 if final_output is None:
                     return {
@@ -280,18 +335,18 @@ class GeneratorAgent(BaseSpecialistAgent):
             final_output=final_output,
         )
 
-        if not generator_write_succeeded:
+        if not successful_write_payloads:
             error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
             raise RuntimeError(f"Generator Agent 未成功调用 `generator_write_test` 生成脚本。{error_suffix}")
 
         if workspace_dir is not None:
-            stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
-                writes=write_payloads,
+            stage_artifact = await self._build_generator_stage_artifact(
+                successful_write_payloads=successful_write_payloads,
                 before_manifest=before_manifest,
-                after_manifest=snapshot_workspace_manifest(workspace_dir),
                 workspace_dir=workspace_dir,
                 project_name=project_name,
                 input_files=input_plan_files,
+                expected_test_scripts=expected_test_scripts,
             )
 
         if final_output is None:
@@ -324,6 +379,8 @@ class GeneratorAgent(BaseSpecialistAgent):
         self,
         generator_write_succeeded: bool,
         generator_write_error: str | None,
+        pending_write_payloads: list[dict[str, str]],
+        successful_write_payloads: list[dict[str, str]],
         event: dict[str, Any],
     ) -> tuple[bool, str | None]:
         """根据工具事件更新 `generator_write_test` 的执行状态。"""
@@ -331,17 +388,74 @@ class GeneratorAgent(BaseSpecialistAgent):
         if event.get("name") != "generator_write_test":
             return generator_write_succeeded, generator_write_error
 
+        if event.get("event") == "on_tool_start":
+            return generator_write_succeeded, generator_write_error
+
         if event.get("event") == "on_tool_error":
+            if pending_write_payloads:
+                pending_write_payloads.pop(0)
             return False, self.log_truncate(event.get("data", {}).get("error"))
 
         if event.get("event") != "on_tool_end":
             return generator_write_succeeded, generator_write_error
 
+        pending_payload = pending_write_payloads.pop(0) if pending_write_payloads else None
         output = event.get("data", {}).get("output")
         if self._tool_output_is_error(output):
             return False, self.log_truncate(output)
 
+        if pending_payload is None:
+            return False, "`generator_write_test` 未捕获到输入 payload，无法确认写入文件。"
+
+        successful_write_payloads.append(pending_payload)
         return True, None
+
+    async def _build_generator_stage_artifact(
+        self,
+        *,
+        successful_write_payloads: list[dict[str, str]],
+        before_manifest: dict[str, Any],
+        workspace_dir: Path,
+        project_name: str,
+        input_files: list[str],
+        expected_test_scripts: list[str],
+    ) -> dict[str, Any]:
+        """构建 Generator 产物，并校验是否已覆盖计划要求的全部脚本。"""
+
+        artifact = extract_generator_artifact_from_writes_and_snapshot(
+            writes=successful_write_payloads,
+            before_manifest=before_manifest,
+            after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
+            workspace_dir=workspace_dir,
+            project_name=project_name,
+            input_files=input_files,
+        )
+        self._assert_expected_test_scripts_written(
+            expected_test_scripts=expected_test_scripts,
+            actual_test_scripts=artifact.get("output_files", []),
+        )
+        return artifact
+
+    def _assert_expected_test_scripts_written(
+        self,
+        *,
+        expected_test_scripts: list[str],
+        actual_test_scripts: list[str],
+    ) -> None:
+        """确保本次成功写出的脚本集合完整覆盖计划要求。"""
+
+        expected_files = self._normalized_test_plan_files(expected_test_scripts)
+        actual_files = self._normalized_test_plan_files(actual_test_scripts)
+        missing_files = [path for path in expected_files if path not in actual_files]
+        if not missing_files:
+            return
+
+        missing_text = "、".join(f"`{path}`" for path in missing_files)
+        raise RuntimeError(
+            "Generator Agent 未完成测试计划要求的全部脚本生成。"
+            f" 期望 {len(expected_files)} 个脚本，实际成功写出 {len(actual_files)} 个。"
+            f" 缺失脚本：{missing_text}"
+        )
 
     def log_generator_write_state(
         self,

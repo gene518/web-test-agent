@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_AUTOTEST_DEMO_PROJECT_NAME = "an-autotest-demo"
+DEFAULT_AUTOTEST_DEMO_PROJECT_NAME = "demo"
 NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
 AUTOTEST_TEMPLATE_IGNORE_PATTERNS = (
     ".DS_Store",
