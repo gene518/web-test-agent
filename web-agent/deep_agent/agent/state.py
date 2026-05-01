@@ -42,6 +42,10 @@ class WorkflowState(TypedDict, total=False):
         bool,
         Field(description="Specialist 完成后回到 Master 子图的收尾标记，用于避免同轮重复分类。"),
     ]
+    pipeline_handoff: Annotated[
+        bool,
+        Field(description="Specialist 完成后交回 Master 决定下一阶段或最终汇总。"),
+    ]
     stage_result: Annotated[
         dict[str, Any],
         Field(description="当前阶段的内部执行结果摘要，供最终总结使用，不直接作为用户消息返回。"),
@@ -65,4 +69,28 @@ class WorkflowState(TypedDict, total=False):
     pending_missing_params: Annotated[
         list[str],
         Field(description="参数补全过程中仍待补齐的字段列表。"),
+    ]
+    requested_pipeline: Annotated[
+        list[str],
+        Field(description="当前轮请求计划执行的阶段链，例如 ['plan', 'generator']。"),
+    ]
+    pipeline_cursor: Annotated[
+        int,
+        Field(description="当前正在执行的阶段在 requested_pipeline 中的下标。"),
+    ]
+    artifact_history: Annotated[
+        list[dict[str, Any]],
+        Field(description="当前线程内累计记录的产物历史，按阶段执行顺序追加。"),
+    ]
+    latest_artifacts: Annotated[
+        dict[str, dict[str, Any]],
+        Field(description="plan/generator/healer 最近一次成功产物的快捷指针。"),
+    ]
+    pending_stage_summaries: Annotated[
+        list[dict[str, Any]],
+        Field(description="当前轮待最终汇总的阶段摘要列表，由 finalize_turn_node 统一拼装。"),
+    ]
+    current_turn_artifact_ids: Annotated[
+        list[str],
+        Field(description="当前轮执行过程中新增的 artifact_id 列表，便于追踪本轮产物。"),
     ]

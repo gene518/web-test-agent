@@ -5,10 +5,16 @@ from __future__ import annotations
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field
+from deep_agent.agent.artifacts import normalize_requested_pipeline
 
 
 IntentType = Literal["plan", "generator", "healer", "general", "unknown"]
 NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
+SPECIALIST_STAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "plan": ("生成计划", "测试计划", "制定计划", "测试方案", "生成用例", "用例设计", "plan"),
+    "generator": ("生成脚本", "写脚本", "写代码", "自动化脚本", "脚本生成", "按照计划生成", "generator"),
+    "healer": ("调试", "修复", "失败", "报错", "排查问题", "heal", "fix", "debug", "run test"),
+}
 
 # 这张表定义了每种意图至少要收集到哪些参数，后面追问逻辑会直接使用它。
 REQUIRED_PARAMS_BY_INTENT: dict[str, tuple[str, ...]] = {
@@ -36,6 +42,10 @@ class IntentClassification(BaseModel):
     test_plan_files: list[str] = Field(default_factory=list, description="Generator 阶段待消费的测试计划路径列表，可为文件或目录。")
     test_cases: list[str] = Field(default_factory=list, description="Generator 阶段测试用例列表。")
     test_scripts: list[str] = Field(default_factory=list, description="Healer 阶段待调试脚本路径列表，可为文件或目录。")
+    requested_pipeline: list[str] = Field(
+        default_factory=list,
+        description="本轮期望执行的 specialist 阶段链，按顺序返回，例如 ['plan', 'generator']。",
+    )
     missing_params: list[str] = Field(default_factory=list, description="模型推断出的缺失参数，仅用于调试。")
     reasoning: str = Field(default="", description="本次分类的理由说明。")
 
@@ -148,6 +158,35 @@ def compute_missing_params_for_intent(intent_type: str, params: Mapping[str, Any
             missing.append(field_name)
 
     return missing
+
+
+def build_requested_pipeline(result: IntentClassification, *, latest_user_request: str = "") -> list[str]:
+    """从结构化结果和原始用户文本构建稳定的阶段执行链。"""
+
+    normalized_pipeline = normalize_requested_pipeline(result.requested_pipeline, default_stage=result.intent_type)
+    inferred_pipeline = infer_requested_pipeline_from_text(
+        latest_user_request,
+        default_stage=result.intent_type,
+    )
+    if len(normalized_pipeline) > 1:
+        return normalized_pipeline
+    if len(inferred_pipeline) > len(normalized_pipeline):
+        return inferred_pipeline
+    return normalized_pipeline
+
+
+def infer_requested_pipeline_from_text(text: str, *, default_stage: str | None = None) -> list[str]:
+    """用轻量关键词顺序兜底推断多阶段执行链。"""
+
+    normalized_text = (text or "").lower()
+    ordered_hits: list[tuple[int, str]] = []
+    for stage, keywords in SPECIALIST_STAGE_KEYWORDS.items():
+        positions = [normalized_text.find(keyword.lower()) for keyword in keywords if normalized_text.find(keyword.lower()) >= 0]
+        if positions:
+            ordered_hits.append((min(positions), stage))
+
+    ordered_hits.sort(key=lambda item: item[0])
+    return normalize_requested_pipeline([stage for _, stage in ordered_hits], default_stage=default_stage)
 
 
 def _as_optional_text(value: Any) -> str | None:

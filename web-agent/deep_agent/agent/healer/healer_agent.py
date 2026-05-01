@@ -14,6 +14,7 @@ from deepagents.middleware import FilesystemPermission
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
+from deep_agent.agent.artifacts import extract_healer_artifact_from_snapshot_and_runs, snapshot_workspace_manifest
 from deep_agent.agent.base_agent import (
     BaseSpecialistAgent,
     SpecialistExecutionContext,
@@ -91,6 +92,7 @@ class HealerAgent(BaseSpecialistAgent):
             raw_test_scripts=extracted_params.get("test_scripts"),
         )
         relative_test_scripts = [path.relative_to(workspace_dir).as_posix() for path in resolved_test_scripts]
+        related_test_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
 
         prompt_sections = [
             "## 本次运行上下文",
@@ -99,6 +101,7 @@ class HealerAgent(BaseSpecialistAgent):
             f"- automation_root_dir: `{self._settings.resolved_default_automation_project_root.resolve()}`",
             f"- test_scripts: {self._format_prompt_value(relative_test_scripts)}",
             f"- resolved_test_scripts: {self._format_prompt_value([str(path) for path in resolved_test_scripts])}",
+            f"- related_test_plan_files: {self._format_prompt_value(related_test_plan_files)}",
             "## 完成条件",
             f"- 本次共收到 {len(resolved_test_scripts)} 个待调试脚本；请优先按 `test_scripts` 给出的顺序逐个运行、定位和修复。",
             "- `test_run` 与 `test_debug` 应优先只针对这些脚本执行，不要默认扩大到整个工程。",
@@ -127,6 +130,15 @@ class HealerAgent(BaseSpecialistAgent):
 
         existing_messages = state.get("messages", [])
         final_output: dict[str, Any] | None = None
+        workspace_dir = execution_context.workspace_dir
+        extracted_params = state.get("extracted_params", {})
+        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
+            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        )
+        input_scripts = self._normalized_test_scripts(extracted_params.get("test_scripts"))
+        before_manifest = snapshot_workspace_manifest(workspace_dir)
+        validation_runs: list[str] = []
+        stage_artifact: dict[str, Any] | None = None
 
         try:
             async for event in specialist_agent.astream_events(
@@ -140,10 +152,25 @@ class HealerAgent(BaseSpecialistAgent):
             ):
                 self.log_stream_event(event, execution_context.trace_context)
                 final_output = self._capture_final_output(final_output, event)
+                if event.get("name") == "test_run" and event.get("event") == "on_tool_start":
+                    payload = event.get("data", {}).get("input")
+                    if isinstance(payload, dict):
+                        validation_runs.extend(self._normalized_test_scripts(payload.get("locations")))
         except Exception as exc:  # noqa: BLE001
             if final_output is not None and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
-                return self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成，浏览器已按预期关闭。")
+                if workspace_dir is not None:
+                    stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
+                        before_manifest=before_manifest,
+                        after_manifest=snapshot_workspace_manifest(workspace_dir),
+                        workspace_dir=workspace_dir,
+                        project_name=project_name,
+                        input_files=input_scripts,
+                        validation_runs=validation_runs or input_scripts,
+                    )
+                result = self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成，浏览器已按预期关闭。")
+                result["artifact"] = stage_artifact
+                return result
             raise
 
         log_debug_event(
@@ -155,10 +182,25 @@ class HealerAgent(BaseSpecialistAgent):
             final_output=final_output,
         )
 
-        if final_output is None:
-            return {"messages": [AIMessage(content="脚本调试阶段已完成。")]}
+        if workspace_dir is not None:
+            stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
+                before_manifest=before_manifest,
+                after_manifest=snapshot_workspace_manifest(workspace_dir),
+                workspace_dir=workspace_dir,
+                project_name=project_name,
+                input_files=input_scripts,
+                validation_runs=validation_runs or input_scripts,
+            )
 
-        return self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成。")
+        if final_output is None:
+            return {
+                "messages": [AIMessage(content="脚本调试阶段已完成。")],
+                "artifact": stage_artifact,
+            }
+
+        result = self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成。")
+        result["artifact"] = stage_artifact
+        return result
 
     def _bundled_demo_template_dir(self) -> Path:
         """返回仓库内置的 demo 模板目录。"""
@@ -180,6 +222,26 @@ class HealerAgent(BaseSpecialistAgent):
 
     def _normalized_test_scripts(self, value: Any) -> list[str]:
         """把待调试脚本输入参数归一化为去重后的字符串列表。"""
+
+        if isinstance(value, (list, tuple)):
+            candidate_values = value
+        elif value is None:
+            candidate_values = []
+        else:
+            candidate_values = [value]
+
+        normalized_files: list[str] = []
+        seen: set[str] = set()
+        for item in candidate_values:
+            normalized_item = self._normalized_runtime_text(item)
+            if not normalized_item or normalized_item in seen:
+                continue
+            seen.add(normalized_item)
+            normalized_files.append(normalized_item)
+        return normalized_files
+
+    def _normalized_test_plan_files(self, value: Any) -> list[str]:
+        """把关联测试计划输入参数归一化为去重后的字符串列表。"""
 
         if isinstance(value, (list, tuple)):
             candidate_values = value

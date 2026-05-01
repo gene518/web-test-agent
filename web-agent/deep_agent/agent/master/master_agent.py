@@ -14,11 +14,12 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
+from deep_agent.agent.artifacts import summarize_latest_artifacts
 from deep_agent.agent.master.models.intent import (
     IntentClassification,
     build_extracted_params,
-    compute_missing_params,
     compute_missing_params_for_intent,
+    build_requested_pipeline,
 )
 from deep_agent.agent.master.prompts.complete_params import build_master_complete_params_prompt
 from deep_agent.agent.master.prompts.general_test import GENERAL_TEST_SYSTEM_PROMPT
@@ -80,14 +81,21 @@ class MasterAgent:
         log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="intent_judge_node", event_name="model_end"), model="master_classifier", output=classification.model_dump())
 
         extracted_params = build_extracted_params(classification)
-        missing_params = compute_missing_params(classification)
+        latest_user_request = self.latest_human_message_text(state.get("messages", []))
+        requested_pipeline = build_requested_pipeline(classification, latest_user_request=latest_user_request)
+        resolved_agent_type = requested_pipeline[0] if requested_pipeline else classification.intent_type
+        missing_params = compute_missing_params_for_intent(resolved_agent_type, extracted_params)
         result: WorkflowState = {
-            "agent_type": classification.intent_type,
-            "pending_agent_type": classification.intent_type if classification.intent_type in SPECIALIST_AGENT_TYPES else None,
+            "agent_type": resolved_agent_type,
+            "pending_agent_type": resolved_agent_type if resolved_agent_type in SPECIALIST_AGENT_TYPES else None,
             "extracted_params": extracted_params,
             "missing_params": missing_params,
             "pending_missing_params": missing_params,
             "routing_reason": classification.reasoning or "Master completed routing analysis.",
+            "requested_pipeline": requested_pipeline,
+            "pipeline_cursor": 0,
+            "pending_stage_summaries": [],
+            "current_turn_artifact_ids": [],
         }
         if "conversation_summary" in state_with_summary:
             result["conversation_summary"] = state_with_summary["conversation_summary"]
@@ -277,6 +285,9 @@ class MasterAgent:
         conversation_summary = state.get("conversation_summary")
         if conversation_summary:
             model_messages.append(SystemMessage(content=f"## 历史摘要\n{conversation_summary}"))
+        artifact_context = summarize_latest_artifacts(state.get("latest_artifacts"))
+        if artifact_context:
+            model_messages.append(SystemMessage(content=artifact_context))
         model_messages.extend(self._messages_for_model(state))
         return model_messages
 

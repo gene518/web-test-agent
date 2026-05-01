@@ -218,8 +218,13 @@ def summarize_state(state: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "agent_type": state.get("agent_type"),
         "next_action": state.get("next_action"),
+        "requested_pipeline": state.get("requested_pipeline"),
+        "pipeline_cursor": state.get("pipeline_cursor"),
         "missing_params": state.get("missing_params"),
         "extracted_params_keys": sorted(state.get("extracted_params", {}).keys()),
+        "latest_artifact_stages": sorted((state.get("latest_artifacts") or {}).keys()),
+        "artifact_history_count": len(state.get("artifact_history", [])),
+        "pending_stage_summaries_count": len(state.get("pending_stage_summaries", [])),
         "messages": summarize_messages(state.get("messages", [])),
     }
 

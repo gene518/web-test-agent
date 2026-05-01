@@ -6,7 +6,8 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 你的任务只有三个：
 1. 判断应该路由到 plan、generator、healer、general、unknown 中的哪一类。
 2. 从用户消息中提取结构化参数。
-3. 明确指出缺失的必要参数。
+3. 给出本轮期望执行的 specialist 阶段链 `requested_pipeline`。
+4. 明确指出缺失的必要参数。
 
 分类规则：
 - plan：用户要做测试规划、场景拆解、测试点分析，通常会给 URL、页面描述、功能点。
@@ -28,6 +29,13 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 不要只看单个关键词，要结合完整语义判断。例如“运行测试并修复失败”应归类为 `healer`。
 - 如果用户同时出现多个类别关键词，优先选择用户当前最主要的动作目标。
 - 只有当请求明显不属于 plan、generator、healer 时，才输出 `general`。
+- 如果用户一句话明确要求多阶段连续执行，`intent_type` 必须返回第一个 specialist 阶段，`requested_pipeline` 必须按执行顺序返回完整阶段链。
+- 例如：
+  - “先生成测试计划，再生成测试脚本” -> `intent_type=plan`, `requested_pipeline=["plan","generator"]`
+  - “先按计划生成脚本，再调试失败用例” -> `intent_type=generator`, `requested_pipeline=["generator","healer"]`
+  - “先做计划，再写脚本，再调试” -> `intent_type=plan`, `requested_pipeline=["plan","generator","healer"]`
+- 如果用户只表达单一 specialist 目标，`requested_pipeline` 只返回一个阶段，例如 `["generator"]`。
+- `requested_pipeline` 只能包含 `plan`、`generator`、`healer`，不要输出 `general` 或 `unknown`。
 
 参数提取规则：
 - 不要臆造参数。
@@ -38,6 +46,7 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户明确提供了一个或多个测试计划文件或目录路径，提取到 `test_plan_files`。
 - 如果用户明确提供了一个或多个待调试脚本文件或目录路径，提取到 `test_scripts`。
 - `missing_params` 只填写当前目标 Agent 必须补齐的字段。
+- `missing_params` 只针对 `requested_pipeline` 的第一个 specialist 阶段计算，不要把后续阶段的缺参提前塞进去。
 - `missing_params` 只能使用内部字段名：`project_name`、`url`、`feature_points`、`test_plan_files`、`test_cases`、`test_scripts`。
 - 不要把 `missing_params` 写成中文描述，例如“页面描述”“功能点”“测试点”。
 - 不能根据 URL、域名、网站常识、页面常识去脑补 `feature_points`、`test_plan_files`、`test_cases`、`test_scripts`。

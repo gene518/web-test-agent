@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
+from deep_agent.agent.artifacts import extract_plan_artifact_from_planner_payload
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.config.specialist_file_filter import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
@@ -84,6 +85,7 @@ class PlanAgent(BaseSpecialistAgent):
         project_name = self._normalized_project_name(extracted_params.get("project_name")) or ""
         url = self._normalized_runtime_text(extracted_params.get("url")) or ""
         feature_points = extracted_params.get("feature_points", [])
+        existing_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
 
         # 这里既放本次请求的动态参数，也放 Plan 阶段的执行约束，
         # 目的是让模型在一个上下文里同时理解“要做什么”和“必须怎么做完”。
@@ -94,11 +96,13 @@ class PlanAgent(BaseSpecialistAgent):
             f"- project_dir: `{workspace_dir}`",
             f"- automation_root_dir: `{self._settings.resolved_default_automation_project_root.resolve()}`",
             f"- feature_points: {self._format_prompt_value(feature_points)}",
+            f"- existing_test_plan_files: {self._format_prompt_value(existing_plan_files)}",
             "- `planner_save_plan.fileName` 必须是相对 `project_dir` 的路径。",
             "## 完成条件",
             "- 必须先调用一次 `planner_setup_page` 初始化页面。",
             f"- 初始化完成后，必须使用 `browser_navigate` 打开 `{url}` 并开始探索。",
             "- 如果用户提供了 `feature_points`，优先覆盖这些功能点，但仍需结合页面探索补全关键场景。",
+            "- 如果 `existing_test_plan_files` 非空，表示当前请求可能是在补充或更新已有计划；优先基于这些计划文件延续，而不是凭空新建无关计划。",
             "- 只能使用当前可见工具；不要尝试调用 `planner_submit_plan` 或任何文件工具绕过 planner 工作流。",
             "- 如确需查询工程文件，先用 `ls` 确认相关目录，再只读取必要文件；不要对整个 `project_dir` 做递归搜索。",
             "- 必须通过 `planner_save_plan` 保存测试计划；只有 `planner_save_plan` 成功才算任务完成。",
@@ -144,6 +148,13 @@ class PlanAgent(BaseSpecialistAgent):
         final_output: dict[str, Any] | None = None
         planner_save_succeeded = False
         planner_save_error: str | None = None
+        planner_save_payload: dict[str, Any] | None = None
+        stage_artifact: dict[str, Any] | None = None
+        extracted_params = state.get("extracted_params", {})
+        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
+            execution_context.workspace_dir.name if execution_context.workspace_dir is not None else "unknown-project"
+        )
+        input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
 
         try:
             # TODO(重点流程): Plan 使用事件流执行，是为了在模型推理过程中同步监听关键工具调用结果。
@@ -158,16 +169,28 @@ class PlanAgent(BaseSpecialistAgent):
             ):
                 self.log_stream_event(event, execution_context.trace_context)
                 final_output = self._capture_final_output(final_output, event)
-                planner_save_succeeded, planner_save_error = self._update_planner_save_state(
+                if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
+                    payload = event.get("data", {}).get("input")
+                    if isinstance(payload, dict):
+                        planner_save_payload = payload
+                planner_save_succeeded, planner_save_error, stage_artifact = self._update_planner_save_state(
                     planner_save_succeeded,
                     planner_save_error,
+                    stage_artifact,
+                    planner_save_payload,
+                    execution_context.workspace_dir,
+                    project_name,
+                    input_plan_files,
                     event,
                 )
                 self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
         except Exception as exc:  # noqa: BLE001
             if planner_save_succeeded and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
-                return {"messages": [AIMessage(content="测试计划已保存，浏览器已按预期关闭。")]}
+                return {
+                    "messages": [AIMessage(content="测试计划已保存，浏览器已按预期关闭。")],
+                    "artifact": stage_artifact,
+                }
             raise
 
         log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=final_output)
@@ -178,17 +201,26 @@ class PlanAgent(BaseSpecialistAgent):
             raise RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}")
 
         if final_output is None:
-            return {"messages": [AIMessage(content="测试计划已保存。")]}
+            return {
+                "messages": [AIMessage(content="测试计划已保存。")],
+                "artifact": stage_artifact,
+            }
 
         # 最终消息只作为用户可见结果；真正的成功标准前面已经由工具事件验证过。
         all_messages = final_output.get("messages", [])
         if not isinstance(all_messages, list):
-            return {"messages": [AIMessage(content="测试计划已保存。")]}
+            return {
+                "messages": [AIMessage(content="测试计划已保存。")],
+                "artifact": stage_artifact,
+            }
 
         new_messages = all_messages[len(existing_messages) :]
         if not new_messages:
             new_messages = [AIMessage(content="测试计划已保存。")]
-        return {"messages": new_messages}
+        return {
+            "messages": new_messages,
+            "artifact": stage_artifact,
+        }
 
     def _capture_final_output(
         self,
@@ -213,8 +245,13 @@ class PlanAgent(BaseSpecialistAgent):
         self,
         planner_save_succeeded: bool,
         planner_save_error: str | None,
+        current_artifact: dict[str, Any] | None,
+        planner_save_payload: dict[str, Any] | None,
+        workspace_dir: Path | None,
+        project_name: str,
+        input_plan_files: list[str],
         event: dict[str, Any],
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, dict[str, Any] | None]:
         """根据工具事件更新 `planner_save_plan` 的成功状态。
 
         这个状态机存在的目的，是把 Plan 的完成标准从“模型口头说完成了”收紧成
@@ -222,20 +259,35 @@ class PlanAgent(BaseSpecialistAgent):
         """
 
         if event.get("name") != "planner_save_plan":
-            return planner_save_succeeded, planner_save_error
+            return planner_save_succeeded, planner_save_error, current_artifact
 
         # 这里只关注 `planner_save_plan`，其他工具无论成功失败都不改变最终完成判定。
         if event.get("event") == "on_tool_error":
-            return False, self.log_truncate(event.get("data", {}).get("error"))
+            return False, self.log_truncate(event.get("data", {}).get("error")), current_artifact
 
         if event.get("event") != "on_tool_end":
-            return planner_save_succeeded, planner_save_error
+            return planner_save_succeeded, planner_save_error, current_artifact
 
         output = event.get("data", {}).get("output")
         if self._tool_output_is_error(output):
-            return False, self.log_truncate(output)
+            return False, self.log_truncate(output), current_artifact
 
-        return True, None
+        if planner_save_payload is None:
+            return False, "`planner_save_plan` 未捕获到输入 payload，无法提取计划产物。", current_artifact
+        if workspace_dir is None:
+            return False, "Plan 阶段缺少工作目录，无法验证保存产物。", current_artifact
+
+        try:
+            artifact = extract_plan_artifact_from_planner_payload(
+                payload=planner_save_payload,
+                project_dir=workspace_dir,
+                project_name=project_name,
+                input_files=input_plan_files,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, self.log_truncate(str(exc)), current_artifact
+
+        return True, None, artifact
 
     def log_planner_save_state(
         self,
@@ -295,3 +347,23 @@ class PlanAgent(BaseSpecialistAgent):
             "browser has been closed",
         )
         return any(fragment in text for fragment in expected_fragments)
+
+    def _normalized_test_plan_files(self, value: Any) -> list[str]:
+        """把测试计划输入参数归一化为去重后的字符串列表。"""
+
+        if isinstance(value, (list, tuple)):
+            candidate_values = value
+        elif value is None:
+            candidate_values = []
+        else:
+            candidate_values = [value]
+
+        normalized_files: list[str] = []
+        seen: set[str] = set()
+        for item in candidate_values:
+            normalized_item = self._normalized_runtime_text(item)
+            if not normalized_item or normalized_item in seen:
+                continue
+            seen.add(normalized_item)
+            normalized_files.append(normalized_item)
+        return normalized_files

@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
+from deep_agent.agent.artifacts import extract_generator_artifact_from_writes_and_snapshot, snapshot_workspace_manifest
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.config.specialist_file_filter import GENERATOR_QUERY_FILTER_CONFIG
 from deep_agent.agent.generator.prompts.generator_conventions import GENERATOR_BUSINESS_PROMPT
@@ -206,6 +207,15 @@ class GeneratorAgent(BaseSpecialistAgent):
         final_output: dict[str, Any] | None = None
         generator_write_succeeded = False
         generator_write_error: str | None = None
+        write_payloads: list[dict[str, str]] = []
+        workspace_dir = execution_context.workspace_dir
+        extracted_params = state.get("extracted_params", {})
+        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
+            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        )
+        input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
+        before_manifest = snapshot_workspace_manifest(workspace_dir)
+        stage_artifact: dict[str, Any] | None = None
 
         try:
             async for event in specialist_agent.astream_events(
@@ -219,6 +229,13 @@ class GeneratorAgent(BaseSpecialistAgent):
             ):
                 self.log_stream_event(event, execution_context.trace_context)
                 final_output = self._capture_final_output(final_output, event)
+                if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
+                    payload = event.get("data", {}).get("input")
+                    if isinstance(payload, dict):
+                        file_name = self._normalized_runtime_text(payload.get("fileName"))
+                        code = payload.get("code")
+                        if file_name and isinstance(code, str):
+                            write_payloads.append({"fileName": file_name, "code": code})
                 generator_write_succeeded, generator_write_error = self._update_generator_write_state(
                     generator_write_succeeded,
                     generator_write_error,
@@ -233,9 +250,23 @@ class GeneratorAgent(BaseSpecialistAgent):
         except Exception as exc:  # noqa: BLE001
             if generator_write_succeeded and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
+                if workspace_dir is not None:
+                    stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
+                        writes=write_payloads,
+                        before_manifest=before_manifest,
+                        after_manifest=snapshot_workspace_manifest(workspace_dir),
+                        workspace_dir=workspace_dir,
+                        project_name=project_name,
+                        input_files=input_plan_files,
+                    )
                 if final_output is None:
-                    return {"messages": [AIMessage(content="测试脚本已生成，浏览器已按预期关闭。")]}
-                return self._build_messages_result(final_output, existing_messages, "测试脚本已生成，浏览器已按预期关闭。")
+                    return {
+                        "messages": [AIMessage(content="测试脚本已生成，浏览器已按预期关闭。")],
+                        "artifact": stage_artifact,
+                    }
+                result = self._build_messages_result(final_output, existing_messages, "测试脚本已生成，浏览器已按预期关闭。")
+                result["artifact"] = stage_artifact
+                return result
             raise
 
         log_debug_event(
@@ -249,10 +280,29 @@ class GeneratorAgent(BaseSpecialistAgent):
             final_output=final_output,
         )
 
-        if final_output is None:
-            return {"messages": [AIMessage(content="测试脚本生成阶段已完成。")]}
+        if not generator_write_succeeded:
+            error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
+            raise RuntimeError(f"Generator Agent 未成功调用 `generator_write_test` 生成脚本。{error_suffix}")
 
-        return self._build_messages_result(final_output, existing_messages, "测试脚本生成阶段已完成。")
+        if workspace_dir is not None:
+            stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
+                writes=write_payloads,
+                before_manifest=before_manifest,
+                after_manifest=snapshot_workspace_manifest(workspace_dir),
+                workspace_dir=workspace_dir,
+                project_name=project_name,
+                input_files=input_plan_files,
+            )
+
+        if final_output is None:
+            return {
+                "messages": [AIMessage(content="测试脚本生成阶段已完成。")],
+                "artifact": stage_artifact,
+            }
+
+        result = self._build_messages_result(final_output, existing_messages, "测试脚本生成阶段已完成。")
+        result["artifact"] = stage_artifact
+        return result
 
     def _capture_final_output(
         self,

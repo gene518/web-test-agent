@@ -21,6 +21,11 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from deep_agent.core.config import AppSettings
+from deep_agent.agent.artifacts import (
+    append_artifact_history,
+    append_stage_summary,
+    build_stage_summary,
+)
 from deep_agent.core.runtime_logging import (
     build_trace_context,
     debug_full_messages_enabled,
@@ -36,7 +41,6 @@ from deep_agent.core.runtime_logging import (
     with_trace_context,
 )
 from deep_agent.agent.state import WorkflowState
-from deep_agent.agent.master.prompts.summary import FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT
 from deep_agent.config.specialist_file_filter import SpecialistFileFilter
 from deep_agent.tools import MCPToolsManager, get_mcp_tools_manager
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
@@ -547,47 +551,58 @@ class BaseSpecialistAgent(BaseAgent, ABC):
         raw_result: dict[str, Any],
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """把 Specialist 原始结果整理成唯一用户可见总结。"""
+        """把 Specialist 原始结果整理成统一的结构化阶段结果。"""
 
-        try:
-            final_summary = await self._summarize_specialist_result(state=state, raw_result=raw_result, config=config)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("%s %s 总结模型调用失败，回退到阶段原始结果。error=%s",
-                log_title("模型", "总结兜底", node_name=f"{self.agent_type}_node"), self.display_name, exc,)
-            final_summary = self._fallback_final_summary(raw_result)
-        return {
-            "messages": [AIMessage(content=final_summary)],
-            "stage_result": self._build_stage_result(raw_result),
-            "final_summary": final_summary,
-            "return_to_master": True,
-        }
-
-    async def _summarize_specialist_result(
-        self,
-        *,
-        state: WorkflowState,
-        raw_result: dict[str, Any],
-        config: RunnableConfig | None = None,
-    ) -> str:
-        """调用 Master 模型生成 Specialist 最终总结。"""
-
-        model_kwargs = self._settings.build_model_kwargs(self._settings.master_model)
-        summary_model = init_chat_model(**model_kwargs)
-        latest_user_request = self._latest_human_message_text(state.get("messages", []))
-        prompt = (
-            f"阶段：{self.display_name}\n"
-            f"用户要求：{latest_user_request or '未识别到明确用户原文'}\n"
-            f"阶段原始结果：\n{self._format_stage_result_for_prompt(raw_result)}\n\n"
-            "请生成最终回复，必须覆盖：用户要求什么、分析怎么做、如何做、完成了什么。"
+        stage_status = self._resolve_stage_status(raw_result)
+        artifact = self._extract_stage_artifact(raw_result)
+        fallback_message = self._fallback_final_summary(raw_result)
+        stage_summary = build_stage_summary(
+            stage=self.agent_type,
+            status=stage_status,
+            artifact=artifact,
+            fallback_message=fallback_message,
         )
-        model_messages = [
-            SystemMessage(content=FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
-        log_debug_event(self.log_get_logger(), self._settings, log_title("模型", "调用"), "summary_model_start", build_trace_context(config, node_name=f"{self.agent_type}_node", event_name="summary_model_start"), model="master_summary", messages=model_messages)
-        response = await summary_model.ainvoke(model_messages, config=config)
-        log_debug_event(self.log_get_logger(), self._settings, log_title("模型", "调用"), "summary_model_end", build_trace_context(config, node_name=f"{self.agent_type}_node", event_name="summary_model_end"), model="master_summary", messages=[response])
-        return self._message_to_text(response)
+        artifact_history, latest_artifacts, current_turn_artifact_ids = append_artifact_history(dict(state), artifact)
+        pending_stage_summaries = append_stage_summary(dict(state), stage_summary)
+        result: WorkflowState = {
+            "stage_result": self._build_stage_result(raw_result, stage_status=stage_status, artifact=artifact, stage_summary=stage_summary),
+            "final_summary": stage_summary["text"],
+            "artifact_history": artifact_history,
+            "latest_artifacts": latest_artifacts,
+            "current_turn_artifact_ids": current_turn_artifact_ids,
+            "pending_stage_summaries": pending_stage_summaries,
+            "pipeline_handoff": True,
+            "return_to_master": False,
+            "missing_params": [],
+            "pending_missing_params": [],
+        }
+        if self._workflow_managed_pipeline(state):
+            result["messages"] = []
+        else:
+            result["messages"] = [AIMessage(content=stage_summary["text"])]
+        return result
+
+    def _resolve_stage_status(self, raw_result: dict[str, Any]) -> str:
+        """解析当前阶段状态，默认把无显式错误视为成功。"""
+
+        status = raw_result.get("status")
+        if isinstance(status, str) and status:
+            return status
+        return "success"
+
+    def _extract_stage_artifact(self, raw_result: dict[str, Any]) -> dict[str, Any] | None:
+        """从阶段原始结果中取出结构化产物。"""
+
+        artifact = raw_result.get("artifact")
+        if isinstance(artifact, dict):
+            return artifact
+        return None
+
+    def _workflow_managed_pipeline(self, state: WorkflowState) -> bool:
+        """判断当前阶段是否由统一工作流 finalizer 管理用户回复。"""
+
+        requested_pipeline = state.get("requested_pipeline")
+        return isinstance(requested_pipeline, list) and bool(requested_pipeline)
 
     def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
         """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""
@@ -610,12 +625,22 @@ class BaseSpecialistAgent(BaseAgent, ABC):
 
         return "阶段已结束，但总结模型暂时不可用，未能生成最终总结。"
 
-    def _build_stage_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
+    def _build_stage_result(
+        self,
+        raw_result: dict[str, Any],
+        *,
+        stage_status: str,
+        artifact: dict[str, Any] | None,
+        stage_summary: dict[str, Any],
+    ) -> dict[str, Any]:
         """构造写入 state 的内部阶段结果，不直接暴露给用户。"""
 
         return {
             "agent_type": self.agent_type,
             "display_name": self.display_name,
+            "status": stage_status,
+            "artifact": artifact,
+            "stage_summary": stage_summary,
             "raw_messages": [self._message_to_text(message) for message in raw_result.get("messages", []) if isinstance(message, BaseMessage)],
             "raw_result": {
                 key: value

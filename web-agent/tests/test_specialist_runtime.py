@@ -605,14 +605,43 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self._create_generator_plan_file(project_dir, relative_plan_path)
         manager = FakeMCPManager(self._build_generator_tools())
         agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
-        fake_deep_agent = FakeStreamAgent(
-            {
-                "messages": [
-                    AIMessage(content="existing"),
-                    AIMessage(content="generator-finished"),
-                ]
-            }
-        )
+
+        class FakeGeneratorStreamAgent:
+            def __init__(self) -> None:
+                self.inputs: list[tuple[dict, dict | None, str | None]] = []
+
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                self.inputs.append((input_data, config, version))
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/a_case.spec.ts",
+                            "code": (
+                                "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                "test.describe('Demo', () => {\n"
+                                "  test('a_case', async () => {});\n"
+                                "});\n"
+                            ),
+                        }
+                    },
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {"output": {"status": "success", "content": "ok"}},
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="existing"), AIMessage(content="generator-finished")] }},
+                }
+
+        fake_deep_agent = FakeGeneratorStreamAgent()
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
@@ -628,7 +657,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"][0].content, "generator-finished")
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertIn("a_case.spec.ts", result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
         self.assertEqual(fake_deep_agent.inputs[0][2], "v2")
 
@@ -645,6 +675,22 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
             async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
                 self.inputs.append((input_data, config, version))
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/a_case.spec.ts",
+                            "code": (
+                                "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                "test.describe('Demo', () => {\n"
+                                "  test('a_case', async () => {});\n"
+                                "});\n"
+                            ),
+                        }
+                    },
+                }
                 yield {
                     "event": "on_tool_end",
                     "name": "generator_write_test",
@@ -669,7 +715,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"][0].content, "测试脚本已生成，浏览器已按预期关闭。")
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertIn("a_case.spec.ts", result["messages"][0].content)
 
     async def test_generator_runtime_binds_real_workspace_backend_for_deepagents_filesystem_tools(self) -> None:
         project_dir = self.root_path / "generator-backend"
@@ -736,7 +783,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"][0].content, "healer-finished")
+        self.assertIn("Healer 阶段", result["messages"][0].content)
+        self.assertIn(relative_script_path, result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
         self.assertEqual(fake_deep_agent.inputs[0][1]["recursion_limit"], self._build_settings().specialist_recursion_limit)
         self.assertEqual(fake_deep_agent.inputs[0][2], "v2")
@@ -785,7 +833,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"][0].content, "healer-finished")
+        self.assertIn("Healer 阶段", result["messages"][0].content)
+        self.assertIn(relative_script_path, result["messages"][0].content)
 
     async def test_healer_runtime_binds_writable_workspace_permissions(self) -> None:
         project_dir = self.root_path / "healer-backend"

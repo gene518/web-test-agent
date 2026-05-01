@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from deep_agent.agent.master.models.intent import IntentClassification, build_extracted_params, compute_missing_params
+from deep_agent.agent.master.models.intent import (
+    IntentClassification,
+    build_extracted_params,
+    build_requested_pipeline,
+    compute_missing_params,
+)
 
 
 class IntentModelTestCase(unittest.TestCase):
@@ -116,4 +121,23 @@ class IntentModelTestCase(unittest.TestCase):
                 "test_plan_files": ["test_case/demo/aaa_demo.md"],
                 "test_cases": ["case-a"],
             },
+        )
+
+    def test_build_requested_pipeline_prefers_structured_output(self) -> None:
+        classification = IntentClassification(
+            intent_type="plan",
+            requested_pipeline=["plan", "generator", "healer"],
+        )
+
+        self.assertEqual(
+            build_requested_pipeline(classification, latest_user_request="先生成计划，再写脚本，再调试"),
+            ["plan", "generator", "healer"],
+        )
+
+    def test_build_requested_pipeline_can_infer_multi_stage_from_user_text(self) -> None:
+        classification = IntentClassification(intent_type="plan")
+
+        self.assertEqual(
+            build_requested_pipeline(classification, latest_user_request="先生成测试计划，再生成脚本，然后调试失败用例"),
+            ["plan", "generator", "healer"],
         )

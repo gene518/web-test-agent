@@ -7,7 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from deep_agent.agent.master.nodes import IntentJudgeNode
+from deep_agent.agent.master.nodes import IntentJudgeNode, ResolveStageFilesNode
 from deep_agent.agent.state import WorkflowState
 from deep_agent.workflow import build_master_graph
 
@@ -27,6 +27,8 @@ class FakeMasterService:
                 "extracted_params": {},
                 "missing_params": [],
                 "pending_missing_params": [],
+                "requested_pipeline": [],
+                "pipeline_cursor": 0,
                 "routing_reason": "general request",
             }
         return {
@@ -35,6 +37,8 @@ class FakeMasterService:
             "extracted_params": self.initial_params,
             "missing_params": ["project_name"],
             "pending_missing_params": ["project_name"],
+            "requested_pipeline": [self.agent_type],
+            "pipeline_cursor": 0,
             "routing_reason": "need params",
         }
 
@@ -79,17 +83,75 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         result = await node.execute({"messages": [HumanMessage(content="帮我写计划")]})
 
         self.assertEqual(result["agent_type"], "plan")
-        self.assertEqual(result["next_action"], "complete_params")
+        self.assertEqual(result["next_action"], "resolve_stage_files")
 
-    async def test_intent_judge_ends_when_specialist_returns_to_master(self) -> None:
+    async def test_intent_judge_advances_pipeline_when_specialist_returns_to_master(self) -> None:
         service = FakeMasterService()
         node = IntentJudgeNode(service)
 
-        result = await node.execute({"return_to_master": True})
+        result = await node.execute(
+            {
+                "pipeline_handoff": True,
+                "agent_type": "plan",
+                "requested_pipeline": ["plan", "generator"],
+                "pipeline_cursor": 0,
+                "stage_result": {"status": "success"},
+            }
+        )
 
-        self.assertEqual(result["next_action"], "end")
-        self.assertFalse(result["return_to_master"])
+        self.assertEqual(result["next_action"], "resolve_stage_files")
+        self.assertEqual(result["agent_type"], "generator")
+        self.assertEqual(result["pipeline_cursor"], 1)
+        self.assertFalse(result["pipeline_handoff"])
         self.assertEqual(service.classify_calls, 0)
+
+    async def test_intent_judge_finalizes_pipeline_after_last_stage(self) -> None:
+        service = FakeMasterService()
+        node = IntentJudgeNode(service)
+
+        result = await node.execute(
+            {
+                "pipeline_handoff": True,
+                "agent_type": "generator",
+                "requested_pipeline": ["generator"],
+                "pipeline_cursor": 0,
+                "stage_result": {"status": "success"},
+            }
+        )
+
+        self.assertEqual(result["next_action"], "finalize_turn")
+        self.assertEqual(service.classify_calls, 0)
+
+    async def test_resolve_stage_files_node_inherits_latest_plan_files_for_generator(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "generator",
+                "pending_agent_type": "generator",
+                "requested_pipeline": ["generator"],
+                "pipeline_cursor": 0,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "output_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(result["next_action"], "generator")
+        self.assertEqual(
+            result["extracted_params"]["test_plan_files"],
+            ["test_case/aaaplanning_demo/aaa_demo.md"],
+        )
+        self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
 
     async def test_master_graph_interrupts_for_missing_params_and_resume_keeps_intent(self) -> None:
         service = FakeMasterService(initial_params={"url": "https://example.com"})
