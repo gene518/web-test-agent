@@ -66,7 +66,7 @@ tail -F langgraph-dev.log
 日志里会出现类似字段：
 
 ```text
-event=node_enter trace={'session_id': '...', 'thread_id': '...', 'run_id': ..., 'node_name': 'master_node', 'event_name': 'node_enter'}
+event=node_enter trace={'session_id': '...', 'thread_id': '...', 'run_id': ..., 'node_name': 'intent_judge_node', 'event_name': 'node_enter'}
 ```
 
 复制其中的 `thread_id`，后续按它查询整条链路。
@@ -125,7 +125,7 @@ rg "SystemMessage|HumanMessage|AIMessage|ToolMessage|planner_save_plan" tests/de
 - `thread_id`: LangGraph 自动创建或携带的 thread id，用于串联一次或多轮对话。
 - `session_id`: 日志检索别名，默认等于 `thread_id`。
 - `run_id`: 如果 LangGraph runtime config 中存在则打印；本地调试不需要手动传入。
-- `node_name`: 当前节点，例如 `master_node`、`plan_node`。
+- `node_name`: 当前节点，例如 `master_graph_node`、`intent_judge_node`、`complete_params_node`、`plan_node`。
 - `event_name`: 当前事件，例如 `node_enter`、`model_start`、`tool_end`、`planner_save_plan`。
 
 调试结束后建议把 `.env` 改回：

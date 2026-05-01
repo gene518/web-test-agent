@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class SpecialistQueryFilterConfig:
+class SpecialistFileFilter:
     """描述单个 Specialist 的文件查询限制规则。
 
     `blocked_path_globs` 用于屏蔽明显无关或高风险的大目录；
@@ -39,24 +39,24 @@ SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS: tuple[str, ...] = (
 )
 
 
-PLAN_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
+PLAN_QUERY_FILTER_CONFIG = SpecialistFileFilter(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
-GENERATOR_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
+GENERATOR_QUERY_FILTER_CONFIG = SpecialistFileFilter(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
-HEALER_QUERY_FILTER_CONFIG = SpecialistQueryFilterConfig(
+HEALER_QUERY_FILTER_CONFIG = SpecialistFileFilter(
     blocked_path_globs=SPECIALIST_BLOCKED_QUERY_PATH_GLOBS,
     blocked_file_extensions=SPECIALIST_BLOCKED_QUERY_FILE_EXTENSIONS,
 )
 
 
 __all__ = [
-    "SpecialistQueryFilterConfig",
+    "SpecialistFileFilter",
     "GENERATOR_QUERY_FILTER_CONFIG",
     "HEALER_QUERY_FILTER_CONFIG",
     "PLAN_QUERY_FILTER_CONFIG",

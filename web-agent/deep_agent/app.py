@@ -5,7 +5,7 @@
 """
 
 from deep_agent.core.config import get_settings
-from deep_agent.agent.master.graph.workflow import build_workflow
+from deep_agent.workflow import build_workflow
 from deep_agent.core.runtime_logging import configure_logging_from_env, get_logger, log_title
 
 configure_logging_from_env()

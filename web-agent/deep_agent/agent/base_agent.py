@@ -17,7 +17,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from deep_agent.core.config import AppSettings
@@ -36,7 +36,8 @@ from deep_agent.core.runtime_logging import (
     with_trace_context,
 )
 from deep_agent.agent.state import WorkflowState
-from deep_agent.agent.specialist_query_config import SpecialistQueryFilterConfig
+from deep_agent.agent.master.prompts.summary import FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT
+from deep_agent.config.specialist_file_filter import SpecialistFileFilter
 from deep_agent.tools import MCPToolsManager, get_mcp_tools_manager
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
 
@@ -88,8 +89,8 @@ class SpecialistRuntimeConfig:
         default="web_standard.md",
         metadata={"description": "项目规范文件名，默认会在 workspace 下查找该文件并附加到 prompt。"},
     )
-    query_filter_config: SpecialistQueryFilterConfig = field(
-        default_factory=SpecialistQueryFilterConfig,
+    query_filter_config: SpecialistFileFilter = field(
+        default_factory=SpecialistFileFilter,
         metadata={"description": "当前 Specialist 的文件查询过滤配置，会转成内置文件工具的读权限规则。"},
     )
 
@@ -171,7 +172,11 @@ class BaseSpecialistAgent(BaseAgent, ABC):
         # 执行前先做业务侧必填校验，避免把明显缺参的请求直接交给大模型“猜”。
         validation_error = self._validate_extracted_params(state)
         if validation_error:
-            result = {"messages": [AIMessage(content=validation_error)]}
+            result = await self._build_final_summary_result(
+                state=state,
+                raw_result={"status": "validation_error", "message": validation_error},
+                config=config,
+            )
             logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
             return result
@@ -181,14 +186,19 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             # 目的是让每一步职责稳定，后续子类要覆写某一步时不必复制整段流程。
             execution_context = await self._prepare_execution(state, config=config)
             specialist_agent = self._create_specialist_agent(execution_context)
-            result = await self._run_deep_agent(specialist_agent, state, execution_context, config=config)
+            raw_result = await self._run_deep_agent(specialist_agent, state, execution_context, config=config)
+            result = await self._build_final_summary_result(state=state, raw_result=raw_result, config=config)
             logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result.get("messages", []), self._settings),)
             return result
         except Exception as exc:  # noqa: BLE001
             logger.exception("%s event=node_error trace=%s %s 执行失败。",
                 log_title("执行", "节点异常", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_error"), self.display_name,)
-            result = {"messages": [AIMessage(content=self._build_unhandled_exception_message(exc))]}
+            result = await self._build_final_summary_result(
+                state=state,
+                raw_result={"status": "exception", "message": self._build_unhandled_exception_message(exc)},
+                config=config,
+            )
             logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
             return result
@@ -457,7 +467,7 @@ class BaseSpecialistAgent(BaseAgent, ABC):
         self,
         *,
         workspace_dir: Path,
-        query_filter_config: SpecialistQueryFilterConfig,
+        query_filter_config: SpecialistFileFilter,
     ) -> list[str]:
         """把查询过滤配置展开成 workspace 作用域下的绝对 deny 路径列表。"""
 
@@ -529,6 +539,120 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             raise RuntimeError(f"{self.display_name} 未返回新的消息结果。")
 
         return new_messages
+
+    async def _build_final_summary_result(
+        self,
+        *,
+        state: WorkflowState,
+        raw_result: dict[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> WorkflowState:
+        """把 Specialist 原始结果整理成唯一用户可见总结。"""
+
+        try:
+            final_summary = await self._summarize_specialist_result(state=state, raw_result=raw_result, config=config)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s %s 总结模型调用失败，回退到阶段原始结果。error=%s",
+                log_title("模型", "总结兜底", node_name=f"{self.agent_type}_node"), self.display_name, exc,)
+            final_summary = self._fallback_final_summary(raw_result)
+        return {
+            "messages": [AIMessage(content=final_summary)],
+            "stage_result": self._build_stage_result(raw_result),
+            "final_summary": final_summary,
+            "return_to_master": True,
+        }
+
+    async def _summarize_specialist_result(
+        self,
+        *,
+        state: WorkflowState,
+        raw_result: dict[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> str:
+        """调用 Master 模型生成 Specialist 最终总结。"""
+
+        model_kwargs = self._settings.build_model_kwargs(self._settings.master_model)
+        summary_model = init_chat_model(**model_kwargs)
+        latest_user_request = self._latest_human_message_text(state.get("messages", []))
+        prompt = (
+            f"阶段：{self.display_name}\n"
+            f"用户要求：{latest_user_request or '未识别到明确用户原文'}\n"
+            f"阶段原始结果：\n{self._format_stage_result_for_prompt(raw_result)}\n\n"
+            "请生成最终回复，必须覆盖：用户要求什么、分析怎么做、如何做、完成了什么。"
+        )
+        model_messages = [
+            SystemMessage(content=FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ]
+        log_debug_event(self.log_get_logger(), self._settings, log_title("模型", "调用"), "summary_model_start", build_trace_context(config, node_name=f"{self.agent_type}_node", event_name="summary_model_start"), model="master_summary", messages=model_messages)
+        response = await summary_model.ainvoke(model_messages, config=config)
+        log_debug_event(self.log_get_logger(), self._settings, log_title("模型", "调用"), "summary_model_end", build_trace_context(config, node_name=f"{self.agent_type}_node", event_name="summary_model_end"), model="master_summary", messages=[response])
+        return self._message_to_text(response)
+
+    def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
+        """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""
+
+        messages = raw_result.get("messages", [])
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if isinstance(message, BaseMessage):
+                    text = self._message_to_text(message).strip()
+                    if text:
+                        return text
+
+        message = raw_result.get("message")
+        if message:
+            return str(message)
+
+        status = raw_result.get("status")
+        if status:
+            return str(status)
+
+        return "阶段已结束，但总结模型暂时不可用，未能生成最终总结。"
+
+    def _build_stage_result(self, raw_result: dict[str, Any]) -> dict[str, Any]:
+        """构造写入 state 的内部阶段结果，不直接暴露给用户。"""
+
+        return {
+            "agent_type": self.agent_type,
+            "display_name": self.display_name,
+            "raw_messages": [self._message_to_text(message) for message in raw_result.get("messages", []) if isinstance(message, BaseMessage)],
+            "raw_result": {
+                key: value
+                for key, value in raw_result.items()
+                if key != "messages"
+            },
+        }
+
+    def _format_stage_result_for_prompt(self, raw_result: dict[str, Any]) -> str:
+        """把阶段原始结果压成总结提示词文本。"""
+
+        lines: list[str] = []
+        for key, value in raw_result.items():
+            if key == "messages" and isinstance(value, list):
+                message_lines = [f"{message.__class__.__name__}: {self._message_to_text(message)}" for message in value if isinstance(message, BaseMessage)]
+                lines.append(f"messages:\n" + "\n".join(message_lines))
+                continue
+            lines.append(f"{key}: {value}")
+        text = "\n".join(lines)
+        max_chars = debug_max_chars(self._settings)
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}... [truncated]"
+
+    def _latest_human_message_text(self, messages: Sequence[Any]) -> str:
+        """返回最近一条用户消息文本。"""
+
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage):
+                return self._message_to_text(message)
+        return ""
+
+    def _message_to_text(self, message: BaseMessage) -> str:
+        """把消息内容转换成字符串。"""
+
+        content = message.content
+        return content if isinstance(content, str) else str(content)
 
     def log_get_logger(self) -> logging.Logger:
         """返回当前 Agent 模块对应的日志对象。"""

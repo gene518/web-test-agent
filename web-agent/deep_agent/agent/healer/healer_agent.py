@@ -19,9 +19,9 @@ from deep_agent.agent.base_agent import (
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
 )
-from deep_agent.agent.specialist_query_config import HEALER_QUERY_FILTER_CONFIG
+from deep_agent.config.specialist_file_filter import HEALER_QUERY_FILTER_CONFIG
 from deep_agent.agent.healer.prompts.healer import HEALER_SYSTEM_PROMPT
-from deep_agent.agent.healer.prompts.mobile_ui_conventions import MOBILE_UI_CONVENTIONS_PROMPT
+from deep_agent.agent.healer.prompts.healer_conventions import MOBILE_UI_CONVENTIONS_PROMPT
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.runtime_logging import (
     log_debug_event,

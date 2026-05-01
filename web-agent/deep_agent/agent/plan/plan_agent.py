@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.agent.specialist_query_config import PLAN_QUERY_FILTER_CONFIG
+from deep_agent.config.specialist_file_filter import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
 from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
 from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context

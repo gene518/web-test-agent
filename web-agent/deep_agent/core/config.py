@@ -53,8 +53,8 @@ class AppSettings(BaseSettings):
         description="OpenAI 兼容接口的基础地址，可用于代理网关或私有中转服务。",
     )
     max_conversation_turns: int = Field(
-        default=20,
-        description="Master 在缺参追问流程中允许的最大用户轮次，避免无限循环。",
+        default=999,
+        description="Master 在长对话中允许保留的最大用户轮次，超过后会压缩历史摘要。",
     )
     llm_timeout_seconds: int = Field(
         default=60,

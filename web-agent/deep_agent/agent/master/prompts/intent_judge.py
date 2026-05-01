@@ -1,6 +1,6 @@
-"""Master 路由提示词。"""
+"""Master 意图判断提示词。"""
 
-MASTER_ROUTER_SYSTEM_PROMPT = """\
+INTENT_JUDGE_SYSTEM_PROMPT = """\
 你是 Web AutoTest Agent 的 Master Agent。
 
 你的任务只有三个：

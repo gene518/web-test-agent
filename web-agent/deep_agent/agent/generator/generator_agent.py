@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.agent.specialist_query_config import GENERATOR_QUERY_FILTER_CONFIG
+from deep_agent.config.specialist_file_filter import GENERATOR_QUERY_FILTER_CONFIG
 from deep_agent.agent.generator.prompts.generator_conventions import GENERATOR_BUSINESS_PROMPT
 from deep_agent.agent.generator.prompts.generator import GENERATOR_SYSTEM_PROMPT
 from deep_agent.agent.state import WorkflowState

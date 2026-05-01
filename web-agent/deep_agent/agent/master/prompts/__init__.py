@@ -1,11 +1,11 @@
 """Master Agent 提示词导出。"""
 
-from deep_agent.agent.master.prompts.ask_params_context import build_master_ask_params_context_prompt
-from deep_agent.agent.master.prompts.general import GENERAL_ASSISTANT_SYSTEM_PROMPT
-from deep_agent.agent.master.prompts.router import MASTER_ROUTER_SYSTEM_PROMPT
+from deep_agent.agent.master.prompts.complete_params import build_master_complete_params_prompt
+from deep_agent.agent.master.prompts.general_test import GENERAL_TEST_SYSTEM_PROMPT
+from deep_agent.agent.master.prompts.intent_judge import INTENT_JUDGE_SYSTEM_PROMPT
 
 __all__ = [
-    "GENERAL_ASSISTANT_SYSTEM_PROMPT",
-    "MASTER_ROUTER_SYSTEM_PROMPT",
-    "build_master_ask_params_context_prompt",
+    "GENERAL_TEST_SYSTEM_PROMPT",
+    "INTENT_JUDGE_SYSTEM_PROMPT",
+    "build_master_complete_params_prompt",
 ]
