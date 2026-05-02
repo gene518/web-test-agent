@@ -1,4 +1,4 @@
-"""Generator Specialist Agent。
+"""Generator 阶段专项智能体。
 
 Generator 阶段的目标，是基于已经确认过的测试计划稳定产出脚本，因此这里只保留
 “脚本生成”所需的 prompt 和工具边界，避免它重新承担页面规划或失败修复职责。
@@ -36,7 +36,7 @@ GENERATOR_RUNTIME_CONFIG = SpecialistRuntimeConfig(
 
 
 class GeneratorAgent(BaseSpecialistAgent):
-    """负责脚本生成阶段的 Specialist Agent。
+    """负责脚本生成阶段的专项智能体。
 
     它存在的目的，是把“根据计划落地脚本”的能力和其他阶段拆开，让脚本生成的 prompt、
     工具白名单和约束都围绕代码产出本身收敛。

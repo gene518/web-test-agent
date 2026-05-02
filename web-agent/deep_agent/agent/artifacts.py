@@ -1,4 +1,4 @@
-"""Workflow artifact helpers for plan/generator/healer stages."""
+"""Plan/Generator/Healer 阶段的工作流产物辅助方法。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ PLAN_FILE_PREFIX = "aaa_"
 
 
 class ArtifactItem(TypedDict, total=False):
-    """A small, stage-specific artifact entry."""
+    """单个阶段使用的小型产物条目。"""
 
     kind: str
     suite_name: str
@@ -49,7 +49,7 @@ class ArtifactItem(TypedDict, total=False):
 
 
 class ArtifactHistoryEntry(TypedDict, total=False):
-    """A lightweight persisted stage artifact entry."""
+    """轻量级的持久化阶段产物条目。"""
 
     artifact_id: str
     stage: StageName
@@ -69,7 +69,7 @@ class ArtifactHistoryEntry(TypedDict, total=False):
 
 
 class StageSummaryEntry(TypedDict, total=False):
-    """A formatted per-stage summary buffered for finalization."""
+    """按阶段格式化、供最终汇总缓冲的摘要条目。"""
 
     artifact_id: str | None
     stage: StageName
@@ -78,7 +78,7 @@ class StageSummaryEntry(TypedDict, total=False):
 
 
 class FileManifestEntry(TypedDict):
-    """Filesystem manifest metadata used for before/after diffs."""
+    """用于前后差异比对的文件系统清单元数据。"""
 
     mtime_ns: int
     size: int
@@ -89,7 +89,7 @@ WorkspaceManifest = dict[str, FileManifestEntry]
 
 
 def normalize_requested_pipeline(value: Any, *, default_stage: str | None = None) -> list[StageName]:
-    """Normalize a requested pipeline list, preserving stage order and uniqueness."""
+    """归一化请求的流水线阶段列表，并保持顺序与唯一性。"""
 
     candidates: list[str]
     if isinstance(value, (list, tuple)):
@@ -116,7 +116,7 @@ def normalize_requested_pipeline(value: Any, *, default_stage: str | None = None
 
 
 def merge_file_lists(explicit_files: Any, inherited_files: Any) -> list[str]:
-    """Merge explicit and inherited file lists, preserving order and deduplicating."""
+    """合并显式文件列表与继承文件列表，并保持顺序去重。"""
 
     merged: list[str] = []
     seen: set[str] = set()
@@ -132,7 +132,7 @@ def append_artifact_history(
     state: dict[str, Any],
     artifact: ArtifactHistoryEntry | None,
 ) -> tuple[list[ArtifactHistoryEntry], LatestArtifacts, list[str]]:
-    """Append a stage artifact into history and latest pointers."""
+    """把阶段产物追加到历史记录和最新产物指针中。"""
 
     history = list(state.get("artifact_history", []))
     latest_artifacts = dict(state.get("latest_artifacts", {}))
@@ -152,7 +152,7 @@ def append_stage_summary(
     state: dict[str, Any],
     stage_summary: StageSummaryEntry,
 ) -> list[StageSummaryEntry]:
-    """Append a formatted stage summary to the current turn buffer."""
+    """把格式化后的阶段摘要追加到当前轮缓冲区。"""
 
     pending = list(state.get("pending_stage_summaries", []))
     pending.append(stage_summary)
@@ -160,7 +160,7 @@ def append_stage_summary(
 
 
 def summarize_latest_artifacts(latest_artifacts: Any) -> str:
-    """Format the latest artifacts into a compact prompt block for master decisions."""
+    """把最新产物整理成供 Master 决策使用的紧凑提示块。"""
 
     if not isinstance(latest_artifacts, dict) or not latest_artifacts:
         return ""
@@ -182,7 +182,7 @@ def summarize_latest_artifacts(latest_artifacts: Any) -> str:
 
 
 def snapshot_workspace_manifest(workspace_dir: Path | None) -> WorkspaceManifest:
-    """Snapshot the workspace into a lightweight manifest."""
+    """为工作区生成轻量级清单快照。"""
 
     if workspace_dir is None or not workspace_dir.is_dir():
         return {}
@@ -202,13 +202,13 @@ def snapshot_workspace_manifest(workspace_dir: Path | None) -> WorkspaceManifest
 
 
 async def snapshot_workspace_manifest_async(workspace_dir: Path | None) -> WorkspaceManifest:
-    """Build a workspace manifest without blocking the event loop."""
+    """在不阻塞事件循环的情况下构建工作区清单。"""
 
     return await asyncio.to_thread(snapshot_workspace_manifest, workspace_dir)
 
 
 def diff_workspace_manifest(before: WorkspaceManifest, after: WorkspaceManifest) -> dict[str, list[str]]:
-    """Compute added / modified / removed files between two manifests."""
+    """计算两个清单之间新增、修改和删除的文件。"""
 
     before_paths = set(before)
     after_paths = set(after)
@@ -235,7 +235,7 @@ def resolve_stage_inputs(
     latest_artifacts: Any,
     previous_stage: StageName | None = None,
 ) -> dict[str, Any]:
-    """Merge explicit and historical files for a stage before parameter completion."""
+    """在参数补全前，按阶段合并显式文件和历史文件。"""
 
     resolved = dict(extracted_params)
     normalized_latest = latest_artifacts if isinstance(latest_artifacts, dict) else {}
@@ -288,7 +288,7 @@ def extract_plan_artifact_from_planner_payload(
     project_name: str,
     input_files: list[str] | None = None,
 ) -> ArtifactHistoryEntry:
-    """Validate a planner payload and convert it into a plan-stage artifact."""
+    """校验 Planner 的 payload，并将其转换为 Plan 阶段产物。"""
 
     if not isinstance(payload, dict):
         raise RuntimeError("`planner_save_plan` 输入 payload 非法：必须是对象。")
@@ -389,7 +389,7 @@ def extract_generator_artifact_from_writes_and_snapshot(
     project_name: str,
     input_files: list[str],
 ) -> ArtifactHistoryEntry:
-    """Build a generator-stage artifact from write-tool inputs and workspace diff."""
+    """根据写入工具输入和工作区差异构建 Generator 阶段产物。"""
 
     if not writes:
         raise RuntimeError("Generator 阶段没有观测到 `generator_write_test` 写文件输入。")
@@ -448,7 +448,7 @@ def extract_healer_artifact_from_snapshot_and_runs(
     input_files: list[str],
     validation_runs: list[str],
 ) -> ArtifactHistoryEntry:
-    """Build a healer-stage artifact from before/after snapshots and validation runs."""
+    """根据前后快照和校验运行结果构建 Healer 阶段产物。"""
 
     diff = diff_workspace_manifest(before_manifest, after_manifest)
     touched_files = _dedupe([*input_files, *diff["touched"]])
@@ -486,7 +486,7 @@ def extract_healer_artifact_from_snapshot_and_runs(
 
 
 def extract_test_titles_from_code(code_text: str) -> list[str]:
-    """Extract describe/test titles from a Playwright spec."""
+    """从 Playwright 规范文件中提取 describe/test 标题。"""
 
     if not code_text:
         return []
@@ -504,7 +504,7 @@ def extract_test_titles_from_code(code_text: str) -> list[str]:
 
 
 def extract_spec_source_from_code(code_text: str) -> str | None:
-    """Extract the `// spec:` source plan path from generated code."""
+    """从生成代码中提取 `// spec:` 对应的来源计划路径。"""
 
     match = SPEC_SOURCE_RE.search(code_text or "")
     if match is None:
@@ -519,7 +519,7 @@ def extract_expected_generator_test_scripts_from_plan_files(
     project_dir: Path,
     selected_test_cases: Any = None,
 ) -> list[str]:
-    """Parse plan markdown files and resolve the script files Generator must produce."""
+    """解析测试计划 Markdown 文件，并解析出 Generator 必须产出的脚本文件。"""
 
     if not plan_files:
         raise RuntimeError("Generator 模式未提供可解析的测试计划文件。")
@@ -576,7 +576,7 @@ def build_stage_summary(
     artifact: ArtifactHistoryEntry | None,
     fallback_message: str | None = None,
 ) -> StageSummaryEntry:
-    """Build a user-facing per-stage summary block."""
+    """构建面向用户的阶段摘要块。"""
 
     if artifact is None:
         text = _build_failure_stage_summary(stage=stage, status=status, fallback_message=fallback_message)
@@ -607,7 +607,7 @@ def build_stage_summary(
 
 
 def build_final_turn_summary(pending_stage_summaries: Any) -> str:
-    """Build the final single reply shown to the user for the current turn."""
+    """构建当前轮最终展示给用户的单条回复。"""
 
     if not isinstance(pending_stage_summaries, list) or not pending_stage_summaries:
         return "当前轮次已结束，但没有可汇总的阶段结果。"
@@ -623,7 +623,7 @@ def build_final_turn_summary(pending_stage_summaries: Any) -> str:
 
 
 def current_stage_from_pipeline(state: dict[str, Any]) -> StageName | None:
-    """Resolve the current stage from state pipeline fields."""
+    """根据状态中的流水线字段解析当前阶段。"""
 
     requested_pipeline = normalize_requested_pipeline(state.get("requested_pipeline"), default_stage=state.get("agent_type"))
     pipeline_cursor = state.get("pipeline_cursor", 0)
@@ -635,7 +635,7 @@ def current_stage_from_pipeline(state: dict[str, Any]) -> StageName | None:
 
 
 def has_more_pipeline_stages(state: dict[str, Any]) -> bool:
-    """Whether there are more stages to run after the current one."""
+    """判断当前阶段之后是否还有待执行阶段。"""
 
     requested_pipeline = normalize_requested_pipeline(state.get("requested_pipeline"), default_stage=state.get("agent_type"))
     pipeline_cursor = state.get("pipeline_cursor", 0)
@@ -645,7 +645,7 @@ def has_more_pipeline_stages(state: dict[str, Any]) -> bool:
 
 
 def next_pipeline_stage(state: dict[str, Any]) -> StageName | None:
-    """Return the next pipeline stage, if any."""
+    """返回下一个流水线阶段（如果存在）。"""
 
     requested_pipeline = normalize_requested_pipeline(state.get("requested_pipeline"), default_stage=state.get("agent_type"))
     pipeline_cursor = state.get("pipeline_cursor", 0)
@@ -658,7 +658,7 @@ def next_pipeline_stage(state: dict[str, Any]) -> StageName | None:
 
 
 def previous_pipeline_stage(state: dict[str, Any]) -> StageName | None:
-    """Return the previous pipeline stage, if any."""
+    """返回上一个流水线阶段（如果存在）。"""
 
     requested_pipeline = normalize_requested_pipeline(state.get("requested_pipeline"), default_stage=state.get("agent_type"))
     pipeline_cursor = state.get("pipeline_cursor", 0)
@@ -671,7 +671,7 @@ def previous_pipeline_stage(state: dict[str, Any]) -> StageName | None:
 
 
 def clear_current_turn_buffers(state: dict[str, Any]) -> dict[str, Any]:
-    """Reset per-turn summary buffers after finalization."""
+    """在最终汇总后重置当前轮的摘要缓冲区。"""
 
     return {
         "pending_stage_summaries": [],
@@ -681,7 +681,7 @@ def clear_current_turn_buffers(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _artifact_candidates_for_stage(stage: StageName, latest_artifacts: LatestArtifacts) -> list[ArtifactHistoryEntry]:
-    """Return same-stage + upstream candidates for inheritance."""
+    """返回可用于继承的同阶段和上游阶段候选产物。"""
 
     candidates: list[ArtifactHistoryEntry] = []
     if stage == "plan":
@@ -699,7 +699,7 @@ def _artifact_candidates_for_stage(stage: StageName, latest_artifacts: LatestArt
 
 
 def _collect_plan_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
-    """Collect plan files from stage artifacts."""
+    """从阶段产物中收集测试计划文件。"""
 
     collected: list[str] = []
     for artifact in artifacts:
@@ -712,7 +712,7 @@ def _collect_plan_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
 
 
 def _collect_script_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
-    """Collect script files from stage artifacts."""
+    """从阶段产物中收集脚本文件。"""
 
     collected: list[str] = []
     for artifact in artifacts:
@@ -725,7 +725,7 @@ def _collect_script_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
 
 
 def _collect_saved_case_names(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
-    """Collect saved case names from upstream plan artifacts."""
+    """从上游 Plan 产物中收集已保存的用例名。"""
 
     collected: list[str] = []
     for artifact in artifacts:
@@ -747,7 +747,7 @@ def _align_generator_test_cases_with_latest_plan(
     *,
     previous_stage: StageName | None,
 ) -> None:
-    """Replace selector-like `test_cases` text with concrete plan case names on plan->generator handoff."""
+    """在 plan 到 generator 交接时，把类似选择器的 `test_cases` 文本替换为具体的计划用例名。"""
 
     requested_test_cases = _normalize_string_list(resolved_params.get("test_cases"))
     if previous_stage != "plan" or len(requested_test_cases) != 1:
@@ -767,7 +767,7 @@ def _align_generator_test_cases_with_latest_plan(
 
 
 def _looks_like_case_selector_text(value: str) -> bool:
-    """Heuristically detect natural-language case selectors such as '高优先级三条用例'."""
+    """启发式识别“高优先级三条用例”这类自然语言用例选择表达。"""
 
     normalized_value = (value or "").strip().lower()
     if not normalized_value:
@@ -878,13 +878,13 @@ def _build_failure_stage_summary(
 
 
 def _build_artifact_id(stage: StageName) -> str:
-    """Build a stable-ish artifact id for state history."""
+    """为状态历史生成相对稳定的产物 ID。"""
 
     return f"{stage}-{uuid4().hex[:12]}"
 
 
 def _dedupe(values: Any) -> list[str]:
-    """Dedupe an iterable of strings while preserving order."""
+    """对字符串可迭代对象去重，并保持原有顺序。"""
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -898,7 +898,7 @@ def _dedupe(values: Any) -> list[str]:
 
 
 def _normalize_string_list(value: Any) -> list[str]:
-    """Normalize scalar or list input into a deduped string list."""
+    """把标量或列表输入归一化为去重后的字符串列表。"""
 
     if isinstance(value, (list, tuple)):
         values = value
@@ -910,7 +910,7 @@ def _normalize_string_list(value: Any) -> list[str]:
 
 
 def _normalize_optional_text(value: Any) -> str | None:
-    """Normalize any text-like input to a non-empty string."""
+    """把任意类文本输入归一化为非空字符串。"""
 
     if value is None:
         return None
@@ -919,7 +919,7 @@ def _normalize_optional_text(value: Any) -> str | None:
 
 
 def _require_non_empty_text(value: Any, *, field_name: str) -> str:
-    """Require a non-empty string-like value."""
+    """要求传入非空的类字符串值。"""
 
     text = _normalize_optional_text(value)
     if text is None:
@@ -928,7 +928,7 @@ def _require_non_empty_text(value: Any, *, field_name: str) -> str:
 
 
 def _normalize_stage_name(value: Any) -> StageName | None:
-    """Normalize an arbitrary value into a supported stage name."""
+    """把任意值归一化为受支持的阶段名称。"""
 
     if value is None:
         return None
@@ -944,7 +944,7 @@ def _extract_plan_case_targets_from_markdown(
     plan_file: str,
     project_dir: Path,
 ) -> list[tuple[str, str]]:
-    """Extract `(case_name, target_file)` tuples from a saved markdown test plan."""
+    """从已保存的 Markdown 测试计划中提取 `(case_name, target_file)` 元组。"""
 
     current_case_name: str | None = None
     extracted_targets: list[tuple[str, str]] = []
@@ -972,7 +972,7 @@ def _extract_plan_case_targets_from_markdown(
 
 
 def _extract_case_name_from_plan_heading(line: str) -> str | None:
-    """Extract the case identifier from a markdown heading like `#### 1.1. a_case_name`."""
+    """从 `#### 1.1. a_case_name` 这类 Markdown 标题中提取用例标识。"""
 
     match = PLAN_CASE_HEADER_RE.match(line)
     if match is None:
@@ -981,7 +981,7 @@ def _extract_case_name_from_plan_heading(line: str) -> str | None:
 
 
 def _validate_planner_markdown_layout(relative_plan_file: str, *, field_name: str) -> str:
-    """Enforce the `test_case/aaaplanning_{plan}/aaa_{plan}.md` plan layout."""
+    """强制校验 `test_case/aaaplanning_{plan}/aaa_{plan}.md` 计划路径布局。"""
 
     path = Path(relative_plan_file)
     if len(path.parts) != 3 or path.parts[0] != "test_case":
@@ -1014,7 +1014,7 @@ def _validate_planner_case_file_layout(
     plan_identifier: str,
     field_name: str,
 ) -> None:
-    """Enforce the `test_case/aaaplanning_{plan}/{case}.spec.ts` plan case layout."""
+    """强制校验 `test_case/aaaplanning_{plan}/{case}.spec.ts` 用例路径布局。"""
 
     path = Path(relative_case_file)
     expected_dir_name = f"{PLANNING_DIR_PREFIX}{plan_identifier}"
@@ -1035,7 +1035,7 @@ def _validate_planner_case_file_layout(
 
 
 def _normalize_generator_output_file_from_plan_target(planned_script_file: str) -> str:
-    """Convert a plan-time script path into the runtime output path Generator should write."""
+    """把计划阶段的脚本路径转换为 Generator 运行时应写入的输出路径。"""
 
     path = Path(planned_script_file)
     normalized_parts = list(path.parts)
@@ -1055,7 +1055,7 @@ def _validate_relative_workspace_path(
     expected_suffix: str,
     field_name: str,
 ) -> str:
-    """Validate that a path is relative to the workspace and has the expected suffix."""
+    """校验路径是否相对工作区且具备期望的后缀。"""
 
     raw_path = _require_non_empty_text(value, field_name=field_name)
     candidate = Path(raw_path).expanduser()
@@ -1076,6 +1076,6 @@ def _validate_relative_workspace_path(
 
 
 def _should_skip_snapshot_path(relative_path: Path) -> bool:
-    """Whether a path should be skipped from manifests."""
+    """判断某个路径是否应从清单中跳过。"""
 
     return any(part in SKIPPED_SNAPSHOT_DIR_NAMES for part in relative_path.parts)

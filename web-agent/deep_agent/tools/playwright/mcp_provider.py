@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -88,7 +89,7 @@ class PlaywrightTestMCPProvider:
 
         logger.info("%s 初始化 Playwright Test 项目依赖 workspace_dir=%s command=%s",
             log_title("工具", "Playwright依赖"), workspace_path, " ".join(command),)
-        self._run_npm(command, workspace_path)
+        self._run_npm(command, workspace_path, settings=settings)
 
     def build_connection_error(
         self,
@@ -127,13 +128,18 @@ class PlaywrightTestMCPProvider:
                 return True
         return False
 
-    def _run_npm(self, command: tuple[str, ...], workspace_path: Path) -> None:
+    def _run_npm(self, command: tuple[str, ...], workspace_path: Path, *, settings: AppSettings) -> None:
         """在指定项目目录执行 npm 命令，并保留失败时最有用的输出。"""
+
+        env = os.environ.copy()
+        if settings.playwright_skip_browser_download:
+            env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] = "1"
 
         try:
             subprocess.run(
                 command,
                 cwd=workspace_path,
+                env=env,
                 check=True,
                 capture_output=True,
                 text=True,

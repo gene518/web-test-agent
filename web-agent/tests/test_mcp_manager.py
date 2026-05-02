@@ -370,6 +370,7 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
             PLAYWRIGHT_TEST_MCP_PROVIDER,
             ("npm", "install", "--save-dev", "@playwright/test@1.59.1"),
             project_dir.resolve(),
+            settings=settings,
         )
 
     def test_playwright_provider_skips_bootstrap_when_dependency_is_installed(self) -> None:
@@ -387,3 +388,44 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
             PLAYWRIGHT_TEST_MCP_PROVIDER.prepare_workspace(settings, str(project_dir))
 
         run_npm.assert_not_called()
+
+    def test_playwright_provider_sets_skip_browser_download_env_for_npm_install(self) -> None:
+        settings = AppSettings(default_automation_project_root=str(self.root_path / "projects"))
+        project_dir = self.root_path / "bootstrap-project"
+        project_dir.mkdir()
+
+        with (
+            patch.dict("deep_agent.tools.playwright.mcp_provider.os.environ", {}, clear=True),
+            patch("deep_agent.tools.playwright.mcp_provider.subprocess.run") as run_subprocess,
+        ):
+            PLAYWRIGHT_TEST_MCP_PROVIDER._run_npm(
+                ("npm", "install"),
+                project_dir.resolve(),
+                settings=settings,
+            )
+
+        run_subprocess.assert_called_once()
+        _, kwargs = run_subprocess.call_args
+        self.assertEqual(kwargs["env"]["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"], "1")
+
+    def test_playwright_provider_can_disable_skip_browser_download_env(self) -> None:
+        settings = AppSettings(
+            default_automation_project_root=str(self.root_path / "projects"),
+            playwright_skip_browser_download=False,
+        )
+        project_dir = self.root_path / "bootstrap-project-no-skip"
+        project_dir.mkdir()
+
+        with (
+            patch.dict("deep_agent.tools.playwright.mcp_provider.os.environ", {}, clear=True),
+            patch("deep_agent.tools.playwright.mcp_provider.subprocess.run") as run_subprocess,
+        ):
+            PLAYWRIGHT_TEST_MCP_PROVIDER._run_npm(
+                ("npm", "install"),
+                project_dir.resolve(),
+                settings=settings,
+            )
+
+        run_subprocess.assert_called_once()
+        _, kwargs = run_subprocess.call_args
+        self.assertNotIn("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", kwargs["env"])

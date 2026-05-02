@@ -154,6 +154,7 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         "max_conversation_turns": getattr(settings, "max_conversation_turns", None),
         "pwtest_headed": getattr(settings, "pwtest_headed", None),
         "playwright_bootstrap_workspace": getattr(settings, "playwright_bootstrap_workspace", None),
+        "playwright_skip_browser_download": getattr(settings, "playwright_skip_browser_download", None),
         "playwright_test_package": getattr(settings, "playwright_test_package", None),
         "langsmith_project": getattr(settings, "langsmith_project", None),
         "langsmith_tracing": getattr(settings, "langsmith_tracing", None),

@@ -1,4 +1,4 @@
-"""Small stdout filter for local LangGraph debugging."""
+"""用于本地 LangGraph 调试的小型标准输出过滤器。"""
 
 from __future__ import annotations
 

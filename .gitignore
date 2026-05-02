@@ -1,7 +1,9 @@
 .DS_Store
 __pycache__/
 *.pyc
+*.tsbuildinfo
 venv/
+node_modules/
 .idea/
 .vscode/
 *.egg-info/
@@ -10,6 +12,7 @@ dist/
 
 /web-agent/runtime/
 /web-agent-ui/dist/
+/web-poartl/dist/
 /web-agent/.env
 /web-agent/.pytest_cache/
 /web-agent/.venv/
@@ -18,3 +21,5 @@ dist/
 /web-agent/.langgraph_api/
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
+/web-poartl/vite.config.d.ts
+/web-poartl/vite.config.js

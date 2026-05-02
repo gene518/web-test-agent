@@ -95,6 +95,10 @@ class AppSettings(BaseSettings):
         default=True,
         description="启动 Playwright Test MCP 前是否自动为自动化项目目录补齐 npm 与 @playwright/test 依赖。",
     )
+    playwright_skip_browser_download: bool = Field(
+        default=True,
+        description="执行 npm install 补齐 Playwright 依赖时，是否注入 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 以跳过浏览器下载。",
+    )
     playwright_test_package: str = Field(
         default="@playwright/test",
         description="自动化项目目录缺少 Playwright Test 依赖时执行 npm install 使用的包名或版本规格。",

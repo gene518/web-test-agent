@@ -1,4 +1,4 @@
-"""Healer Specialist Agent。
+"""Healer 阶段专项智能体。
 
 Healer 阶段的目标，是围绕已有失败脚本做调试与修复。这里把运行前的目录解析、
 脚本文件校验、修复提示词和写权限边界都收敛到一处，让后续执行可以直接复用
@@ -49,7 +49,7 @@ HEALER_RUNTIME_CONFIG = SpecialistRuntimeConfig(
 
 
 class HealerAgent(BaseSpecialistAgent):
-    """负责失败脚本修复阶段的 Specialist Agent。"""
+    """负责失败脚本修复阶段的专项智能体。"""
 
     agent_type = "healer"
     display_name = "Healer Agent"

@@ -1,4 +1,4 @@
-"""Plan Specialist Agent。
+"""Plan 阶段专项智能体。
 
 Plan 阶段的职责不是直接产出脚本，而是先把目标页面探索清楚，并把结果沉淀成后续
 Generator 可以消费的测试计划。因此这里会比其他 Specialist 更强调页面初始化、事件流观测
@@ -33,7 +33,7 @@ PLAN_RUNTIME_CONFIG = SpecialistRuntimeConfig(
 
 
 class PlanAgent(BaseSpecialistAgent):
-    """负责测试计划生成阶段的 Specialist Agent。
+    """负责测试计划生成阶段的专项智能体。
 
     它存在的目的，是在真正写脚本之前先探索页面、明确功能点和输出计划文件，
     这样后续脚本生成阶段可以直接围绕稳定的计划产物开展，而不是重复理解需求。
