@@ -29,7 +29,7 @@ class CompleteParamsNode:
             log_title("执行", "节点入参", node_name="complete_params_node"), build_trace_context(config, node_name="complete_params_node", event_name="node_enter"), format_state_for_log(state),)
 
         agent_type = str(state.get("pending_agent_type") or state.get("agent_type") or "")
-        if agent_type not in {"plan", "generator", "healer"}:
+        if agent_type not in {"plan", "generator", "healer", "scheduler"}:
             return {"next_action": "end", "routing_reason": "参数补全节点未收到可执行 Specialist 意图。"}
 
         extracted_params = dict(state.get("extracted_params", {}))

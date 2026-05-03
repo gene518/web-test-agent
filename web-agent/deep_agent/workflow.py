@@ -10,6 +10,7 @@ from deep_agent.agent.healer import HealerAgent
 from deep_agent.agent.master import MasterAgent
 from deep_agent.agent.master.nodes import CompleteParamsNode, FinalizeTurnNode, GeneralTestNode, IntentJudgeNode, ResolveStageFilesNode
 from deep_agent.agent.plan import PlanAgent
+from deep_agent.agent.scheduler import SchedulerAgent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import get_settings
 from deep_agent.core.runtime_logging import build_trace_context, get_logger, log_title, summarize_state
@@ -29,6 +30,7 @@ def build_workflow(*, checkpointer: Any | None = None):
     plan_agent = PlanAgent(settings)
     generator_agent = GeneratorAgent(settings)
     healer_agent = HealerAgent(settings)
+    scheduler_agent = SchedulerAgent(master_agent, settings)
     finalize_turn_node = FinalizeTurnNode()
 
     workflow = StateGraph(WorkflowState)
@@ -37,6 +39,7 @@ def build_workflow(*, checkpointer: Any | None = None):
     workflow.add_node("plan_node", plan_agent.execute)
     workflow.add_node("generator_node", generator_agent.execute)
     workflow.add_node("healer_node", healer_agent.execute)
+    workflow.add_node("scheduler_config_node", scheduler_agent.execute)
 
     workflow.add_edge(START, "master_graph_node")
     workflow.add_conditional_edges(
@@ -46,6 +49,7 @@ def build_workflow(*, checkpointer: Any | None = None):
             "plan": "plan_node",
             "generator": "generator_node",
             "healer": "healer_node",
+            "scheduler": "scheduler_config_node",
             "finalize_turn": "finalize_turn_node",
             "end": END,
         },
@@ -53,6 +57,7 @@ def build_workflow(*, checkpointer: Any | None = None):
     workflow.add_edge("plan_node", "master_graph_node")
     workflow.add_edge("generator_node", "master_graph_node")
     workflow.add_edge("healer_node", "master_graph_node")
+    workflow.add_edge("scheduler_config_node", END)
     workflow.add_edge("finalize_turn_node", END)
 
     # LangGraph API / `langgraph dev` 会注入自己的持久化层；这里默认不绑定自定义
@@ -113,7 +118,7 @@ def _route_after_master(state: WorkflowState, config: RunnableConfig | None = No
     """根据 Master 子图输出选择主工作流下一跳。"""
 
     next_action = state.get("next_action", "end")
-    if next_action not in {"plan", "generator", "healer", "finalize_turn", "end"}:
+    if next_action not in {"plan", "generator", "healer", "scheduler", "finalize_turn", "end"}:
         next_action = "end"
     logger.info("%s event=route_decision trace=%s next_action=%s state=%s",
         log_title("路由", "条件路由", node_name="master_graph_node"), build_trace_context(config, node_name="master_graph_node", event_name="route_decision"), next_action, summarize_state(state),)

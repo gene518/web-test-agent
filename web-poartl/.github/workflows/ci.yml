@@ -1,0 +1,75 @@
+# 在所有 PR 上执行格式化、lint 和拼写检查。
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch: # 允许在 GitHub UI 中手动触发。
+
+# 如果同一个 PR 或分支在当前 workflow 未完成时再次 push，
+# 取消旧任务并运行最新任务。
+#
+# 旧代码的检查结果价值有限；提前取消旧任务可以把 runner 留给更新的检查。
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: 检查格式
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.5.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+      - name: 安装依赖
+        run: pnpm install
+      - name: 检查格式
+        run: pnpm format:check
+
+  lint:
+    name: 检查 lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.5.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+      - name: 安装依赖
+        run: pnpm install
+      - name: 检查 lint
+        run: pnpm lint
+
+  readme-spelling:
+    name: 检查 README 拼写
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: codespell-project/actions-codespell@v2
+        with:
+          ignore_words_file: .codespellignore
+          path: README.md
+
+  check-spelling:
+    name: 检查代码拼写
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: codespell-project/actions-codespell@v2
+        with:
+          ignore_words_file: .codespellignore
+          path: src

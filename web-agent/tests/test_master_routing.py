@@ -85,6 +85,19 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["agent_type"], "plan")
         self.assertEqual(result["next_action"], "resolve_stage_files")
 
+    async def test_intent_judge_routes_scheduler_to_param_completion(self) -> None:
+        node = IntentJudgeNode(
+            FakeMasterService(
+                initial_params={"project_name": "demo", "schedule_task_id": "daily_smoke"},
+                agent_type="scheduler",
+            )
+        )
+
+        result = await node.execute({"messages": [HumanMessage(content="把 daily_smoke 改成无头执行")]})
+
+        self.assertEqual(result["agent_type"], "scheduler")
+        self.assertEqual(result["next_action"], "complete_params")
+
     async def test_intent_judge_advances_pipeline_when_specialist_returns_to_master(self) -> None:
         service = FakeMasterService()
         node = IntentJudgeNode(service)

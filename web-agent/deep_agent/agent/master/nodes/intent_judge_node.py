@@ -61,6 +61,8 @@ class IntentJudgeNode:
         agent_type = classification_state.get("agent_type")
         if agent_type in {"plan", "generator", "healer"}:
             classification_state["next_action"] = "resolve_stage_files"
+        elif agent_type == "scheduler":
+            classification_state["next_action"] = "complete_params"
         elif agent_type == "general":
             classification_state["next_action"] = "general"
         else:

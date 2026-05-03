@@ -11,6 +11,7 @@ from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
 from deep_agent.agent.master import MasterAgent
 from deep_agent.agent.plan import PLAN_RUNTIME_CONFIG, PlanAgent
+from deep_agent.agent.scheduler import SchedulerAgent
 from deep_agent.agent.state import WorkflowState
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "MasterAgent",
     "PLAN_RUNTIME_CONFIG",
     "PlanAgent",
+    "SchedulerAgent",
     "SpecialistExecutionContext",
     "SpecialistRuntimeConfig",
     "WorkflowState",

@@ -20,7 +20,7 @@ class WorkflowState(TypedDict, total=False):
     ]
     agent_type: Annotated[
         str | None,
-        Field(description="Master 识别出的目标 Specialist 类型，例如 plan、generator、healer。"),
+        Field(description="Master 识别出的目标动作类型，例如 plan、generator、healer、scheduler。"),
     ]
     extracted_params: Annotated[
         dict[str, Any],

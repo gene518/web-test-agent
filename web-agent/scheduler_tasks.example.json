@@ -1,0 +1,23 @@
+{
+  "scheduler": {
+    "poll_interval_seconds": 30
+  },
+  "projects": [
+    {
+      "project_name": "demo",
+      "test_root_dir": "test_case",
+      "timezone": "Asia/Shanghai",
+      "headed": false,
+      "tasks": [
+        {
+          "task_id": "daily_smoke",
+          "schedule": "0 9 * * *",
+          "locations": [
+            "test_case/demo_health_consultation/a_send_text_message.spec.ts"
+          ],
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

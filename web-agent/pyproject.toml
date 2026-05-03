@@ -9,7 +9,6 @@ description = "A LangChain + LangGraph + Deep Agents baseline for web automation
 requires-python = ">=3.11"
 dependencies = [
   "deepagents",
-  "fastapi",
   "langchain",
   "langchain-mcp-adapters",
   "langchain-openai",
@@ -17,15 +16,15 @@ dependencies = [
   "mcp",
   "pydantic",
   "pydantic-settings",
-  "sse-starlette",
 ]
+
+[project.scripts]
+web-agent-scheduler = "deep_agent.scheduler.cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "httpx",
   "langgraph-cli[inmem]",
   "pytest",
-  "uvicorn",
 ]
 
 [tool.setuptools.packages.find]

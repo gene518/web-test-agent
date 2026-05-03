@@ -5,6 +5,7 @@ import process from 'process';
 // 获取报告名称（时间戳+用例路径）
 const reportName = getReportName();
 const chromeExecutablePath = resolveChromeExecutablePath();
+const headed = process.env.PWTEST_HEADED === '1';
 
 export default defineConfig({
   testDir: './test_case',                      // 测试用例目录
@@ -16,7 +17,7 @@ export default defineConfig({
   reporter: [
     ['html', {
       outputFolder: `test-results/${reportName}/html-report`,
-      open: 'always'
+      open: headed ? 'always' : 'never'
     }],
     ['list']
   ],
@@ -26,7 +27,7 @@ export default defineConfig({
     screenshot: 'on',
     video: 'on',
     actionTimeout: 30000,
-    headless: false,
+    headless: !headed,
   },
   projects: [
     {
@@ -38,11 +39,11 @@ export default defineConfig({
         isMobile: true,
         hasTouch: true,
         deviceScaleFactor: 2,
-        headless: false,
+        headless: !headed,
         video: 'on',
         launchOptions: {
           executablePath: chromeExecutablePath,
-          slowMo: 1000,
+          slowMo: headed ? 1000 : 0,
         },
       },
     },

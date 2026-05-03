@@ -1,6 +1,6 @@
 # Web Agent LangGraph 调试方案
 
-本文档用于本地调试 `web-agent` 的 LangGraph/Deep Agents 执行链路。推荐流程是：改 `.env` 调试配置，使用 `langgraph dev` 导出日志，在 LangGraph Studio 里发起对话，然后用 `tail -F` 观察日志并按关键词定位链路。
+本文档用于本地调试 `web-agent` 的 LangGraph/Deep Agents 执行链路。推荐流程是：修改 `.env` 调试配置，使用 `langgraph dev` 导出日志，在 LangGraph Studio 中发起对话，然后用 `tail -F` 观察日志并按关键词定位链路。
 
 ## 1. 调整配置
 
@@ -45,9 +45,9 @@ SERVER_LOG_LEVEL=ERROR tests/debug/dev.sh
 - `NO_RELOAD=1`: 关闭热更新（避免 WatchFiles 监控与自动重启）。
 - `SERVER_LOG_LEVEL=ERROR`: 仅输出 server error（可进一步压制 Uvicorn/WatchFiles 的 warning，但也会隐藏 server warning）。
 
-## 3. 在 Studio 发起对话
+## 3. 在 LangGraph Studio 发起对话
 
-在 LangGraph Studio 里选择 `master` graph，直接发起一次对话即可。你不需要手动指定 `thread_id`，也不需要把任何 session id 传进项目。
+在 LangGraph Studio 中选择 `master` graph，直接发起一次对话即可。你不需要手动指定 `thread_id`，也不需要把任何 session id 传进项目。
 
 项目会从 LangGraph 运行时自动读取 `thread_id` 并写入关键日志。日志里的 `session_id` 只是检索别名，默认等于这个 `thread_id`。
 

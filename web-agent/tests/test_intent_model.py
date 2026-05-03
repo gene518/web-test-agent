@@ -81,6 +81,32 @@ class IntentModelTestCase(unittest.TestCase):
             },
         )
 
+    def test_scheduler_requires_project_identifier_and_task_id(self) -> None:
+        classification = IntentClassification(intent_type="scheduler")
+        self.assertEqual(compute_missing_params(classification), ["project_name", "schedule_task_id"])
+
+        classification = IntentClassification(
+            intent_type="scheduler",
+            project_dir="~/demo-project",
+            schedule_task_id=" daily_smoke ",
+            schedule_cron=" 0 9 * * * ",
+            schedule_headed=False,
+            schedule_enabled=True,
+            schedule_locations=[" test_case/demo/a_case.spec.ts ", "undefined"],
+        )
+        self.assertEqual(compute_missing_params(classification), [])
+        self.assertEqual(
+            build_extracted_params(classification),
+            {
+                "project_dir": "~/demo-project",
+                "schedule_task_id": "daily_smoke",
+                "schedule_cron": "0 9 * * *",
+                "schedule_headed": False,
+                "schedule_enabled": True,
+                "schedule_locations": ["test_case/demo/a_case.spec.ts"],
+            },
+        )
+
     def test_null_like_placeholders_are_treated_as_missing(self) -> None:
         classification = IntentClassification(
             intent_type="plan",

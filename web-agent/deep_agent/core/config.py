@@ -119,6 +119,16 @@ class AppSettings(BaseSettings):
         default="~/webautotest",
         description="自动化工程根目录；Plan 模式会按工程名字在此目录下创建或复用工程。",
     )
+    scheduler_config_path: str | None = Field(
+        default=None,
+        description=(
+            "定时任务配置文件路径；未配置时默认使用 `DEFAULT_AUTOMATION_PROJECT_ROOT/scheduler_tasks.json`。"
+        ),
+    )
+    scheduler_poll_interval_seconds: int = Field(
+        default=30,
+        description="独立定时执行服务轮询配置文件并检查到点任务的时间间隔，单位为秒。",
+    )
 
     @property
     def playwright_mcp_env(self) -> dict[str, str]:
@@ -216,6 +226,14 @@ class AppSettings(BaseSettings):
         """返回展开后的默认自动化项目根目录。"""
 
         return Path(self.default_automation_project_root).expanduser()
+
+    @property
+    def resolved_scheduler_config_path(self) -> Path:
+        """返回展开后的定时任务配置文件路径。"""
+
+        if self.scheduler_config_path:
+            return Path(self.scheduler_config_path).expanduser()
+        return self.resolved_default_automation_project_root / "scheduler_tasks.json"
 
 
 @lru_cache(maxsize=1)

@@ -148,6 +148,10 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         "default_automation_project_root": str(
             getattr(settings, "resolved_default_automation_project_root", getattr(settings, "default_automation_project_root", None))
         ),
+        "scheduler_config_path": str(
+            getattr(settings, "resolved_scheduler_config_path", getattr(settings, "scheduler_config_path", None))
+        ),
+        "scheduler_poll_interval_seconds": getattr(settings, "scheduler_poll_interval_seconds", None),
         "llm_timeout_seconds": getattr(settings, "llm_timeout_seconds", None),
         "stream_chunk_timeout_seconds": getattr(settings, "resolved_stream_chunk_timeout_seconds", None),
         "specialist_recursion_limit": getattr(settings, "specialist_recursion_limit", None),

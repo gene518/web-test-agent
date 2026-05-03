@@ -13,6 +13,12 @@ dist/
 /web-agent/runtime/
 /web-agent-ui/dist/
 /web-poartl/dist/
+/web-poartl/.next/
+/web-poartl/.env
+/web-poartl/.env.local
+/web-poartl/.env.development.local
+/web-poartl/.env.test.local
+/web-poartl/.env.production.local
 /web-agent/.env
 /web-agent/.pytest_cache/
 /web-agent/.venv/

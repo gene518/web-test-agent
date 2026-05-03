@@ -10,7 +10,7 @@
 4. 开始生成脚本后，目录切换为 `test_case/{plan-name}/`，目录内同时保留计划文档和 `.spec.ts`。
 5. 计划文档统一命名为 `aaa_{plan-name}.md`。
 6. 一个 `.spec.ts` 文件只包含一个测试用例。
-7. 公共能力放在 `test_case/shared/`，低频业务操作直接保留在各自 spec 中。
+7. 公共能力放在 `test_case/shared/`，低频业务操作直接保留在各自 `.spec.ts` 文件中。
 8. 移动端点击操作统一使用 `locator.tap()`，不要在业务用例里直接使用 `click()`。
 
 ## 最小生成示例
@@ -35,6 +35,11 @@ an-autotest-demo/
 npm install
 npm run test:headed -- test_case/demo_health_consultation/a_send_text_message.spec.ts
 ```
+
+如果通过独立调度服务执行，项目会读取环境变量 `PWTEST_HEADED`：
+
+- `PWTEST_HEADED=1`：有头执行，同时自动打开 HTML report。
+- `PWTEST_HEADED=0`：无头执行，不自动打开 HTML report。
 
 ## 需要按项目实际调整的地方
 

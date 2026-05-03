@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from deep_agent.agent.artifacts import normalize_requested_pipeline
 
 
-IntentType = Literal["plan", "generator", "healer", "general", "unknown"]
+IntentType = Literal["plan", "generator", "healer", "scheduler", "general", "unknown"]
 NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
 SPECIALIST_STAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "plan": ("生成计划", "测试计划", "制定计划", "测试方案", "生成用例", "用例设计", "plan"),
@@ -21,6 +21,7 @@ REQUIRED_PARAMS_BY_INTENT: dict[str, tuple[str, ...]] = {
     "plan": ("project_name", "url"),
     "generator": ("test_plan_files",),
     "healer": ("test_scripts",),
+    "scheduler": ("schedule_task_id",),
 }
 
 
@@ -42,6 +43,11 @@ class IntentClassification(BaseModel):
     test_plan_files: list[str] = Field(default_factory=list, description="Generator 阶段待消费的测试计划路径列表，可为文件或目录。")
     test_cases: list[str] = Field(default_factory=list, description="Generator 阶段测试用例列表。")
     test_scripts: list[str] = Field(default_factory=list, description="Healer 阶段待调试脚本路径列表，可为文件或目录。")
+    schedule_task_id: str | None = Field(default=None, description="定时任务配置中已存在的任务 ID。")
+    schedule_cron: str | None = Field(default=None, description="需要更新成的五段 Cron 表达式。")
+    schedule_headed: bool | None = Field(default=None, description="需要更新成的浏览器模式；`true` 为有头，`false` 为无头。")
+    schedule_enabled: bool | None = Field(default=None, description="需要更新成的启用状态；`true` 为启用，`false` 为禁用。")
+    schedule_locations: list[str] = Field(default_factory=list, description="需要更新成的测试脚本或目录列表。")
     requested_pipeline: list[str] = Field(
         default_factory=list,
         description="本轮期望执行的 specialist 阶段链，按顺序返回，例如 ['plan', 'generator']。",
@@ -92,6 +98,24 @@ def build_extracted_params(result: IntentClassification) -> dict[str, Any]:
     test_scripts = _normalized_string_list(result.test_scripts)
     if test_scripts:
         extracted["test_scripts"] = test_scripts
+
+    schedule_task_id = _normalized_optional_text(result.schedule_task_id)
+    if schedule_task_id:
+        extracted["schedule_task_id"] = schedule_task_id
+
+    schedule_cron = _normalized_optional_text(result.schedule_cron)
+    if schedule_cron:
+        extracted["schedule_cron"] = schedule_cron
+
+    if result.schedule_headed is not None:
+        extracted["schedule_headed"] = result.schedule_headed
+
+    if result.schedule_enabled is not None:
+        extracted["schedule_enabled"] = result.schedule_enabled
+
+    schedule_locations = _normalized_string_list(result.schedule_locations)
+    if schedule_locations:
+        extracted["schedule_locations"] = schedule_locations
     return extracted
 
 
@@ -121,6 +145,11 @@ def compute_missing_params(result: IntentClassification) -> list[str]:
             "test_plan_files": result.test_plan_files,
             "test_cases": result.test_cases,
             "test_scripts": result.test_scripts,
+            "schedule_task_id": result.schedule_task_id,
+            "schedule_cron": result.schedule_cron,
+            "schedule_headed": result.schedule_headed,
+            "schedule_enabled": result.schedule_enabled,
+            "schedule_locations": result.schedule_locations,
         },
     )
 
@@ -128,12 +157,18 @@ def compute_missing_params(result: IntentClassification) -> list[str]:
 def compute_missing_params_for_intent(intent_type: str, params: Mapping[str, Any]) -> list[str]:
     """根据指定意图和参数字典计算缺失字段。"""
 
-    if intent_type in {"generator", "healer"}:
+    if intent_type in {"generator", "healer", "scheduler"}:
         missing: list[str] = []
         project_name = _normalized_optional_text(_as_optional_text(params.get("project_name")))
         project_dir = _normalized_optional_text(_as_optional_text(params.get("project_dir")))
         if not project_name and not project_dir:
             missing.append("project_name")
+
+        if intent_type == "scheduler":
+            task_id = _normalized_optional_text(_as_optional_text(params.get("schedule_task_id")))
+            if not task_id:
+                missing.append("schedule_task_id")
+            return missing
 
         list_field_name = "test_plan_files" if intent_type == "generator" else "test_scripts"
         normalized_list = _normalized_string_list(params.get(list_field_name))

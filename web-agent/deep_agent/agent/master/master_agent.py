@@ -38,7 +38,7 @@ from deep_agent.core.runtime_logging import (
 
 
 logger = get_logger(__name__)
-SPECIALIST_AGENT_TYPES = frozenset({"plan", "generator", "healer"})
+ACTION_AGENT_TYPES = frozenset({"plan", "generator", "healer", "scheduler"})
 RECENT_MESSAGES_AFTER_SUMMARY_LIMIT = 40
 
 
@@ -87,7 +87,7 @@ class MasterAgent:
         missing_params = compute_missing_params_for_intent(resolved_agent_type, extracted_params)
         result: WorkflowState = {
             "agent_type": resolved_agent_type,
-            "pending_agent_type": resolved_agent_type if resolved_agent_type in SPECIALIST_AGENT_TYPES else None,
+            "pending_agent_type": resolved_agent_type if resolved_agent_type in ACTION_AGENT_TYPES else None,
             "extracted_params": extracted_params,
             "missing_params": missing_params,
             "pending_missing_params": missing_params,
@@ -260,6 +260,7 @@ class MasterAgent:
             "test_plan_files": "请提供待生成脚本的测试计划文件或目录路径，至少 1 个；优先传相对 `project_dir` 的路径。",
             "test_cases": "请提供待生成脚本的测试用例列表，至少 1 条。",
             "test_scripts": "请提供待调试脚本文件或目录路径，至少 1 个；优先传相对 `project_dir` 的路径。",
+            "schedule_task_id": "请提供已经存在的定时任务 ID，例如 `daily_smoke`。",
         }
         return mapping.get(field_name, "请补充这部分关键信息。")
 
