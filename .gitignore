@@ -9,6 +9,7 @@ node_modules/
 *.egg-info/
 build/
 dist/
+*.log
 
 /web-agent/runtime/
 /web-agent-ui/dist/
