@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { useQueryState } from "nuqs";
 import { constructOpenInStudioURL, buildDecisionFromState } from "../utils";
 import { Decision, HITLRequest, DecisionType, ActionRequest } from "../types";
-import { useStreamContext } from "@/providers/Stream";
+import { useStreamContext } from "@/providers/useStreamContext";
 
 interface ThreadActionsViewProps {
   interrupt: Interrupt<HITLRequest>;

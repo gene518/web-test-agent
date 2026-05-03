@@ -1,19 +1,22 @@
-import { parsePartialJson } from "@langchain/core/output_parsers";
-import { useStreamContext } from "@/providers/Stream";
-import { AIMessage, Checkpoint, Message } from "@langchain/langgraph-sdk";
+import { useStreamContext } from "@/providers/useStreamContext";
+import { Checkpoint, Message } from "@langchain/langgraph-sdk";
 import { getContentString } from "../utils";
 import { BranchSwitcher, CommandBar } from "./shared";
 import { MarkdownText } from "../markdown-text";
 import { LoadExternalComponent } from "@langchain/langgraph-sdk/react-ui";
 import { cn } from "@/lib/utils";
 import { ToolCalls, ToolResult } from "./tool-calls";
-import { MessageContentComplex } from "@langchain/core/messages";
 import { Fragment } from "react/jsx-runtime";
 import { isAgentInboxInterruptSchema } from "@/lib/agent-inbox-interrupt";
 import { ThreadView } from "../agent-inbox";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
+import {
+  getActiveInterrupt,
+  mergeVisibleMessages,
+  normalizeToolCalls,
+} from "../message-utils";
 
 function CustomComponent({
   message,
@@ -41,30 +44,6 @@ function CustomComponent({
       ))}
     </Fragment>
   );
-}
-
-function parseAnthropicStreamedToolCalls(
-  content: MessageContentComplex[],
-): AIMessage["tool_calls"] {
-  const toolCallContents = content.filter((c) => c.type === "tool_use" && c.id);
-
-  return toolCallContents.map((tc) => {
-    const toolCall = tc as Record<string, any>;
-    let json: Record<string, any> = {};
-    if (toolCall?.input) {
-      try {
-        json = parsePartialJson(toolCall.input) ?? {};
-      } catch {
-        // 忽略。
-      }
-    }
-    return {
-      name: toolCall.name ?? "",
-      id: toolCall.id ?? "",
-      args: json,
-      type: "tool_call",
-    };
-  });
 }
 
 interface InterruptProps {
@@ -115,30 +94,22 @@ export function AssistantMessage({
   );
 
   const thread = useStreamContext();
+  const visibleMessages = mergeVisibleMessages(
+    thread.values.display_messages,
+    thread.messages,
+  );
   const isLastMessage =
-    thread.messages[thread.messages.length - 1].id === message?.id;
-  const hasNoAIOrToolMessages = !thread.messages.find(
+    visibleMessages[visibleMessages.length - 1]?.id === message?.id;
+  const hasNoAIOrToolMessages = !visibleMessages.find(
     (m) => m.type === "ai" || m.type === "tool",
   );
   const meta = message ? thread.getMessagesMetadata(message) : undefined;
-  const threadInterrupt = thread.interrupt;
+  const threadInterrupt = getActiveInterrupt(thread.values, thread.interrupt);
 
   const parentCheckpoint = meta?.firstSeenState?.parent_checkpoint;
-  const anthropicStreamedToolCalls = Array.isArray(content)
-    ? parseAnthropicStreamedToolCalls(content)
-    : undefined;
+  const normalizedToolCalls = normalizeToolCalls(message);
 
-  const hasToolCalls =
-    message &&
-    "tool_calls" in message &&
-    message.tool_calls &&
-    message.tool_calls.length > 0;
-  const toolCallsHaveContents =
-    hasToolCalls &&
-    message.tool_calls?.some(
-      (tc) => tc.args && Object.keys(tc.args).length > 0,
-    );
-  const hasAnthropicToolCalls = !!anthropicStreamedToolCalls?.length;
+  const hasToolCalls = normalizedToolCalls.length > 0;
   const isToolResult = message?.type === "tool";
 
   if (isToolResult && hideToolCalls) {
@@ -166,17 +137,7 @@ export function AssistantMessage({
             )}
 
             {!hideToolCalls && (
-              <>
-                {(hasToolCalls && toolCallsHaveContents && (
-                  <ToolCalls toolCalls={message.tool_calls} />
-                )) ||
-                  (hasAnthropicToolCalls && (
-                    <ToolCalls toolCalls={anthropicStreamedToolCalls} />
-                  )) ||
-                  (hasToolCalls && (
-                    <ToolCalls toolCalls={message.tool_calls} />
-                  ))}
-              </>
+              <>{hasToolCalls && <ToolCalls toolCalls={normalizedToolCalls} />}</>
             )}
 
             {message && (

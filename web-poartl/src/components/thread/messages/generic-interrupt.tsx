@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { useStreamContext } from "@/providers/useStreamContext";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import { v4 as uuidv4 } from "uuid";
+import { THREAD_STREAM_MODES } from "../message-utils";
 
 function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
@@ -44,7 +50,10 @@ export function GenericInterruptView({
 }: {
   interrupt: Record<string, any> | Record<string, any>[];
 }) {
+  const thread = useStreamContext();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [reply, setReply] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const contentStr = JSON.stringify(interrupt, null, 2);
   const contentLines = contentStr.split("\n");
@@ -91,6 +100,57 @@ export function GenericInterruptView({
 
   const displayEntries = processEntries();
 
+  const handleResume = async () => {
+    const text = reply.trim();
+    if (!text) {
+      toast.error("请先补充必要信息。", {
+        richColors: true,
+        closeButton: true,
+      });
+      return;
+    }
+
+    const newHumanMessage = {
+      id: uuidv4(),
+      type: "human" as const,
+      content: [{ type: "text" as const, text }],
+    };
+
+    try {
+      setSubmitting(true);
+      thread.submit(
+        {},
+        {
+          command: {
+            resume: {
+              text,
+            },
+          },
+          streamMode: [...THREAD_STREAM_MODES],
+          streamSubgraphs: true,
+          streamResumable: true,
+          optimisticValues: (prev) => ({
+            ...prev,
+            messages: [...(prev.messages ?? []), newHumanMessage],
+            display_messages: [
+              ...(prev.display_messages ?? prev.messages ?? []),
+              newHumanMessage,
+            ],
+          }),
+        },
+      );
+      setReply("");
+    } catch (error) {
+      console.error("提交补参回复失败", error);
+      toast.error("提交补参回复失败。", {
+        richColors: true,
+        closeButton: true,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200">
       <div className="border-b border-gray-200 bg-gray-50 px-4 py-2">
@@ -105,6 +165,23 @@ export function GenericInterruptView({
         transition={{ duration: 0.3 }}
       >
         <div className="p-3">
+          <div className="mb-3 flex flex-col gap-2">
+            <Textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              placeholder="在这里补充缺失信息，然后继续当前流程"
+              className="bg-white"
+              disabled={submitting}
+            />
+            <div className="flex justify-end">
+              <Button
+                onClick={handleResume}
+                disabled={submitting || reply.trim().length === 0}
+              >
+                {submitting ? "提交中..." : "继续当前流程"}
+              </Button>
+            </div>
+          </div>
           <AnimatePresence
             mode="wait"
             initial={false}

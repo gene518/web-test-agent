@@ -1,27 +1,133 @@
-import { AIMessage, ToolMessage } from "@langchain/langgraph-sdk";
+import { ToolMessage } from "@langchain/langgraph-sdk";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import type { RenderToolCall } from "../message-utils";
 
 function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTextBlock(value: unknown): value is { type: "text"; text: string } {
+  return isRecord(value) && value.type === "text" && typeof value.text === "string";
+}
+
+function normalizeStructuredContent(value: unknown): {
+  parsedContent: unknown;
+  isStructuredContent: boolean;
+} {
+  if (Array.isArray(value)) {
+    if (value.every(isTextBlock)) {
+      return {
+        parsedContent: value.map((block) => block.text).join("\n\n"),
+        isStructuredContent: false,
+      };
+    }
+
+    return {
+      parsedContent: value,
+      isStructuredContent: true,
+    };
+  }
+
+  if (isComplexValue(value)) {
+    return {
+      parsedContent: value,
+      isStructuredContent: true,
+    };
+  }
+
+  return {
+    parsedContent: value,
+    isStructuredContent: false,
+  };
+}
+
+function resolveToolResultContent(message: ToolMessage): {
+  parsedContent: unknown;
+  isStructuredContent: boolean;
+} {
+  const content = message.content;
+  const artifact = "artifact" in message ? message.artifact : undefined;
+
+  if (Array.isArray(content) || isComplexValue(content)) {
+    return normalizeStructuredContent(content);
+  }
+
+  if (typeof content === "string") {
+    try {
+      const parsed = JSON.parse(content);
+      return normalizeStructuredContent(parsed);
+    } catch {
+      if (content.trim() === "[object Object]" && artifact !== undefined) {
+        if (typeof artifact === "string") {
+          try {
+            return normalizeStructuredContent(JSON.parse(artifact));
+          } catch {
+            // 忽略。
+          }
+        }
+        return normalizeStructuredContent(artifact);
+      }
+
+      return {
+        parsedContent: content,
+        isStructuredContent: false,
+      };
+    }
+  }
+
+  if (artifact !== undefined) {
+    return normalizeStructuredContent(artifact);
+  }
+
+  return {
+    parsedContent: content,
+    isStructuredContent: false,
+  };
+}
+
+function renderStructuredValue(value: unknown): React.ReactNode {
+  if (value == null) {
+    return <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm">null</code>;
+  }
+
+  if (!isComplexValue(value)) {
+    return String(value);
+  }
+
+  return (
+    <code className="block rounded bg-gray-50 px-2 py-1 font-mono text-sm whitespace-pre-wrap break-all">
+      {JSON.stringify(value, null, 2)}
+    </code>
+  );
+}
+
 export function ToolCalls({
   toolCalls,
 }: {
-  toolCalls: AIMessage["tool_calls"];
+  toolCalls: RenderToolCall[] | undefined;
 }) {
   if (!toolCalls || toolCalls.length === 0) return null;
 
   return (
     <div className="mx-auto grid max-w-3xl grid-rows-[1fr_auto] gap-2">
       {toolCalls.map((tc, idx) => {
-        const args = tc.args as Record<string, any>;
-        const hasArgs = Object.keys(args).length > 0;
+        const args =
+          tc.args && typeof tc.args === "object"
+            ? (tc.args as Record<string, any>)
+            : undefined;
+        const hasArgs = Object.keys(args ?? {}).length > 0;
+        const hasExplicitEmptyArgs = !!args && Object.keys(args).length === 0;
+        const partialArgsText =
+          typeof tc.partialArgsText === "string" ? tc.partialArgsText.trim() : "";
         return (
           <div
-            key={idx}
+            key={tc.id || `${tc.name || "tool"}:${tc.index ?? idx}`}
             className="overflow-hidden rounded-lg border border-gray-200"
           >
             <div className="border-b border-gray-200 bg-gray-50 px-4 py-2">
@@ -37,26 +143,26 @@ export function ToolCalls({
             {hasArgs ? (
               <table className="min-w-full divide-y divide-gray-200">
                 <tbody className="divide-y divide-gray-200">
-                  {Object.entries(args).map(([key, value], argIdx) => (
+                  {Object.entries(args ?? {}).map(([key, value], argIdx) => (
                     <tr key={argIdx}>
                       <td className="px-4 py-2 text-sm font-medium whitespace-nowrap text-gray-900">
                         {key}
                       </td>
                       <td className="px-4 py-2 text-sm text-gray-500">
-                        {isComplexValue(value) ? (
-                          <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm break-all">
-                            {JSON.stringify(value, null, 2)}
-                          </code>
-                        ) : (
-                          String(value)
-                        )}
+                        {renderStructuredValue(value)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            ) : (
+            ) : partialArgsText ? (
+              <code className="block p-3 text-sm whitespace-pre-wrap break-all">
+                {partialArgsText}
+              </code>
+            ) : hasExplicitEmptyArgs ? (
               <code className="block p-3 text-sm">{"{}"}</code>
+            ) : (
+              <p className="p-3 text-sm text-amber-700">参数同步中</p>
             )}
           </div>
         );
@@ -68,22 +174,14 @@ export function ToolCalls({
 export function ToolResult({ message }: { message: ToolMessage }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  let parsedContent: any;
-  let isJsonContent = false;
+  const { parsedContent, isStructuredContent } = resolveToolResultContent(message);
+  const structuredEntries = isRecord(parsedContent)
+    ? Object.entries(parsedContent)
+    : [];
 
-  try {
-    if (typeof message.content === "string") {
-      parsedContent = JSON.parse(message.content);
-      isJsonContent = isComplexValue(parsedContent);
-    }
-  } catch {
-    // 内容不是 JSON，按原样使用。
-    parsedContent = message.content;
-  }
-
-  const contentStr = isJsonContent
+  const contentStr = isStructuredContent
     ? JSON.stringify(parsedContent, null, 2)
-    : String(message.content);
+    : String(parsedContent ?? "");
   const contentLines = contentStr.split("\n");
   const shouldTruncate = contentLines.length > 4 || contentStr.length > 500;
   const displayedContent =
@@ -133,14 +231,14 @@ export function ToolResult({ message }: { message: ToolMessage }) {
                 exit={{ opacity: 0, y: -20 }}
                 transition={{ duration: 0.2 }}
               >
-                {isJsonContent ? (
+                {isStructuredContent ? (
                   <table className="min-w-full divide-y divide-gray-200">
                     <tbody className="divide-y divide-gray-200">
                       {(Array.isArray(parsedContent)
                         ? isExpanded
                           ? parsedContent
                           : parsedContent.slice(0, 5)
-                        : Object.entries(parsedContent)
+                        : structuredEntries
                       ).map((item, argIdx) => {
                         const [key, value] = Array.isArray(parsedContent)
                           ? [argIdx, item]
@@ -151,13 +249,7 @@ export function ToolResult({ message }: { message: ToolMessage }) {
                               {key}
                             </td>
                             <td className="px-4 py-2 text-sm text-gray-500">
-                              {isComplexValue(value) ? (
-                                <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm break-all">
-                                  {JSON.stringify(value, null, 2)}
-                                </code>
-                              ) : (
-                                String(value)
-                              )}
+                              {renderStructuredValue(value)}
                             </td>
                           </tr>
                         );
@@ -170,8 +262,8 @@ export function ToolResult({ message }: { message: ToolMessage }) {
               </motion.div>
             </AnimatePresence>
           </div>
-          {((shouldTruncate && !isJsonContent) ||
-            (isJsonContent &&
+          {((shouldTruncate && !isStructuredContent) ||
+            (isStructuredContent &&
               Array.isArray(parsedContent) &&
               parsedContent.length > 5)) && (
             <motion.button

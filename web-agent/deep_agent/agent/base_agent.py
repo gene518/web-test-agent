@@ -17,7 +17,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from deep_agent.core.config import AppSettings
@@ -25,6 +25,12 @@ from deep_agent.agent.artifacts import (
     append_artifact_history,
     append_stage_summary,
     build_stage_summary,
+)
+from deep_agent.core.display_message import (
+    build_display_summary_message,
+    build_runtime_message_result,
+    extract_missing_display_messages,
+    normalize_display_delta,
 )
 from deep_agent.core.runtime_logging import (
     build_trace_context,
@@ -576,10 +582,21 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             "missing_params": [],
             "pending_missing_params": [],
         }
+        display_messages = [
+            *extract_missing_display_messages(dict(state)),
+            *normalize_display_delta(raw_result.get("messages", [])),
+        ]
+        if display_messages:
+            result["display_messages"] = display_messages
         if self._workflow_managed_pipeline(state):
             result["messages"] = []
         else:
-            result["messages"] = [AIMessage(content=stage_summary["text"])]
+            final_message = build_display_summary_message(
+                stage_summary["text"],
+                prefix=f"{self.agent_type}-summary",
+            )
+            result["messages"] = [final_message]
+            result["display_messages"] = [*display_messages, final_message]
         return result
 
     def _resolve_stage_status(self, raw_result: dict[str, Any]) -> str:
@@ -607,6 +624,11 @@ class BaseSpecialistAgent(BaseAgent, ABC):
     def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
         """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""
 
+        status = raw_result.get("status")
+        message = raw_result.get("message")
+        if status and status != "success" and message:
+            return str(message)
+
         messages = raw_result.get("messages", [])
         if isinstance(messages, list):
             for message in reversed(messages):
@@ -615,7 +637,6 @@ class BaseSpecialistAgent(BaseAgent, ABC):
                     if text:
                         return text
 
-        message = raw_result.get("message")
         if message:
             return str(message)
 
@@ -624,6 +645,25 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             return str(status)
 
         return "阶段已结束，但总结模型暂时不可用，未能生成最终总结。"
+
+    def _build_runtime_exception_result(
+        self,
+        *,
+        collector: Any,
+        existing_messages: Sequence[Any],
+        exc: Exception,
+    ) -> WorkflowState:
+        """保留已流出的运行时消息，同时把当前阶段标记为异常。"""
+
+        message = self._build_unhandled_exception_message(exc)
+        result: WorkflowState = build_runtime_message_result(
+            collector=collector,
+            existing_messages=existing_messages,
+            fallback_message=message,
+        )
+        result["status"] = "exception"
+        result["message"] = message
+        return result
 
     def _build_stage_result(
         self,

@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.middleware import FilesystemPermission
-from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.artifacts import (
@@ -22,6 +21,11 @@ from deep_agent.agent.base_agent import (
     BaseSpecialistAgent,
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
+)
+from deep_agent.core.display_message import (
+    VisibleTranscriptCollector,
+    build_runtime_message_result,
+    emit_display_message_delta,
 )
 from deep_agent.config.specialist_file_filter import HEALER_QUERY_FILTER_CONFIG
 from deep_agent.agent.healer.prompts.healer import HEALER_SYSTEM_PROMPT
@@ -132,7 +136,7 @@ class HealerAgent(BaseSpecialistAgent):
         """使用事件流执行 Healer，确保最终结果能沿流式链路抛出。"""
 
         existing_messages = state.get("messages", [])
-        final_output: dict[str, Any] | None = None
+        collector = VisibleTranscriptCollector()
         workspace_dir = execution_context.workspace_dir
         extracted_params = state.get("extracted_params", {})
         project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
@@ -154,13 +158,13 @@ class HealerAgent(BaseSpecialistAgent):
                 version="v2",
             ):
                 self.log_stream_event(event, execution_context.trace_context)
-                final_output = self._capture_final_output(final_output, event)
+                emit_display_message_delta(collector.consume_event(event))
                 if event.get("name") == "test_run" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
                         validation_runs.extend(self._normalized_test_scripts(payload.get("locations")))
         except Exception as exc:  # noqa: BLE001
-            if final_output is not None and self._is_expected_browser_close_error(exc):
+            if collector.final_output is not None and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
                 if workspace_dir is not None:
                     stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
@@ -171,10 +175,18 @@ class HealerAgent(BaseSpecialistAgent):
                         input_files=input_scripts,
                         validation_runs=validation_runs or input_scripts,
                     )
-                result = self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成，浏览器已按预期关闭。")
+                result = build_runtime_message_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    fallback_message="脚本调试阶段已完成，浏览器已按预期关闭。",
+                )
                 result["artifact"] = stage_artifact
                 return result
-            raise
+            return self._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=exc,
+            )
 
         log_debug_event(
             self.log_get_logger(),
@@ -182,7 +194,8 @@ class HealerAgent(BaseSpecialistAgent):
             log_title("执行", "事件流"),
             "healer_final_output",
             self.log_event_trace_context(execution_context.trace_context, "healer_final_output"),
-            final_output=final_output,
+            final_output=collector.final_output,
+            visible_messages=collector.messages,
         )
 
         if workspace_dir is not None:
@@ -195,13 +208,11 @@ class HealerAgent(BaseSpecialistAgent):
                 validation_runs=validation_runs or input_scripts,
             )
 
-        if final_output is None:
-            return {
-                "messages": [AIMessage(content="脚本调试阶段已完成。")],
-                "artifact": stage_artifact,
-            }
-
-        result = self._build_messages_result(final_output, existing_messages, "脚本调试阶段已完成。")
+        result = build_runtime_message_result(
+            collector=collector,
+            existing_messages=existing_messages,
+            fallback_message="脚本调试阶段已完成。",
+        )
         result["artifact"] = stage_artifact
         return result
 
@@ -313,39 +324,6 @@ class HealerAgent(BaseSpecialistAgent):
             return matches
 
         raise RuntimeError(f"Healer 模式待调试脚本目录 `{directory}` 下未找到可用的 `.spec.ts` 文件，无法继续。")
-
-    def _capture_final_output(
-        self,
-        current_output: dict[str, Any] | None,
-        event: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """只从根链路的结束事件提取最终输出。"""
-
-        if event.get("event") != "on_chain_end" or event.get("parent_ids"):
-            return current_output
-
-        output = event.get("data", {}).get("output")
-        if isinstance(output, dict):
-            return output
-
-        return current_output
-
-    def _build_messages_result(
-        self,
-        final_output: dict[str, Any],
-        existing_messages: list[Any],
-        fallback_message: str,
-    ) -> WorkflowState:
-        """把 Deep Agent 的最终输出转换成工作流增量消息。"""
-
-        all_messages = final_output.get("messages", [])
-        if not isinstance(all_messages, list):
-            return {"messages": [AIMessage(content=fallback_message)]}
-
-        new_messages = all_messages[len(existing_messages) :]
-        if not new_messages:
-            new_messages = [AIMessage(content=fallback_message)]
-        return {"messages": new_messages}
 
     def _is_expected_browser_close_error(self, exc: Exception) -> bool:
         """判断异常是否为关闭浏览器后的预期错误。"""

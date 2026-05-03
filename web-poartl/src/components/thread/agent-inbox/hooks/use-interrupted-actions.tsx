@@ -1,4 +1,4 @@
-import { useStreamContext } from "@/providers/Stream";
+import { useStreamContext } from "@/providers/useStreamContext";
 import { END } from "@langchain/langgraph/web";
 import { Interrupt } from "@langchain/langgraph-sdk";
 import { toast } from "sonner";

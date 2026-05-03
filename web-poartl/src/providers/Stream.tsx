@@ -1,6 +1,5 @@
 import React, {
   createContext,
-  useContext,
   ReactNode,
   useState,
   useEffect,
@@ -25,23 +24,47 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { getApiKey } from "@/lib/api-key";
 import { useThreads } from "./Thread";
 import { toast } from "sonner";
+import { mergeVisibleMessages } from "@/components/thread/message-utils";
 
-export type StateType = { messages: Message[]; ui?: UIMessage[] };
+export type StateType = {
+  messages: Message[];
+  display_messages?: Message[];
+  ui?: UIMessage[];
+  __interrupt__?: unknown[];
+};
+
+type DisplayMessagesCustomEvent = {
+  type: "display_messages";
+  messages: unknown[];
+};
 
 const useTypedStream = useStream<
   StateType,
   {
     UpdateType: {
       messages?: Message[] | Message | string;
+      display_messages?: Message[] | Message | string;
       ui?: (UIMessage | RemoveUIMessage)[] | UIMessage | RemoveUIMessage;
       context?: Record<string, unknown>;
     };
-    CustomEventType: UIMessage | RemoveUIMessage;
+    CustomEventType: UIMessage | RemoveUIMessage | DisplayMessagesCustomEvent;
   }
 >;
 
-type StreamContextType = ReturnType<typeof useTypedStream>;
+export type StreamContextType = ReturnType<typeof useTypedStream>;
 const StreamContext = createContext<StreamContextType | undefined>(undefined);
+
+function isDisplayMessagesEvent(
+  event: unknown,
+): event is DisplayMessagesCustomEvent {
+  return (
+    typeof event === "object" &&
+    event !== null &&
+    "type" in event &&
+    (event as { type?: unknown }).type === "display_messages" &&
+    Array.isArray((event as { messages?: unknown }).messages)
+  );
+}
 
 async function sleep(ms = 4000) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,6 +116,7 @@ const StreamSession = ({
       },
     }),
     threadId: threadId ?? null,
+    messagesKey: "display_messages",
     fetchStateHistory: true,
     onCustomEvent: (event, options) => {
       if (isUIMessage(event) || isRemoveUIMessage(event)) {
@@ -100,6 +124,17 @@ const StreamSession = ({
           const ui = uiMessageReducer(prev.ui ?? [], event);
           return { ...prev, ui };
         });
+        return;
+      }
+
+      if (isDisplayMessagesEvent(event)) {
+        options.mutate((prev) => ({
+          ...prev,
+          display_messages: mergeVisibleMessages(
+            prev.display_messages ?? prev.messages,
+            event.messages,
+          ),
+        }));
       }
     },
     onThreadId: (id) => {
@@ -309,15 +344,6 @@ export const StreamProvider: React.FC<{ children: ReactNode }> = ({
       {children}
     </StreamSession>
   );
-};
-
-// 创建自定义 hook，用于读取上下文。
-export const useStreamContext = (): StreamContextType => {
-  const context = useContext(StreamContext);
-  if (context === undefined) {
-    throw new Error("useStreamContext 必须在 StreamProvider 内使用");
-  }
-  return context;
 };
 
 export default StreamContext;

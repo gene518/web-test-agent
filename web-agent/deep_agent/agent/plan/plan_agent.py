@@ -10,11 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.artifacts import extract_plan_artifact_from_planner_payload
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
+from deep_agent.core.display_message import (
+    VisibleTranscriptCollector,
+    build_runtime_message_result,
+    emit_display_message_delta,
+)
 from deep_agent.config.specialist_file_filter import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
 from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
@@ -145,7 +149,7 @@ class PlanAgent(BaseSpecialistAgent):
         existing_messages = state.get("messages", [])
         # 这里单独维护 `planner_save_succeeded / planner_save_error`，目的是把“是否真正落盘成功”
         # 从自然语言回复中剥离出来，改为基于工具事件做硬判断。
-        final_output: dict[str, Any] | None = None
+        collector = VisibleTranscriptCollector()
         planner_save_succeeded = False
         planner_save_error: str | None = None
         planner_save_payload: dict[str, Any] | None = None
@@ -168,7 +172,7 @@ class PlanAgent(BaseSpecialistAgent):
                 version="v2",
             ):
                 self.log_stream_event(event, execution_context.trace_context)
-                final_output = self._capture_final_output(final_output, event)
+                emit_display_message_delta(collector.consume_event(event))
                 if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -187,59 +191,37 @@ class PlanAgent(BaseSpecialistAgent):
         except Exception as exc:  # noqa: BLE001
             if planner_save_succeeded and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
-                return {
-                    "messages": [AIMessage(content="测试计划已保存，浏览器已按预期关闭。")],
-                    "artifact": stage_artifact,
-                }
-            raise
+                result = build_runtime_message_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    fallback_message="测试计划已保存，浏览器已按预期关闭。",
+                )
+                result["artifact"] = stage_artifact
+                return result
+            return self._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=exc,
+            )
 
-        log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=final_output)
+        log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=collector.final_output, visible_messages=collector.messages)
 
         # 即使模型说“已经完成”，只要没观察到 `planner_save_plan` 成功事件，这次执行也必须判定失败。
         if not planner_save_succeeded:
             error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
-            raise RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}")
+            return self._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"),
+            )
 
-        if final_output is None:
-            return {
-                "messages": [AIMessage(content="测试计划已保存。")],
-                "artifact": stage_artifact,
-            }
-
-        # 最终消息只作为用户可见结果；真正的成功标准前面已经由工具事件验证过。
-        all_messages = final_output.get("messages", [])
-        if not isinstance(all_messages, list):
-            return {
-                "messages": [AIMessage(content="测试计划已保存。")],
-                "artifact": stage_artifact,
-            }
-
-        new_messages = all_messages[len(existing_messages) :]
-        if not new_messages:
-            new_messages = [AIMessage(content="测试计划已保存。")]
-        return {
-            "messages": new_messages,
-            "artifact": stage_artifact,
-        }
-
-    def _capture_final_output(
-        self,
-        current_output: dict[str, Any] | None,
-        event: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """从根链路的结束事件中提取最终输出。
-
-        这里只信任根链路的 `on_chain_end`，目的是避免子链路或工具内部的局部输出误伤最终结果。
-        """
-
-        if event.get("event") != "on_chain_end" or event.get("parent_ids"):
-            return current_output
-
-        output = event.get("data", {}).get("output")
-        if isinstance(output, dict):
-            return output
-
-        return current_output
+        result = build_runtime_message_result(
+            collector=collector,
+            existing_messages=existing_messages,
+            fallback_message="测试计划已保存。",
+        )
+        result["artifact"] = stage_artifact
+        return result
 
     def _update_planner_save_state(
         self,

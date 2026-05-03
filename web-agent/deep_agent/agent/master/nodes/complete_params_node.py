@@ -2,12 +2,17 @@
 
 from typing import Any
 
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.master.models.intent import compute_missing_params_for_intent
 from deep_agent.agent.state import WorkflowState
+from deep_agent.core.display_message import (
+    extract_missing_display_messages,
+    normalize_display_delta,
+)
 from deep_agent.core.runtime_logging import build_trace_context, format_state_for_log, get_logger, log_title
 
 
@@ -35,6 +40,7 @@ class CompleteParamsNode:
         extracted_params = dict(state.get("extracted_params", {}))
         routing_reason = state.get("routing_reason")
         missing_params = compute_missing_params_for_intent(agent_type, extracted_params)
+        resume_messages: list[HumanMessage] = []
 
         while missing_params:
             missing_param = missing_params[0]
@@ -45,6 +51,8 @@ class CompleteParamsNode:
             )
             resume_value = interrupt(payload)
             resume_text = self._resume_value_to_text(resume_value)
+            if resume_text.strip():
+                resume_messages.append(HumanMessage(content=resume_text))
             new_params = await self._master_agent.extract_params_for_fixed_intent(
                 agent_type=agent_type,
                 existing_params=extracted_params,
@@ -64,6 +72,14 @@ class CompleteParamsNode:
             "next_action": agent_type,
             "routing_reason": f"{agent_type} 参数已补齐，准备进入对应 Specialist。",
         }
+        if resume_messages:
+            result["messages"] = resume_messages
+        display_delta = [
+            *extract_missing_display_messages(dict(state)),
+            *normalize_display_delta(resume_messages),
+        ]
+        if display_delta:
+            result["display_messages"] = display_delta
         logger.info("%s event=node_exit trace=%s result=%s",
             log_title("执行", "节点出参", node_name="complete_params_node"), build_trace_context(config, node_name="complete_params_node", event_name="node_exit"), format_state_for_log(result),)
         return result

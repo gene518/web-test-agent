@@ -23,12 +23,12 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户出现以下关键词或近义表达，优先考虑 `generator`：
   - 生成脚本、写脚本、写代码、生成代码、自动化脚本、脚本生成、代码生成、转换脚本、按照计划生成、generator、write test、generate test
 - 如果用户出现以下关键词或近义表达，优先考虑 `healer`：
-  - 调试、修复、失败、报错、运行失败、脚本报错、排查问题、定位问题、运行测试、heal、fix、debug、run test
+  - 调试、修复、失败、报错、运行失败、脚本报错、排查问题、定位问题、运行测试、heal、fix、test、run test
 - 如果用户出现以下关键词或近义表达，优先考虑 `scheduler`：
   - 定时任务、定时执行、调度任务、cron、执行时间、每天几点、每周几、无头执行、有头执行、启用任务、禁用任务、修改任务时间
 
 分类补充要求：
-- `heal` 是用户表达习惯，不是输出枚举值；凡是命中 `heal / fix / debug / run test` 一类修复与调试语义，都输出 `healer`。
+- `heal` 是用户表达习惯，不是输出枚举值；凡是命中 `heal / fix / test / run test` 一类修复与调试语义，都输出 `healer`。
 - 不要只看单个关键词，要结合完整语义判断。例如“运行测试并修复失败”应归类为 `healer`。
 - 如果用户同时出现多个类别关键词，优先选择用户当前最主要的动作目标。
 - 只有当请求明显不属于 plan、generator、healer、scheduler 时，才输出 `general`。

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
@@ -702,9 +702,164 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertEqual(
+            [message.content for message in result["display_messages"][:-1]],
+            ["existing", "generator-finished"],
+        )
+        self.assertIn("Generator 阶段", result["display_messages"][-1].content)
         self.assertIn("a_case.spec.ts", result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
         self.assertEqual(fake_deep_agent.inputs[0][2], "v2")
+
+    async def test_base_specialist_result_keeps_compact_messages_and_persists_display_messages(self) -> None:
+        agent = PlanAgent(
+            AppSettings(
+                default_automation_project_root=str(self.root_path / "projects"),
+            ),
+            mcp_manager=FakeMCPManager([]),
+        )
+
+        result = await agent._build_final_summary_result(
+            state={"messages": [AIMessage(content="existing", id="msg-existing")]},
+            raw_result={"messages": [AIMessage(content="runtime-finished", id="msg-runtime")]},
+        )
+
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("Plan 阶段", result["messages"][0].content)
+        self.assertEqual([message.content for message in result["display_messages"][:-1]], ["existing", "runtime-finished"])
+        self.assertIn("Plan 阶段", result["display_messages"][-1].content)
+
+    async def test_base_specialist_result_accepts_message_like_human_messages_for_display_timeline(self) -> None:
+        agent = PlanAgent(
+            AppSettings(
+                default_automation_project_root=str(self.root_path / "projects"),
+            ),
+            mcp_manager=FakeMCPManager([]),
+        )
+
+        result = await agent._build_final_summary_result(
+            state={
+                "messages": [{"type": "human", "content": "用户原话", "id": "human-1"}],
+                "requested_pipeline": ["plan"],
+                "pipeline_cursor": 0,
+            },
+            raw_result={"messages": [AIMessage(content="runtime-finished", id="msg-runtime")]},
+        )
+
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(
+            [message.content for message in result["display_messages"]],
+            ["用户原话", "runtime-finished"],
+        )
+
+    async def test_generator_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
+        project_dir = self.root_path / "generator-visible-stream"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path)
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakeGeneratorVisibleStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_chat_model_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {
+                        "output": AIMessage(
+                            content="",
+                            id="generator-ai-tool",
+                            name="generator-specialist",
+                            tool_calls=[
+                                {
+                                    "name": "generator_write_test",
+                                    "args": {
+                                        "fileName": "test_case/demo/a_case.spec.ts",
+                                        "code": "test('a_case', async () => {});",
+                                    },
+                                    "id": "call-generator-write",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/a_case.spec.ts",
+                            "code": "test('a_case', async () => {});",
+                        }
+                    },
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "output": ToolMessage(
+                            content="脚本已写入。",
+                            id="generator-tool-write",
+                            name="generator_write_test",
+                            tool_call_id="call-generator-write",
+                            status="success",
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chat_model_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {
+                        "output": AIMessage(
+                            content="脚本已生成。",
+                            id="generator-ai-final",
+                            name="generator-specialist",
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": "done"},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeGeneratorVisibleStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [HumanMessage(content="继续生成脚本", id="human-generator")],
+                    "requested_pipeline": ["generator"],
+                    "pipeline_cursor": 0,
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(
+            [message.id for message in result["display_messages"]],
+            [
+                "human-generator",
+                "generator-ai-tool",
+                "generator-tool-write",
+                "generator-ai-final",
+            ],
+        )
+        self.assertEqual(
+            result["display_messages"][1].tool_calls[0]["args"]["fileName"],
+            "test_case/demo/a_case.spec.ts",
+        )
+        self.assertEqual(result["display_messages"][2].name, "generator_write_test")
+        self.assertEqual(result["display_messages"][3].content, "脚本已生成。")
 
     async def test_generator_execute_fails_when_only_subset_of_expected_scripts_are_written(self) -> None:
         project_dir = self.root_path / "generator-partial"
@@ -1056,6 +1211,107 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Healer 阶段", result["messages"][0].content)
         self.assertIn(relative_script_path, result["messages"][0].content)
+
+    async def test_healer_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
+        project_dir = self.root_path / "healer-visible-stream"
+        relative_script_path = "test_case/demo/a_case.spec.ts"
+        self._create_healer_script_file(project_dir, relative_script_path)
+        manager = FakeMCPManager(self._build_healer_tools())
+        agent = HealerAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakeHealerVisibleStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_chat_model_end",
+                    "name": "healer-specialist",
+                    "parent_ids": [],
+                    "data": {
+                        "output": AIMessage(
+                            content="",
+                            id="healer-ai-tool",
+                            name="healer-specialist",
+                            tool_calls=[
+                                {
+                                    "name": "test_run",
+                                    "args": {"locations": [relative_script_path]},
+                                    "id": "call-healer-run",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_tool_start",
+                    "name": "test_run",
+                    "parent_ids": [],
+                    "data": {"input": {"locations": [relative_script_path]}},
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "test_run",
+                    "parent_ids": [],
+                    "data": {
+                        "output": ToolMessage(
+                            content="执行通过。",
+                            id="healer-tool-run",
+                            name="test_run",
+                            tool_call_id="call-healer-run",
+                            status="success",
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chat_model_end",
+                    "name": "healer-specialist",
+                    "parent_ids": [],
+                    "data": {
+                        "output": AIMessage(
+                            content="已修复并验证。",
+                            id="healer-ai-final",
+                            name="healer-specialist",
+                        )
+                    },
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "healer-specialist",
+                    "parent_ids": [],
+                    "data": {"output": "done"},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeHealerVisibleStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [HumanMessage(content="继续修复脚本", id="human-healer")],
+                    "requested_pipeline": ["healer"],
+                    "pipeline_cursor": 0,
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_scripts": [relative_script_path],
+                    },
+                }
+            )
+
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(
+            [message.id for message in result["display_messages"]],
+            [
+                "human-healer",
+                "healer-ai-tool",
+                "healer-tool-run",
+                "healer-ai-final",
+            ],
+        )
+        self.assertEqual(
+            result["display_messages"][1].tool_calls[0]["args"]["locations"],
+            [relative_script_path],
+        )
+        self.assertEqual(result["display_messages"][2].name, "test_run")
+        self.assertEqual(result["display_messages"][3].content, "已修复并验证。")
 
     async def test_healer_runtime_binds_writable_workspace_permissions(self) -> None:
         project_dir = self.root_path / "healer-backend"

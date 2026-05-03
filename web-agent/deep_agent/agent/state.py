@@ -18,6 +18,11 @@ class WorkflowState(TypedDict, total=False):
         add_messages,
         Field(description="对话消息列表；通过 add_messages 聚合，供各节点追加而不是覆盖。"),
     ]
+    display_messages: Annotated[
+        list[AnyMessage],
+        add_messages,
+        Field(description="仅供 UI 展示的完整时间线消息列表；保留执行过程，但不参与后续模型上下文。"),
+    ]
     agent_type: Annotated[
         str | None,
         Field(description="Master 识别出的目标动作类型，例如 plan、generator、healer、scheduler。"),

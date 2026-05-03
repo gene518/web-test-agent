@@ -1,8 +1,8 @@
 """Master 子图的通用测试专家问答节点。"""
 
-from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
+from deep_agent.core.display_message import build_display_summary_message, extract_missing_display_messages
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.runtime_logging import build_trace_context, format_messages_for_log, format_state_for_log, get_logger, log_title
@@ -32,8 +32,16 @@ class GeneralTestNode:
             raw_result=raw_answer,
             config=config,
         )
+        final_message = build_display_summary_message(
+            final_summary,
+            prefix="general-summary",
+        )
         result: WorkflowState = {
-            "messages": [AIMessage(content=final_summary)],
+            "messages": [final_message],
+            "display_messages": [
+                *extract_missing_display_messages(dict(state)),
+                final_message,
+            ],
             "stage_result": {
                 "agent_type": "general",
                 "raw_answer": raw_answer,

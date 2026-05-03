@@ -27,5 +27,7 @@ dist/
 /web-agent/.langgraph_api/
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
+/test/log/*
+!/test/log/.gitkeep
 /web-poartl/vite.config.d.ts
 /web-poartl/vite.config.js

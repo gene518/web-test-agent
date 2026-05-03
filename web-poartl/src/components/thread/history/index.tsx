@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useThreads } from "@/providers/Thread";
-import { Thread } from "@langchain/langgraph-sdk";
+import { Thread, type Message } from "@langchain/langgraph-sdk";
 import { useEffect } from "react";
 
 import { getContentString } from "../utils";
@@ -15,6 +15,158 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function truncateText(value: string, maxLength = 32): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function basename(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  const parts = trimmed.split(/[\\/]/);
+  return parts.at(-1) ?? trimmed;
+}
+
+function simplifyUrlLabel(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.hostname.replace(/^www\./i, "");
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+  }
+}
+
+function normalizeStageLabel(stage: unknown): string | undefined {
+  if (typeof stage !== "string") {
+    return undefined;
+  }
+
+  switch (stage) {
+    case "plan":
+      return "测试计划";
+    case "generator":
+      return "脚本生成";
+    case "healer":
+      return "脚本调试";
+    case "scheduler":
+      return "定时任务";
+    case "general":
+      return "通用任务";
+    default:
+      return undefined;
+  }
+}
+
+function getThreadValues(thread: Thread): Record<string, unknown> {
+  return isRecord(thread.values) ? thread.values : {};
+}
+
+function getThreadMessages(thread: Thread): Record<string, unknown>[] {
+  const values = getThreadValues(thread);
+  const candidates = [values.display_messages, values.messages];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.filter(isRecord);
+    }
+  }
+
+  return [];
+}
+
+function getFirstHumanText(thread: Thread): string {
+  const firstHumanMessage = getThreadMessages(thread).find((message) => {
+    if (typeof message.type !== "string") {
+      return false;
+    }
+    const normalizedType = message.type.toLowerCase();
+    return normalizedType === "human" || normalizedType === "humanmessage";
+  });
+
+  if (!firstHumanMessage) {
+    return "";
+  }
+
+  return getContentString(firstHumanMessage.content as Message["content"]);
+}
+
+function getStringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getFirstString(values: unknown): string {
+  if (!Array.isArray(values)) {
+    return "";
+  }
+
+  const first = values.find((value) => typeof value === "string" && value.trim());
+  return typeof first === "string" ? first.trim() : "";
+}
+
+function buildThreadTitle(thread: Thread): { title: string; subtitle?: string } {
+  const values = getThreadValues(thread);
+  const extractedParams = isRecord(values.extracted_params) ? values.extracted_params : {};
+  const requestedPipeline = Array.isArray(values.requested_pipeline)
+    ? values.requested_pipeline
+    : [];
+  const stage =
+    normalizeStageLabel(requestedPipeline[0]) ??
+    normalizeStageLabel(values.agent_type) ??
+    "对话";
+
+  const urlLabel = simplifyUrlLabel(getStringField(extractedParams, "url"));
+  const projectName = getStringField(extractedParams, "project_name");
+  const testPlanFile = basename(getFirstString(extractedParams.test_plan_files));
+  const testScriptFile = basename(getFirstString(extractedParams.test_scripts));
+  const scheduleTaskId = getStringField(extractedParams, "schedule_task_id");
+  const firstHumanText = getFirstHumanText(thread);
+
+  const primaryTarget =
+    urlLabel ||
+    projectName ||
+    testScriptFile ||
+    testPlanFile ||
+    scheduleTaskId;
+
+  if (primaryTarget) {
+    return {
+      title: truncateText(`${primaryTarget} · ${stage}`),
+      subtitle:
+        firstHumanText && firstHumanText !== primaryTarget
+          ? truncateText(firstHumanText, 40)
+          : undefined,
+    };
+  }
+
+  if (firstHumanText) {
+    return {
+      title: truncateText(firstHumanText),
+      subtitle: stage !== "对话" ? stage : undefined,
+    };
+  }
+
+  return {
+    title: truncateText(thread.thread_id),
+    subtitle: stage !== "对话" ? stage : undefined,
+  };
+}
+
 function ThreadList({
   threads,
   onThreadClick,
@@ -27,17 +179,7 @@ function ThreadList({
   return (
     <div className="flex h-full w-full flex-col items-start justify-start gap-2 overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
       {threads.map((t) => {
-        let itemText = t.thread_id;
-        if (
-          typeof t.values === "object" &&
-          t.values &&
-          "messages" in t.values &&
-          Array.isArray(t.values.messages) &&
-          t.values.messages?.length > 0
-        ) {
-          const firstMessage = t.values.messages[0];
-          itemText = getContentString(firstMessage.content);
-        }
+        const { title, subtitle } = buildThreadTitle(t);
         return (
           <div
             key={t.thread_id}
@@ -45,7 +187,7 @@ function ThreadList({
           >
             <Button
               variant="ghost"
-              className="w-[280px] items-start justify-start text-left font-normal"
+              className="h-auto w-full items-start justify-start px-3 py-2 text-left font-normal"
               onClick={(e) => {
                 e.preventDefault();
                 onThreadClick?.(t.thread_id);
@@ -53,7 +195,16 @@ function ThreadList({
                 setThreadId(t.thread_id);
               }}
             >
-              <p className="truncate text-ellipsis">{itemText}</p>
+              <div className="flex w-full flex-col items-start gap-0.5">
+                <p className="w-full truncate text-sm font-medium text-slate-900">
+                  {title}
+                </p>
+                {subtitle ? (
+                  <p className="w-full truncate text-xs text-slate-500">
+                    {subtitle}
+                  </p>
+                ) : null}
+              </div>
             </Button>
           </div>
         );
@@ -92,7 +243,7 @@ export default function ThreadHistory() {
       .then(setThreads)
       .catch(console.error)
       .finally(() => setThreadsLoading(false));
-  }, []);
+  }, [getThreads, setThreads, setThreadsLoading]);
 
   return (
     <>

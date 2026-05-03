@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Interrupt } from "@langchain/langgraph-sdk";
 import { cn } from "@/lib/utils";
-import { useStreamContext } from "@/providers/Stream";
+import { useStreamContext } from "@/providers/useStreamContext";
 import { HITLRequest } from "./types";
 import { StateView } from "./components/state-view";
 import { ThreadActionsView } from "./components/thread-actions-view";

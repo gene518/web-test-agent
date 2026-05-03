@@ -59,14 +59,14 @@ class RuntimeLoggingTestCase(unittest.TestCase):
 
     def test_trace_context_uses_thread_id_as_session_id(self) -> None:
         config = {
-            "configurable": {"thread_id": "debug-20260425-120000"},
+            "configurable": {"thread_id": "test-20260425-120000"},
             "metadata": {"run_id": "run-123"},
         }
 
         trace_context = build_trace_context(config, node_name="plan_node", event_name="node_enter")
 
-        self.assertEqual(trace_context["session_id"], "debug-20260425-120000")
-        self.assertEqual(trace_context["thread_id"], "debug-20260425-120000")
+        self.assertEqual(trace_context["session_id"], "test-20260425-120000")
+        self.assertEqual(trace_context["thread_id"], "test-20260425-120000")
         self.assertEqual(trace_context["run_id"], "run-123")
         self.assertEqual(trace_context["node_name"], "plan_node")
         self.assertEqual(trace_context["event_name"], "node_enter")

@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { ReactNode, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { useStreamContext } from "@/providers/Stream";
+import { useStreamContext } from "@/providers/useStreamContext";
 import { useState, FormEvent } from "react";
 import { Button } from "../ui/button";
 import { Checkpoint, Message } from "@langchain/langgraph-sdk";
@@ -45,6 +45,13 @@ import {
   ArtifactTitle,
   useArtifactContext,
 } from "./artifact";
+import {
+  getActiveInterrupt,
+  getLastLiveRenderSignal,
+  mergeVisibleMessages,
+  THREAD_STREAM_MODES,
+} from "./message-utils";
+import { isAgentInboxInterruptSchema } from "@/lib/agent-inbox-interrupt";
 
 function StickyToBottomContent(props: {
   content: ReactNode;
@@ -139,8 +146,18 @@ export function Thread() {
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
 
   const stream = useStreamContext();
-  const messages = stream.messages;
+  const messages = mergeVisibleMessages(
+    stream.values.display_messages,
+    stream.messages,
+  );
   const isLoading = stream.isLoading;
+  const activeInterrupt = getActiveInterrupt(stream.values, stream.interrupt);
+  const activeGenericInterrupt =
+    activeInterrupt && !isAgentInboxInterruptSchema(activeInterrupt)
+      ? activeInterrupt
+      : undefined;
+  const hasGenericInterrupt = !!activeGenericInterrupt;
+  const lastLiveRenderSignal = getLastLiveRenderSignal(stream.messages);
 
   const lastError = useRef<string | undefined>(undefined);
 
@@ -181,18 +198,22 @@ export function Thread() {
   }, [stream.error]);
 
   // TODO: 这段逻辑应并入 useStream hook。
-  const prevMessageLength = useRef(0);
+  const prevLiveRenderSignal = useRef("");
   useEffect(() => {
+    if (!isLoading) {
+      prevLiveRenderSignal.current = lastLiveRenderSignal;
+      return;
+    }
+
     if (
-      messages.length !== prevMessageLength.current &&
-      messages?.length &&
-      messages[messages.length - 1].type === "ai"
+      lastLiveRenderSignal &&
+      lastLiveRenderSignal !== prevLiveRenderSignal.current
     ) {
       setFirstTokenReceived(true);
     }
 
-    prevMessageLength.current = messages.length;
-  }, [messages]);
+    prevLiveRenderSignal.current = lastLiveRenderSignal;
+  }, [isLoading, lastLiveRenderSignal]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -209,15 +230,53 @@ export function Thread() {
       ] as Message["content"],
     };
 
-    const toolMessages = ensureToolCallsHaveResponses(stream.messages);
+    const toolMessages = ensureToolCallsHaveResponses(
+      stream.values.messages ?? [],
+    );
 
     const context =
       Object.keys(artifactContext).length > 0 ? artifactContext : undefined;
 
+    if (hasGenericInterrupt) {
+      if (contentBlocks.length > 0) {
+        toast.error("缺参补全只支持文本回复。", {
+          richColors: true,
+          closeButton: true,
+        });
+        return;
+      }
+
+      stream.submit(
+        {},
+        {
+          command: {
+            resume: {
+              text: input,
+            },
+          },
+          streamMode: [...THREAD_STREAM_MODES],
+          streamSubgraphs: true,
+          streamResumable: true,
+          optimisticValues: (prev) => ({
+            ...prev,
+            messages: [...(prev.messages ?? []), newHumanMessage],
+            display_messages: [
+              ...(prev.display_messages ?? prev.messages ?? []),
+              newHumanMessage,
+            ],
+          }),
+        },
+      );
+
+      setInput("");
+      setContentBlocks([]);
+      return;
+    }
+
     stream.submit(
       { messages: [...toolMessages, newHumanMessage], context },
       {
-        streamMode: ["values"],
+        streamMode: [...THREAD_STREAM_MODES],
         streamSubgraphs: true,
         streamResumable: true,
         optimisticValues: (prev) => ({
@@ -225,6 +284,11 @@ export function Thread() {
           context,
           messages: [
             ...(prev.messages ?? []),
+            ...toolMessages,
+            newHumanMessage,
+          ],
+          display_messages: [
+            ...(prev.display_messages ?? prev.messages ?? []),
             ...toolMessages,
             newHumanMessage,
           ],
@@ -239,12 +303,10 @@ export function Thread() {
   const handleRegenerate = (
     parentCheckpoint: Checkpoint | null | undefined,
   ) => {
-    // 这样可以保持 loading 状态正确。
-    prevMessageLength.current = prevMessageLength.current - 1;
     setFirstTokenReceived(false);
     stream.submit(undefined, {
       checkpoint: parentCheckpoint,
-      streamMode: ["values"],
+      streamMode: [...THREAD_STREAM_MODES],
       streamSubgraphs: true,
       streamResumable: true,
     });
@@ -419,7 +481,7 @@ export function Thread() {
                     )}
                   {/* 没有 AI/tool 消息但存在 interrupt 时的特殊渲染分支。
                     此时没有可渲染消息，因此需要在消息列表之外渲染。 */}
-                  {hasNoAIOrToolMessages && !!stream.interrupt && (
+                  {hasNoAIOrToolMessages && !!activeInterrupt && (
                     <AssistantMessage
                       key="interrupt-msg"
                       message={undefined}

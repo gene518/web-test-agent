@@ -13,7 +13,7 @@ NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
 SPECIALIST_STAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "plan": ("生成计划", "测试计划", "制定计划", "测试方案", "生成用例", "用例设计", "plan"),
     "generator": ("生成脚本", "写脚本", "写代码", "自动化脚本", "脚本生成", "按照计划生成", "generator"),
-    "healer": ("调试", "修复", "失败", "报错", "排查问题", "heal", "fix", "debug", "run test"),
+    "healer": ("调试", "修复", "失败", "报错", "排查问题", "heal", "fix", "test", "run test"),
 }
 
 # 这张表定义了每种意图至少要收集到哪些参数，后面追问逻辑会直接使用它。

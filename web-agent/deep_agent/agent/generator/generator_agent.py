@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.artifacts import (
@@ -18,6 +17,11 @@ from deep_agent.agent.artifacts import (
     snapshot_workspace_manifest_async,
 )
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
+from deep_agent.core.display_message import (
+    VisibleTranscriptCollector,
+    build_runtime_message_result,
+    emit_display_message_delta,
+)
 from deep_agent.config.specialist_file_filter import GENERATOR_QUERY_FILTER_CONFIG
 from deep_agent.agent.generator.prompts.generator_conventions import GENERATOR_BUSINESS_PROMPT
 from deep_agent.agent.generator.prompts.generator import GENERATOR_SYSTEM_PROMPT
@@ -250,7 +254,7 @@ class GeneratorAgent(BaseSpecialistAgent):
         """使用事件流执行 Generator，并输出与 Plan 同级别的调试日志。"""
 
         existing_messages = state.get("messages", [])
-        final_output: dict[str, Any] | None = None
+        collector = VisibleTranscriptCollector()
         generator_write_succeeded = False
         generator_write_error: str | None = None
         pending_write_payloads: list[dict[str, str]] = []
@@ -281,7 +285,7 @@ class GeneratorAgent(BaseSpecialistAgent):
                 version="v2",
             ):
                 self.log_stream_event(event, execution_context.trace_context)
-                final_output = self._capture_final_output(final_output, event)
+                emit_display_message_delta(collector.consume_event(event))
                 if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -306,23 +310,33 @@ class GeneratorAgent(BaseSpecialistAgent):
             if successful_write_payloads and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
                 if workspace_dir is not None:
-                    stage_artifact = await self._build_generator_stage_artifact(
-                        successful_write_payloads=successful_write_payloads,
-                        before_manifest=before_manifest,
-                        workspace_dir=workspace_dir,
-                        project_name=project_name,
-                        input_files=input_plan_files,
-                        expected_test_scripts=expected_test_scripts,
-                    )
-                if final_output is None:
-                    return {
-                        "messages": [AIMessage(content="测试脚本已生成，浏览器已按预期关闭。")],
-                        "artifact": stage_artifact,
-                    }
-                result = self._build_messages_result(final_output, existing_messages, "测试脚本已生成，浏览器已按预期关闭。")
+                    try:
+                        stage_artifact = await self._build_generator_stage_artifact(
+                            successful_write_payloads=successful_write_payloads,
+                            before_manifest=before_manifest,
+                            workspace_dir=workspace_dir,
+                            project_name=project_name,
+                            input_files=input_plan_files,
+                            expected_test_scripts=expected_test_scripts,
+                        )
+                    except Exception as artifact_exc:  # noqa: BLE001
+                        return self._build_runtime_exception_result(
+                            collector=collector,
+                            existing_messages=existing_messages,
+                            exc=artifact_exc,
+                        )
+                result = build_runtime_message_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    fallback_message="测试脚本已生成，浏览器已按预期关闭。",
+                )
                 result["artifact"] = stage_artifact
                 return result
-            raise
+            return self._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=exc,
+            )
 
         log_debug_event(
             self.log_get_logger(),
@@ -332,48 +346,42 @@ class GeneratorAgent(BaseSpecialistAgent):
             self.log_event_trace_context(execution_context.trace_context, "generator_final_output"),
             generator_write_succeeded=generator_write_succeeded,
             generator_write_error=generator_write_error,
-            final_output=final_output,
+            final_output=collector.final_output,
+            visible_messages=collector.messages,
         )
 
         if not successful_write_payloads:
             error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
-            raise RuntimeError(f"Generator Agent 未成功调用 `generator_write_test` 生成脚本。{error_suffix}")
-
-        if workspace_dir is not None:
-            stage_artifact = await self._build_generator_stage_artifact(
-                successful_write_payloads=successful_write_payloads,
-                before_manifest=before_manifest,
-                workspace_dir=workspace_dir,
-                project_name=project_name,
-                input_files=input_plan_files,
-                expected_test_scripts=expected_test_scripts,
+            return self._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=RuntimeError(f"Generator Agent 未成功调用 `generator_write_test` 生成脚本。{error_suffix}"),
             )
 
-        if final_output is None:
-            return {
-                "messages": [AIMessage(content="测试脚本生成阶段已完成。")],
-                "artifact": stage_artifact,
-            }
+        if workspace_dir is not None:
+            try:
+                stage_artifact = await self._build_generator_stage_artifact(
+                    successful_write_payloads=successful_write_payloads,
+                    before_manifest=before_manifest,
+                    workspace_dir=workspace_dir,
+                    project_name=project_name,
+                    input_files=input_plan_files,
+                    expected_test_scripts=expected_test_scripts,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return self._build_runtime_exception_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    exc=exc,
+                )
 
-        result = self._build_messages_result(final_output, existing_messages, "测试脚本生成阶段已完成。")
+        result = build_runtime_message_result(
+            collector=collector,
+            existing_messages=existing_messages,
+            fallback_message="测试脚本生成阶段已完成。",
+        )
         result["artifact"] = stage_artifact
         return result
-
-    def _capture_final_output(
-        self,
-        current_output: dict[str, Any] | None,
-        event: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """从根链路的结束事件中提取最终输出。"""
-
-        if event.get("event") != "on_chain_end" or event.get("parent_ids"):
-            return current_output
-
-        output = event.get("data", {}).get("output")
-        if isinstance(output, dict):
-            return output
-
-        return current_output
 
     def _update_generator_write_state(
         self,
@@ -476,23 +484,6 @@ class GeneratorAgent(BaseSpecialistAgent):
             status=status,
             error=generator_write_error,
         )
-
-    def _build_messages_result(
-        self,
-        final_output: dict[str, Any],
-        existing_messages: list[Any],
-        fallback_message: str,
-    ) -> WorkflowState:
-        """把 Deep Agent 最终输出转换成工作流增量消息。"""
-
-        all_messages = final_output.get("messages", [])
-        if not isinstance(all_messages, list):
-            return {"messages": [AIMessage(content=fallback_message)]}
-
-        new_messages = all_messages[len(existing_messages) :]
-        if not new_messages:
-            new_messages = [AIMessage(content=fallback_message)]
-        return {"messages": new_messages}
 
     def _tool_output_is_error(self, output: Any) -> bool:
         """判断工具输出是否表示失败。"""

@@ -3,9 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from deep_agent.core.config import AppSettings
@@ -143,6 +144,127 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
+
+    async def test_plan_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
+        fake_manager = FakeMCPManager(self.tools)
+        planner_payload = {
+            "overview": "登录页测试概览",
+            "name": "demo",
+            "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+            "suites": [
+                {
+                    "name": "登录场景",
+                    "seedFile": "test_case/specs/seed.spec.ts",
+                    "tests": [
+                        {
+                            "name": "a_login_success",
+                            "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
+                            "steps": [
+                                {"perform": "打开登录页", "expect": ["显示登录表单"]},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        streamed_tool_call = AIMessage(
+            content="",
+            id="ai-tool-call",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": {"todos": [{"content": "初始化页面", "status": "in_progress"}]},
+                    "id": "call-write-todos",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        streamed_tool_result = ToolMessage(
+            content="Updated todo list to [{'content': '初始化页面', 'status': 'in_progress'}]",
+            tool_call_id="call-write-todos",
+            id="tool-write-todos",
+            name="write_todos",
+            status="success",
+        )
+        streamed_planner_result = ToolMessage(
+            content="Test plan saved to test_case/aaaplanning_demo/aaa_demo.md",
+            tool_call_id="call-save-plan",
+            id="tool-save-plan",
+            name="planner_save_plan",
+            status="success",
+        )
+        streamed_final_ai = AIMessage(
+            content="已生成并保存测试计划。",
+            id="ai-final",
+        )
+        fake_agent = FakeEventAgent(
+            [
+                {
+                    "event": "on_chat_model_end",
+                    "name": "plan-specialist",
+                    "data": {"output": streamed_tool_call},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "write_todos",
+                    "data": {"output": SimpleNamespace(update={"messages": [streamed_tool_result]})},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {"input": planner_payload},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": streamed_planner_result},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_chat_model_end",
+                    "name": "plan-specialist",
+                    "data": {"output": streamed_final_ai},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_chain_end",
+                    "name": "plan-specialist",
+                    "data": {"output": "done"},
+                    "parent_ids": [],
+                },
+            ]
+        )
+        agent = PlanAgent(self.settings, mcp_manager=fake_manager)
+        project_dir = self.root_path / "streamed-project"
+        state = {
+            "messages": [],
+            "requested_pipeline": ["plan"],
+            "pipeline_cursor": 0,
+            "extracted_params": {
+                "project_name": "streamed-project",
+                "url": "https://example.com",
+                "project_dir": str(project_dir),
+            },
+        }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+        ):
+            result = await agent.execute(state)
+
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(
+            [message.id for message in result["display_messages"]],
+            ["ai-tool-call", "tool-write-todos", "tool-save-plan", "ai-final"],
+        )
+        self.assertEqual(result["display_messages"][0].tool_calls[0]["name"], "write_todos")
+        self.assertEqual(result["display_messages"][1].name, "write_todos")
+        self.assertEqual(result["display_messages"][2].name, "planner_save_plan")
+        self.assertEqual(result["display_messages"][3].content, "已生成并保存测试计划。")
 
     async def test_plan_execute_passes_custom_recursion_limit(self) -> None:
         fake_manager = FakeMCPManager(self.tools)

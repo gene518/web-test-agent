@@ -1,4 +1,4 @@
-import { useStreamContext } from "@/providers/Stream";
+import { useStreamContext } from "@/providers/useStreamContext";
 import { Message } from "@langchain/langgraph-sdk";
 import { useState } from "react";
 import { getContentString } from "../utils";
@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { BranchSwitcher, CommandBar } from "./shared";
 import { MultimodalPreview } from "@/components/thread/MultimodalPreview";
 import { isBase64ContentBlock } from "@/lib/multimodal-utils";
+import { THREAD_STREAM_MODES } from "../message-utils";
 
 function EditableContent({
   value,
@@ -57,7 +58,7 @@ export function HumanMessage({
       { messages: [newMessage] },
       {
         checkpoint: parentCheckpoint,
-        streamMode: ["values"],
+        streamMode: [...THREAD_STREAM_MODES],
         streamSubgraphs: true,
         streamResumable: true,
         optimisticValues: (prev) => {
@@ -67,6 +68,10 @@ export function HumanMessage({
           return {
             ...values,
             messages: [...(values.messages ?? []), newMessage],
+            display_messages: [
+              ...(values.display_messages ?? values.messages ?? []),
+              newMessage,
+            ],
           };
         },
       },

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from deep_agent.agent.master.nodes import IntentJudgeNode, ResolveStageFilesNode
+from deep_agent.agent.master.nodes import CompleteParamsNode, FinalizeTurnNode, GeneralTestNode, IntentJudgeNode, ResolveStageFilesNode
 from deep_agent.agent.state import WorkflowState
 from deep_agent.workflow import build_master_graph
 
@@ -135,6 +136,72 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["next_action"], "finalize_turn")
         self.assertEqual(service.classify_calls, 0)
 
+    async def test_complete_params_node_merges_resume_params_and_keeps_existing_context(self) -> None:
+        node = CompleteParamsNode(FakeMasterService(initial_params={"url": "www.baidu.com"}))
+        opening_message = HumanMessage(content="给 www.baidu.com 输出测试用例", id="human-opening")
+
+        with patch(
+            "deep_agent.agent.master.nodes.complete_params_node.interrupt",
+            return_value={"text": "工程名叫 demo"},
+        ):
+            result = await node.execute(
+                {
+                    "messages": [opening_message],
+                    "agent_type": "plan",
+                    "pending_agent_type": "plan",
+                    "extracted_params": {"url": "www.baidu.com"},
+                    "missing_params": ["project_name"],
+                    "pending_missing_params": ["project_name"],
+                    "routing_reason": "need params",
+                }
+            )
+
+        self.assertEqual(result["next_action"], "plan")
+        self.assertEqual(
+            result["extracted_params"],
+            {"url": "www.baidu.com", "project_name": "demo"},
+        )
+        self.assertEqual(result["messages"][0].content, "工程名叫 demo")
+        self.assertEqual(len(result["display_messages"]), 2)
+        self.assertEqual(result["display_messages"][0].content, "给 www.baidu.com 输出测试用例")
+        self.assertEqual(result["display_messages"][1].content, "工程名叫 demo")
+
+    async def test_finalize_turn_appends_final_summary_to_display_messages(self) -> None:
+        node = FinalizeTurnNode()
+        human_message = HumanMessage(content="帮我生成脚本", id="human-1")
+        stage_message = AIMessage(content="Generator 阶段已完成。", id="ai-1")
+
+        result = await node.execute(
+            {
+                "messages": [human_message],
+                "display_messages": [human_message, stage_message],
+                "pending_stage_summaries": [
+                    {"stage": "generator", "status": "success", "text": "Generator 阶段已完成。"}
+                ],
+            }
+        )
+
+        self.assertEqual(result["messages"][0].content, "Generator 阶段已完成。")
+        self.assertEqual(len(result["display_messages"]), 3)
+        self.assertEqual(result["display_messages"][0].content, "帮我生成脚本")
+        self.assertEqual(result["display_messages"][1].content, "Generator 阶段已完成。")
+        self.assertEqual(result["display_messages"][2].content, "Generator 阶段已完成。")
+
+    async def test_general_test_node_keeps_existing_display_messages_and_appends_summary(self) -> None:
+        node = GeneralTestNode(FakeMasterService(agent_type="general"))
+
+        result = await node.execute(
+            {
+                "messages": [HumanMessage(content="你是谁")],
+                "display_messages": [HumanMessage(content="你是谁", id="human-1")],
+            }
+        )
+
+        self.assertEqual(result["messages"][0].content, "summary: general raw answer")
+        self.assertEqual(len(result["display_messages"]), 2)
+        self.assertEqual(result["display_messages"][0].content, "你是谁")
+        self.assertEqual(result["display_messages"][1].content, "summary: general raw answer")
+
     async def test_resolve_stage_files_node_inherits_latest_plan_files_for_generator(self) -> None:
         node = ResolveStageFilesNode()
 
@@ -205,6 +272,43 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
                 "c_empty_search_guard",
             ],
         )
+
+    async def test_resolve_stage_files_node_inherits_saved_plan_scripts_for_healer(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "healer",
+                "pending_agent_type": "healer",
+                "requested_pipeline": ["healer"],
+                "pipeline_cursor": 0,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "saved_test_case_files": [
+                            "test_case/aaaplanning_demo/a_case.spec.ts",
+                            "test_case/aaaplanning_demo/b_case.spec.ts",
+                        ],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(result["next_action"], "healer")
+        self.assertEqual(
+            result["extracted_params"]["test_scripts"],
+            [
+                "test_case/aaaplanning_demo/a_case.spec.ts",
+                "test_case/aaaplanning_demo/b_case.spec.ts",
+            ],
+        )
+        self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
 
     async def test_resolve_stage_files_node_keeps_explicit_matching_test_cases(self) -> None:
         node = ResolveStageFilesNode()

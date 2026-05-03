@@ -717,6 +717,8 @@ def _collect_script_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
     collected: list[str] = []
     for artifact in artifacts:
         collected.extend(_normalize_string_list(artifact.get("test_scripts")))
+        if artifact.get("stage") == "plan":
+            collected.extend(_normalize_string_list(artifact.get("saved_test_case_files")))
         if artifact.get("stage") == "generator":
             collected.extend(_normalize_string_list(artifact.get("output_files")))
         if artifact.get("stage") == "healer":
