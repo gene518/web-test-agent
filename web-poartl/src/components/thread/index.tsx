@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/useStreamContext";
@@ -47,6 +47,7 @@ import {
 } from "./artifact";
 import {
   getActiveInterrupt,
+  getHumanMessages,
   getLastLiveRenderSignal,
   mergeVisibleMessages,
   THREAD_STREAM_MODES,
@@ -146,9 +147,22 @@ export function Thread() {
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
 
   const stream = useStreamContext();
-  const messages = mergeVisibleMessages(
-    stream.values.display_messages,
-    stream.messages,
+  const displayMessages = stream.values.display_messages;
+  const stateHumanMessages = useMemo(
+    () => getHumanMessages(stream.values.messages),
+    [stream.values.messages],
+  );
+  const persistedMessages = useMemo(
+    () => mergeVisibleMessages(displayMessages, stateHumanMessages),
+    [displayMessages, stateHumanMessages],
+  );
+  const liveMessages = stream.messages;
+  const messages = useMemo(
+    () =>
+      persistedMessages === liveMessages
+        ? liveMessages
+        : mergeVisibleMessages(persistedMessages, liveMessages),
+    [persistedMessages, liveMessages],
   );
   const isLoading = stream.isLoading;
   const activeInterrupt = getActiveInterrupt(stream.values, stream.interrupt);
@@ -157,7 +171,7 @@ export function Thread() {
       ? activeInterrupt
       : undefined;
   const hasGenericInterrupt = !!activeGenericInterrupt;
-  const lastLiveRenderSignal = getLastLiveRenderSignal(stream.messages);
+  const lastLiveRenderSignal = getLastLiveRenderSignal(liveMessages);
 
   const lastError = useRef<string | undefined>(undefined);
 
@@ -316,6 +330,11 @@ export function Thread() {
   const hasNoAIOrToolMessages = !messages.find(
     (m) => m.type === "ai" || m.type === "tool",
   );
+  const lastVisibleMessageId = messages[messages.length - 1]?.id;
+  const lastVisibleMessageType = messages[messages.length - 1]?.type;
+  const shouldRenderStandaloneInterrupt =
+    !!activeInterrupt &&
+    (hasNoAIOrToolMessages || !lastVisibleMessageType || lastVisibleMessageType === "human");
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
@@ -475,17 +494,22 @@ export function Thread() {
                           key={message.id || `${message.type}-${index}`}
                           message={message}
                           isLoading={isLoading}
+                          interrupt={activeInterrupt}
+                          isLastMessage={message.id === lastVisibleMessageId}
+                          hasNoAIOrToolMessages={hasNoAIOrToolMessages}
                           handleRegenerate={handleRegenerate}
                         />
                       ),
                     )}
-                  {/* 没有 AI/tool 消息但存在 interrupt 时的特殊渲染分支。
-                    此时没有可渲染消息，因此需要在消息列表之外渲染。 */}
-                  {hasNoAIOrToolMessages && !!activeInterrupt && (
+                  {/* interrupt 可能发生在最后一条用户消息之后，此时没有后续 AI/tool 消息承载补参 UI。 */}
+                  {shouldRenderStandaloneInterrupt && (
                     <AssistantMessage
                       key="interrupt-msg"
                       message={undefined}
                       isLoading={isLoading}
+                      interrupt={activeInterrupt}
+                      isLastMessage={true}
+                      hasNoAIOrToolMessages={hasNoAIOrToolMessages}
                       handleRegenerate={handleRegenerate}
                     />
                   )}

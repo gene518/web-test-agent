@@ -594,6 +594,10 @@ export function normalizeMessages(messages: unknown): CanonicalMessage[] {
   return normalizedMessage ? [normalizedMessage] : [];
 }
 
+export function getHumanMessages(messages: unknown): CanonicalMessage[] {
+  return normalizeMessages(messages).filter((message) => message.type === "human");
+}
+
 function contentFingerprint(message: CanonicalMessage): string {
   const toolCallId =
     "tool_call_id" in message && message.tool_call_id
@@ -672,12 +676,48 @@ function mergeCanonicalMessages(
   return mergedMessage as CanonicalMessage;
 }
 
+function dedupeCanonicalMessages(
+  messages: CanonicalMessage[],
+): CanonicalMessage[] {
+  const deduped: CanonicalMessage[] = [];
+  const indexByFingerprint = new Map<string, number>();
+
+  const indexMessage = (message: CanonicalMessage, index: number) => {
+    messageFingerprints(message).forEach((fingerprint) => {
+      indexByFingerprint.set(fingerprint, index);
+    });
+  };
+
+  messages.forEach((message) => {
+    const existingIndex = messageFingerprints(message)
+      .map((fingerprint) => indexByFingerprint.get(fingerprint))
+      .find((index): index is number => index != null);
+
+    if (existingIndex == null) {
+      deduped.push(message);
+      indexMessage(message, deduped.length - 1);
+      return;
+    }
+
+    const mergedMessage = mergeCanonicalMessages(
+      message,
+      deduped[existingIndex],
+    );
+    deduped[existingIndex] = mergedMessage;
+    indexMessage(mergedMessage, existingIndex);
+  });
+
+  return deduped;
+}
+
 export function mergeVisibleMessages(
   persistedMessages: unknown,
   liveMessages: unknown,
 ): CanonicalMessage[] {
-  const persisted = normalizeMessages(persistedMessages);
-  const live = normalizeMessages(liveMessages);
+  const persisted = dedupeCanonicalMessages(
+    normalizeMessages(persistedMessages),
+  );
+  const live = dedupeCanonicalMessages(normalizeMessages(liveMessages));
 
   if (!persisted.length) {
     return live;
@@ -713,7 +753,7 @@ export function mergeVisibleMessages(
     }
   }
 
-  return merged;
+  return dedupeCanonicalMessages(merged);
 }
 
 function normalizeInterruptValue(rawInterrupt: unknown): unknown | undefined {

@@ -102,6 +102,7 @@ class PlanAgent(BaseSpecialistAgent):
             f"- feature_points: {self._format_prompt_value(feature_points)}",
             f"- existing_test_plan_files: {self._format_prompt_value(existing_plan_files)}",
             "- `planner_save_plan.fileName` 必须是相对 `project_dir` 的路径。",
+            "- `planner_save_plan.fileName` 必须符合 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`。",
             "## 完成条件",
             "- 必须先调用一次 `planner_setup_page` 初始化页面。",
             f"- 初始化完成后，必须使用 `browser_navigate` 打开 `{url}` 并开始探索。",

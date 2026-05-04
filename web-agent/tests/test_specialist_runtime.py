@@ -973,6 +973,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Generator 阶段", result["messages"][0].content)
         self.assertIn("a_case.spec.ts", result["messages"][0].content)
         self.assertIn("b_case.spec.ts", result["messages"][0].content)
+        self.assertIn("下一阶段建议输入", result["messages"][0].content)
         self.assertEqual(
             result["latest_artifacts"]["generator"]["output_files"],
             ["test_case/demo/a_case.spec.ts", "test_case/demo/b_case.spec.ts"],
@@ -1161,6 +1162,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Healer 阶段", result["messages"][0].content)
         self.assertIn(relative_script_path, result["messages"][0].content)
+        self.assertIn("下一阶段建议输入", result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
         self.assertEqual(fake_deep_agent.inputs[0][1]["recursion_limit"], self._build_settings().specialist_recursion_limit)
         self.assertEqual(fake_deep_agent.inputs[0][2], "v2")
@@ -1211,6 +1213,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Healer 阶段", result["messages"][0].content)
         self.assertIn(relative_script_path, result["messages"][0].content)
+        self.assertIn("下一阶段建议输入", result["messages"][0].content)
 
     async def test_healer_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
         project_dir = self.root_path / "healer-visible-stream"

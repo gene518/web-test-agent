@@ -63,6 +63,7 @@ class ArtifactHistoryEntry(TypedDict, total=False):
     message: str
     test_plan_files: list[str]
     test_scripts: list[str]
+    planned_test_case_files: list[str]
     saved_test_cases: list[ArtifactItem]
     saved_test_case_files: list[str]
     validation_runs: list[str]
@@ -311,7 +312,7 @@ def extract_plan_artifact_from_planner_payload(
         raise RuntimeError("`planner_save_plan.suites` 不能为空。")
 
     items: list[ArtifactItem] = []
-    saved_test_case_files: list[str] = []
+    planned_test_case_files: list[str] = []
     for suite in suites:
         if not isinstance(suite, dict):
             raise RuntimeError("`planner_save_plan.suites[]` 必须是对象。")
@@ -360,9 +361,9 @@ def extract_plan_artifact_from_planner_payload(
                     step_count=step_count,
                 )
             )
-            saved_test_case_files.append(target_file)
+            planned_test_case_files.append(target_file)
 
-    deduplicated_case_files = _dedupe(saved_test_case_files)
+    deduplicated_case_files = _dedupe(planned_test_case_files)
     return ArtifactHistoryEntry(
         artifact_id=_build_artifact_id("plan"),
         stage="plan",
@@ -375,8 +376,10 @@ def extract_plan_artifact_from_planner_payload(
         items=items,
         message=overview,
         test_plan_files=[plan_file],
+        planned_test_case_files=deduplicated_case_files,
         saved_test_cases=items,
-        saved_test_case_files=deduplicated_case_files,
+        # 兼容旧字段，但 Plan 阶段并不会实际保存脚本文件。
+        saved_test_case_files=[],
     )
 
 
@@ -717,8 +720,6 @@ def _collect_script_files(artifacts: list[ArtifactHistoryEntry]) -> list[str]:
     collected: list[str] = []
     for artifact in artifacts:
         collected.extend(_normalize_string_list(artifact.get("test_scripts")))
-        if artifact.get("stage") == "plan":
-            collected.extend(_normalize_string_list(artifact.get("saved_test_case_files")))
         if artifact.get("stage") == "generator":
             collected.extend(_normalize_string_list(artifact.get("output_files")))
         if artifact.get("stage") == "healer":
@@ -793,63 +794,186 @@ def _looks_like_case_selector_text(value: str) -> bool:
 
 def _build_plan_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     plan_files = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
-    target_files = ", ".join(f"`{path}`" for path in artifact.get("saved_test_case_files", [])) or "无"
-    case_details = "；".join(
-        f"`{item['case_name']}` -> `{item['file']}`"
-        for item in artifact.get("saved_test_cases", [])
-        if item.get("case_name") and item.get("file")
-    ) or "无"
-    return "\n".join(
-        [
-            "**Plan 阶段**",
-            f"- 状态：成功",
-            f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
-            f"- 保存的测试计划：{plan_files}",
-            f"- 目标脚本文件：{target_files}",
-            f"- 用例明细：{case_details}",
-        ]
-    )
+    planned_files = _plan_target_files_from_artifact(artifact)
+    case_detail_lines = _build_plan_case_detail_lines(artifact)
+    lines = [
+        "**Plan 阶段**",
+        "- 状态：成功",
+        f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
+        f"- 已保存测试计划：共 {len(_normalize_string_list(artifact.get('output_files')))} 个，{plan_files}",
+        (
+            f"- 待生成脚本规划：共 {len(planned_files)} 个，"
+            + "、".join(f"`{path}`" for path in planned_files)
+            if planned_files
+            else "- 待生成脚本规划：无"
+        ),
+        (
+            f"- 用例明细：共 {len(case_detail_lines)} 条"
+            if case_detail_lines
+            else "- 用例明细：无"
+        ),
+    ]
+    if case_detail_lines:
+        lines.extend(case_detail_lines)
+    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('plan', artifact)}")
+    return "\n".join(lines)
 
 
 def _build_generator_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     input_plans = ", ".join(f"`{path}`" for path in artifact.get("input_files", [])) or "无"
     output_scripts = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
-    script_details = "；".join(
-        f"`{item['file']}` 包含 {', '.join(f'`{title}`' for title in item.get('test_titles', [])) or '无测试标题'}"
-        for item in artifact.get("items", [])
-        if item.get("file")
-    ) or "无"
-    return "\n".join(
-        [
-            "**Generator 阶段**",
-            f"- 状态：成功",
-            f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
-            f"- 来源测试计划：{input_plans}",
-            f"- 生成/改写脚本：{output_scripts}",
-            f"- 脚本明细：{script_details}",
-        ]
+    script_detail_lines = _build_script_detail_lines(
+        artifact=artifact,
+        detail_prefix="脚本",
+        include_source_plan=True,
     )
+    lines = [
+        "**Generator 阶段**",
+        "- 状态：成功",
+        f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
+        f"- 来源测试计划：共 {len(_normalize_string_list(artifact.get('input_files')))} 个，{input_plans}",
+        f"- 已生成脚本：共 {len(_normalize_string_list(artifact.get('output_files')))} 个，{output_scripts}",
+        (
+            f"- 脚本明细：共 {len(script_detail_lines)} 条"
+            if script_detail_lines
+            else "- 脚本明细：无"
+        ),
+    ]
+    if script_detail_lines:
+        lines.extend(script_detail_lines)
+    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('generator', artifact)}")
+    return "\n".join(lines)
 
 
 def _build_healer_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     input_scripts = ", ".join(f"`{path}`" for path in artifact.get("input_files", [])) or "无"
     changed_files = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
     validation_runs = ", ".join(f"`{path}`" for path in artifact.get("validation_runs", [])) or "无"
-    script_details = "；".join(
-        f"`{item['file']}` 包含 {', '.join(f'`{title}`' for title in item.get('test_titles', [])) or '无测试标题'}"
-        for item in artifact.get("items", [])
-        if item.get("file")
-    ) or "无"
-    return "\n".join(
+    script_detail_lines = _build_script_detail_lines(
+        artifact=artifact,
+        detail_prefix="调试对象",
+        include_source_plan=False,
+    )
+    lines = [
+        "**Healer 阶段**",
+        "- 状态：成功",
+        f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
+        f"- 调试目标脚本：共 {len(_normalize_string_list(artifact.get('input_files')))} 个，{input_scripts}",
+        f"- 实际变更文件：共 {len(_normalize_string_list(artifact.get('output_files')))} 个，{changed_files}",
+        f"- 验证运行目标：共 {len(_normalize_string_list(artifact.get('validation_runs')))} 个，{validation_runs}",
+        (
+            f"- 脚本明细：共 {len(script_detail_lines)} 条"
+            if script_detail_lines
+            else "- 脚本明细：无"
+        ),
+    ]
+    if script_detail_lines:
+        lines.extend(script_detail_lines)
+    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('healer', artifact)}")
+    return "\n".join(lines)
+
+
+def _plan_target_files_from_artifact(artifact: ArtifactHistoryEntry) -> list[str]:
+    """返回 Plan 阶段规划出的脚本路径列表。"""
+
+    return _dedupe(
         [
-            "**Healer 阶段**",
-            f"- 状态：成功",
-            f"- 项目目录：`{artifact.get('project_dir', '未知')}`",
-            f"- 调试脚本：{input_scripts}",
-            f"- 实际变更文件：{changed_files}",
-            f"- 验证运行目标：{validation_runs}",
-            f"- 脚本明细：{script_details}",
+            *_normalize_string_list(artifact.get("planned_test_case_files")),
+            *_normalize_string_list(artifact.get("saved_test_case_files")),
         ]
+    )
+
+
+def _build_plan_case_detail_lines(artifact: ArtifactHistoryEntry) -> list[str]:
+    """为 Plan 阶段构建更易读的用例详情列表。"""
+
+    detail_lines: list[str] = []
+    for index, item in enumerate(artifact.get("saved_test_cases", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        case_name = _normalize_optional_text(item.get("case_name"))
+        target_file = _normalize_optional_text(item.get("file"))
+        if not case_name and not target_file:
+            continue
+        suite_name = _normalize_optional_text(item.get("suite_name")) or "未分组"
+        step_count = item.get("step_count")
+        step_text = f"{step_count} 步" if isinstance(step_count, int) and step_count > 0 else "步骤未标注"
+        parts = [
+            f"- 用例 {index}：`{case_name or '未命名用例'}`",
+            f"所属分组 `{suite_name}`",
+            step_text,
+        ]
+        if target_file:
+            parts.append(f"计划生成 `{target_file}`")
+        detail_lines.append("，".join(parts))
+    return detail_lines
+
+
+def _build_script_detail_lines(
+    *,
+    artifact: ArtifactHistoryEntry,
+    detail_prefix: str,
+    include_source_plan: bool,
+) -> list[str]:
+    """为 Generator / Healer 阶段构建统一的脚本详情列表。"""
+
+    detail_lines: list[str] = []
+    for index, item in enumerate(artifact.get("items", []), start=1):
+        if not isinstance(item, dict):
+            continue
+        file_path = _normalize_optional_text(item.get("file"))
+        if not file_path:
+            continue
+        title_text = _format_test_title_summary(item.get("test_titles"))
+        parts = [f"- {detail_prefix} {index}：`{file_path}`", title_text]
+        if include_source_plan:
+            source_plan = _normalize_optional_text(item.get("source_plan"))
+            if source_plan:
+                parts.append(f"来源计划 `{source_plan}`")
+        detail_lines.append("，".join(parts))
+    return detail_lines
+
+
+def _format_test_title_summary(value: Any) -> str:
+    """把脚本里的标题列表压缩成简洁摘要。"""
+
+    titles = _normalize_string_list(value)
+    if not titles:
+        return "未提取到测试标题"
+    return "覆盖标题 " + "、".join(f"`{title}`" for title in titles)
+
+
+def _next_stage_input_hint(stage: StageName, artifact: ArtifactHistoryEntry | dict[str, Any]) -> str:
+    """返回各阶段尾部的下一步输入建议。"""
+
+    if stage == "plan":
+        plan_files = _normalize_string_list(artifact.get("test_plan_files"))
+        plan_hint = "、".join(f"`{path}`" for path in plan_files) if plan_files else "`test_plan_files`"
+        return (
+            "如需继续生成测试脚本，可直接回复“继续生成测试脚本”；"
+            f"系统会优先复用当前测试计划 {plan_hint}，"
+            "也可补充 `test_plan_files` 或 `test_cases` 来缩小生成范围。"
+        )
+
+    if stage == "generator":
+        output_scripts = _normalize_string_list(artifact.get("output_files"))
+        script_hint = "、".join(f"`{path}`" for path in output_scripts) if output_scripts else "`test_scripts`"
+        plan_files = _normalize_string_list(artifact.get("input_files"))
+        plan_hint = "、".join(f"`{path}`" for path in plan_files) if plan_files else "`test_plan_files`"
+        return (
+            "如需继续调试脚本，可直接回复“调试脚本通过”；"
+            f"系统会优先复用当前脚本 {script_hint}，并关联测试计划 {plan_hint}。"
+            "也可额外补充 `test_scripts` 或 `test_plan_files` 指定调试范围。"
+        )
+
+    output_scripts = _normalize_string_list(artifact.get("output_files"))
+    input_scripts = _normalize_string_list(artifact.get("input_files"))
+    preferred_scripts = output_scripts or input_scripts
+    script_hint = "、".join(f"`{path}`" for path in preferred_scripts) if preferred_scripts else "`test_scripts`"
+    return (
+        "如需继续复测或追加修复，可继续提供 "
+        f"{script_hint}；如需重新生成为其他用例写脚本，可回复“继续生成测试脚本”，"
+        "并按需补充 `test_plan_files` / `test_cases`。"
     )
 
 
@@ -876,6 +1000,7 @@ def _build_failure_stage_summary(
             lines.append(f"- 已识别输入文件：{input_files}")
     if fallback_message:
         lines.append(f"- 说明：{fallback_message}")
+    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint(stage, artifact or {})}")
     return "\n".join(lines)
 
 

@@ -82,7 +82,10 @@ function getThreadMessages(thread: Thread): Record<string, unknown>[] {
 
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
-      return candidate.filter(isRecord);
+      const messages = candidate.filter(isRecord);
+      if (messages.length > 0) {
+        return messages;
+      }
     }
   }
 

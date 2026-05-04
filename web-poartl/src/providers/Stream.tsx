@@ -3,6 +3,7 @@ import React, {
   ReactNode,
   useState,
   useEffect,
+  useRef,
 } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { type Message } from "@langchain/langgraph-sdk";
@@ -106,6 +107,40 @@ const StreamSession = ({
 }) => {
   const [threadId, setThreadId] = useQueryState("threadId");
   const { getThreads, setThreads } = useThreads();
+  const pendingDisplayMessagesRef = useRef<unknown[]>([]);
+  const displayMessagesFrameRef = useRef<number | null>(null);
+
+  const scheduleDisplayMessagesFlush = (
+    messages: unknown[],
+    mutate: (update: Partial<StateType> | ((prev: StateType) => Partial<StateType>)) => void,
+  ) => {
+    pendingDisplayMessagesRef.current.push(...messages);
+    if (displayMessagesFrameRef.current != null) {
+      return;
+    }
+
+    const flush = () => {
+      displayMessagesFrameRef.current = null;
+      const batch = pendingDisplayMessagesRef.current.splice(0);
+      if (!batch.length) {
+        return;
+      }
+
+      mutate((prev) => ({
+        ...prev,
+        display_messages: mergeVisibleMessages(
+          prev.display_messages ?? prev.messages,
+          batch,
+        ),
+      }));
+    };
+
+    displayMessagesFrameRef.current =
+      typeof window !== "undefined" && window.requestAnimationFrame
+        ? window.requestAnimationFrame(flush)
+        : window.setTimeout(flush, 16);
+  };
+
   const streamValue = useTypedStream({
     apiUrl,
     apiKey: apiKey ?? undefined,
@@ -128,13 +163,7 @@ const StreamSession = ({
       }
 
       if (isDisplayMessagesEvent(event)) {
-        options.mutate((prev) => ({
-          ...prev,
-          display_messages: mergeVisibleMessages(
-            prev.display_messages ?? prev.messages,
-            event.messages,
-          ),
-        }));
+        scheduleDisplayMessagesFlush(event.messages, options.mutate);
       }
     },
     onThreadId: (id) => {
@@ -162,6 +191,19 @@ const StreamSession = ({
       }
     });
   }, [apiKey, apiUrl, authScheme]);
+
+  useEffect(() => {
+    return () => {
+      if (displayMessagesFrameRef.current == null) {
+        return;
+      }
+      if (typeof window !== "undefined" && window.cancelAnimationFrame) {
+        window.cancelAnimationFrame(displayMessagesFrameRef.current);
+      } else {
+        window.clearTimeout(displayMessagesFrameRef.current);
+      }
+    };
+  }, []);
 
   return (
     <StreamContext.Provider value={streamValue}>

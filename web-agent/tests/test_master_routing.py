@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -85,6 +85,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["agent_type"], "plan")
         self.assertEqual(result["next_action"], "resolve_stage_files")
+        self.assertEqual([message.content for message in result["display_messages"]], ["帮我写计划"])
 
     async def test_intent_judge_routes_scheduler_to_param_completion(self) -> None:
         node = IntentJudgeNode(
@@ -166,7 +167,45 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["display_messages"][0].content, "给 www.baidu.com 输出测试用例")
         self.assertEqual(result["display_messages"][1].content, "工程名叫 demo")
 
-    async def test_finalize_turn_appends_final_summary_to_display_messages(self) -> None:
+    async def test_workflow_state_appends_messages_with_reducers(self) -> None:
+        def append_runtime_messages(state):  # noqa: ANN001
+            return {
+                "messages": [AIMessage(content="model context", id="ai-context")],
+                "display_messages": [
+                    AIMessage(content="tool call", id="ai-tool-call"),
+                    ToolMessage(
+                        content="tool result",
+                        name="planner_setup_page",
+                        tool_call_id="call-1",
+                        id="tool-result",
+                    ),
+                ],
+            }
+
+        graph = StateGraph(WorkflowState)
+        graph.add_node("append_runtime_messages", append_runtime_messages)
+        graph.add_edge(START, "append_runtime_messages")
+        graph.add_edge("append_runtime_messages", END)
+        compiled = graph.compile()
+
+        human_message = HumanMessage(content="开头用户消息", id="human-1")
+        result = await compiled.ainvoke(
+            {
+                "messages": [human_message],
+                "display_messages": [human_message],
+            }
+        )
+
+        self.assertEqual(
+            [message.content for message in result["messages"]],
+            ["开头用户消息", "model context"],
+        )
+        self.assertEqual(
+            [message.content for message in result["display_messages"]],
+            ["开头用户消息", "tool call", "tool result"],
+        )
+
+    async def test_finalize_turn_returns_only_display_delta(self) -> None:
         node = FinalizeTurnNode()
         human_message = HumanMessage(content="帮我生成脚本", id="human-1")
         stage_message = AIMessage(content="Generator 阶段已完成。", id="ai-1")
@@ -182,10 +221,54 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["messages"][0].content, "Generator 阶段已完成。")
-        self.assertEqual(len(result["display_messages"]), 3)
-        self.assertEqual(result["display_messages"][0].content, "帮我生成脚本")
-        self.assertEqual(result["display_messages"][1].content, "Generator 阶段已完成。")
-        self.assertEqual(result["display_messages"][2].content, "Generator 阶段已完成。")
+        self.assertEqual(len(result["display_messages"]), 1)
+        self.assertEqual(result["display_messages"][0].content, "Generator 阶段已完成。")
+
+    async def test_finalizer_preserves_parameter_completion_and_runtime_timeline_in_graph(self) -> None:
+        def runtime_node(state):  # noqa: ANN001
+            return {
+                "display_messages": [
+                    AIMessage(content="调用 planner_setup_page", id="ai-tool-call"),
+                    ToolMessage(
+                        content="页面初始化完成",
+                        name="planner_setup_page",
+                        tool_call_id="call-setup",
+                        id="tool-setup",
+                    ),
+                ],
+                "pending_stage_summaries": [
+                    {"stage": "plan", "status": "success", "text": "Plan 阶段已完成。"}
+                ],
+            }
+
+        graph = StateGraph(WorkflowState)
+        finalizer = FinalizeTurnNode()
+        graph.add_node("runtime_node", runtime_node)
+        graph.add_node("finalize_turn_node", finalizer.execute)
+        graph.add_edge(START, "runtime_node")
+        graph.add_edge("runtime_node", "finalize_turn_node")
+        graph.add_edge("finalize_turn_node", END)
+        compiled = graph.compile()
+
+        opening_message = HumanMessage(content="为 baidu 生成测试用例", id="human-opening")
+        resume_message = HumanMessage(content="项目名 demo", id="human-resume")
+        result = await compiled.ainvoke(
+            {
+                "messages": [opening_message, resume_message],
+                "display_messages": [opening_message, resume_message],
+            }
+        )
+
+        self.assertEqual(
+            [message.content for message in result["display_messages"]],
+            [
+                "为 baidu 生成测试用例",
+                "项目名 demo",
+                "调用 planner_setup_page",
+                "页面初始化完成",
+                "Plan 阶段已完成。",
+            ],
+        )
 
     async def test_general_test_node_keeps_existing_display_messages_and_appends_summary(self) -> None:
         node = GeneralTestNode(FakeMasterService(agent_type="general"))
@@ -233,6 +316,38 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
 
+    async def test_resolve_stage_files_node_merges_explicit_and_inherited_plan_files_for_generator(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "generator",
+                "pending_agent_type": "generator",
+                "requested_pipeline": ["generator"],
+                "pipeline_cursor": 0,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                    "test_plan_files": ["test_case/manual/aaa_manual.md"],
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "output_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(result["next_action"], "generator")
+        self.assertEqual(
+            result["extracted_params"]["test_plan_files"],
+            ["test_case/manual/aaa_manual.md", "test_case/aaaplanning_demo/aaa_demo.md"],
+        )
+        self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
+
     async def test_resolve_stage_files_node_expands_selector_like_test_cases_from_latest_plan(self) -> None:
         node = ResolveStageFilesNode()
 
@@ -273,7 +388,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_resolve_stage_files_node_inherits_saved_plan_scripts_for_healer(self) -> None:
+    async def test_resolve_stage_files_node_does_not_treat_planned_scripts_as_healer_inputs(self) -> None:
         node = ResolveStageFilesNode()
 
         result = await node.execute(
@@ -290,7 +405,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
                         "stage": "plan",
                         "project_name": "demo-project",
                         "project_dir": "/tmp/demo-project",
-                        "saved_test_case_files": [
+                        "planned_test_case_files": [
                             "test_case/aaaplanning_demo/a_case.spec.ts",
                             "test_case/aaaplanning_demo/b_case.spec.ts",
                         ],
@@ -300,15 +415,98 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+        self.assertEqual(result["next_action"], "complete_params")
+        self.assertEqual(result["missing_params"], ["test_scripts"])
+        self.assertNotIn("test_scripts", result["extracted_params"])
+        self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
+
+    async def test_resolve_stage_files_node_inherits_generator_scripts_for_healer(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "healer",
+                "pending_agent_type": "healer",
+                "requested_pipeline": ["healer"],
+                "pipeline_cursor": 0,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "planned_test_case_files": [
+                            "test_case/aaaplanning_demo/a_case.spec.ts",
+                        ],
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                    },
+                    "generator": {
+                        "stage": "generator",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "output_files": [
+                            "test_case/demo/a_case.spec.ts",
+                            "test_case/demo/b_case.spec.ts",
+                        ],
+                        "test_scripts": [
+                            "test_case/demo/a_case.spec.ts",
+                            "test_case/demo/b_case.spec.ts",
+                        ],
+                    },
+                },
+            }
+        )
+
         self.assertEqual(result["next_action"], "healer")
         self.assertEqual(
             result["extracted_params"]["test_scripts"],
             [
-                "test_case/aaaplanning_demo/a_case.spec.ts",
-                "test_case/aaaplanning_demo/b_case.spec.ts",
+                "test_case/demo/a_case.spec.ts",
+                "test_case/demo/b_case.spec.ts",
             ],
         )
         self.assertEqual(result["extracted_params"]["project_dir"], "/tmp/demo-project")
+
+    async def test_resolve_stage_files_node_merges_explicit_and_inherited_plan_files_for_healer(self) -> None:
+        node = ResolveStageFilesNode()
+
+        result = await node.execute(
+            {
+                "agent_type": "healer",
+                "pending_agent_type": "healer",
+                "requested_pipeline": ["healer"],
+                "pipeline_cursor": 0,
+                "extracted_params": {
+                    "project_name": "demo-project",
+                    "test_scripts": ["test_case/demo/a_case.spec.ts"],
+                    "test_plan_files": ["test_case/manual/aaa_manual.md"],
+                },
+                "latest_artifacts": {
+                    "plan": {
+                        "stage": "plan",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "test_plan_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                    },
+                    "generator": {
+                        "stage": "generator",
+                        "project_name": "demo-project",
+                        "project_dir": "/tmp/demo-project",
+                        "input_files": ["test_case/aaaplanning_demo/aaa_demo.md"],
+                        "output_files": ["test_case/demo/a_case.spec.ts"],
+                        "test_scripts": ["test_case/demo/a_case.spec.ts"],
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(result["next_action"], "healer")
+        self.assertEqual(
+            result["extracted_params"]["test_plan_files"],
+            ["test_case/manual/aaa_manual.md", "test_case/aaaplanning_demo/aaa_demo.md"],
+        )
 
     async def test_resolve_stage_files_node_keeps_explicit_matching_test_cases(self) -> None:
         node = ResolveStageFilesNode()

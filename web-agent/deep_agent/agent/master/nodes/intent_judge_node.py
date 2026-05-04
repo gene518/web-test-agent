@@ -5,6 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from deep_agent.agent.artifacts import next_pipeline_stage
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.state import WorkflowState
+from deep_agent.core.display_message import extract_missing_display_messages
 from deep_agent.core.runtime_logging import build_trace_context, format_state_for_log, get_logger, log_title
 
 
@@ -53,6 +54,7 @@ class IntentJudgeNode:
                         else f"阶段链在 `{state.get('agent_type')}` 阶段结束，准备输出截至当前阶段的汇总。"
                     ),
                 }
+            result = self._with_display_delta(state, result)
             logger.info("%s event=node_exit trace=%s result=%s",
                 log_title("执行", "节点出参", node_name="intent_judge_node"), build_trace_context(config, node_name="intent_judge_node", event_name="node_exit"), format_state_for_log(result),)
             return result
@@ -68,9 +70,21 @@ class IntentJudgeNode:
         else:
             classification_state["next_action"] = "general"
 
+        classification_state = self._with_display_delta(state, classification_state)
         logger.info("%s event=node_exit trace=%s result=%s",
             log_title("执行", "节点出参", node_name="intent_judge_node"), build_trace_context(config, node_name="intent_judge_node", event_name="node_exit"), format_state_for_log(classification_state),)
         return classification_state
+
+    def _with_display_delta(self, state: WorkflowState, result: WorkflowState) -> WorkflowState:
+        """把主消息列表里尚未进入 UI 时间线的消息作为增量返回。"""
+
+        display_delta = extract_missing_display_messages(dict(state))
+        if not display_delta:
+            return result
+        return {
+            **result,
+            "display_messages": display_delta,
+        }
 
     def _stage_status(self, state: WorkflowState) -> str:
         """读取当前阶段状态，默认把无显式错误视为成功。"""

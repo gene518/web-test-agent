@@ -137,11 +137,14 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Plan 阶段", result["messages"][0].content)
         self.assertIn("aaa_demo.md", result["messages"][0].content)
         self.assertIn("a_login_success", result["messages"][0].content)
+        self.assertIn("待生成脚本规划", result["messages"][0].content)
+        self.assertIn("下一阶段建议输入", result["messages"][0].content)
         self.assertEqual(result["artifact_history"][0]["output_files"], ["test_case/aaaplanning_demo/aaa_demo.md"])
         self.assertEqual(
-            result["latest_artifacts"]["plan"]["saved_test_case_files"],
+            result["latest_artifacts"]["plan"]["planned_test_case_files"],
             ["test_case/aaaplanning_demo/a_login_success.spec.ts"],
         )
+        self.assertEqual(result["latest_artifacts"]["plan"]["saved_test_case_files"], [])
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
 

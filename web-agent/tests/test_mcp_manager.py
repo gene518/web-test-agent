@@ -4,13 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Literal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from deep_agent.core.config import AppSettings
 from deep_agent.tools.mcp_manager import MCPToolsManager
@@ -77,6 +78,13 @@ class ClickArgs(BaseModel):
     intent: str
 
 
+class PlannerSavePlanArgs(BaseModel):
+    name: str
+    fileName: str
+    overview: str = "overview"
+    suites: list[dict] = Field(default_factory=list)
+
+
 class PointerInterceptedTool(BaseTool):
     name: str = "browser_click"
     description: str = "browser click tool"
@@ -102,6 +110,59 @@ class ValidatingClickTool(BaseTool):
 
     async def _arun(self, ref: str, intent: str) -> str:
         return self._run(ref, intent)
+
+
+class ParentMissingPlannerSaveTool(BaseTool):
+    name: str = "planner_save_plan"
+    description: str = "planner save plan tool"
+    args_schema: type[BaseModel] = PlannerSavePlanArgs
+    response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+    workspace_dir: Path
+    calls: int = 0
+
+    def _run(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, ARG002, N803
+        self.calls += 1
+        if self.calls == 1:
+            raise ToolException(
+                "RESOURCE_NOT_FOUND: ENOENT: no such file or directory, open "
+                f"'{self.workspace_dir / fileName}'"
+        )
+        if not (self.workspace_dir / Path(fileName).parent).is_dir():
+            raise ToolException(f"ENOENT: parent directory does not exist: {Path(fileName).parent}")
+        return ([{"type": "text", "text": "saved"}], {"raw": "saved"})
+
+    async def _arun(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, N803
+        return self._run(name, fileName, overview, suites)
+
+
+class FailingPlannerSaveTool(BaseTool):
+    name: str = "planner_save_plan"
+    description: str = "planner save plan tool"
+    args_schema: type[BaseModel] = PlannerSavePlanArgs
+    response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+    calls: int = 0
+
+    def _run(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, ARG002, N803
+        self.calls += 1
+        raise ToolException("PERMISSION_DENIED: cannot write file")
+
+    async def _arun(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, N803
+        return self._run(name, fileName, overview, suites)
+
+
+class ListReturningPlannerSaveTool(BaseTool):
+    name: str = "planner_save_plan"
+    description: str = "planner save plan tool"
+    args_schema: type[BaseModel] = PlannerSavePlanArgs
+    response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+    calls: int = 0
+
+    def _run(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, ARG002, N803
+        self.calls += 1
+        return [{"type": "text", "text": f"saved:{fileName}"}]
+
+    async def _arun(self, name: str, fileName: str, overview: str = "overview", suites: list[dict] | None = None):  # noqa: ANN201, N803
+        return self._run(name, fileName, overview, suites)
 
 
 class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
@@ -350,6 +411,158 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("参数", payload["recovery_instruction"])
         self.assertIn("ref", payload["error_message"])
         self.assertIn("intent", payload["error_message"])
+
+        await manager.close()
+
+    async def test_planner_save_plan_creates_parent_dir_after_missing_parent_error_and_retries(self) -> None:
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        project_dir = (self.root_path / "planner-save-retry").resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+        list_tools = AsyncMock(return_value=[SimpleNamespace(name="planner_save_plan")])
+        tool = ParentMissingPlannerSaveTool(workspace_dir=project_dir)
+
+        with (
+            patch("deep_agent.tools.mcp_manager.MultiServerMCPClient", FakeClient),
+            patch.object(MCPToolsManager, "_list_mcp_tools", list_tools),
+            patch("deep_agent.tools.mcp_manager.convert_mcp_tool_to_langchain_tool", return_value=tool),
+        ):
+            [wrapped_tool] = await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_dir,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/planner_save_plan",),
+            )
+
+        result = await wrapped_tool.arun(
+            {
+                "name": "demo",
+                "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+                "overview": "overview",
+                "suites": [],
+            },
+            tool_call_id="call-plan",
+        )
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.content, [{"type": "text", "text": "saved"}])
+        self.assertEqual(tool.calls, 2)
+        self.assertTrue((project_dir / "test_case" / "aaaplanning_demo").is_dir())
+
+        await manager.close()
+
+    async def test_planner_save_plan_rejects_legacy_path_before_tool_call(self) -> None:
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        project_dir = (self.root_path / "planner-save-invalid-path").resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+        list_tools = AsyncMock(return_value=[SimpleNamespace(name="planner_save_plan")])
+        tool = ParentMissingPlannerSaveTool(workspace_dir=project_dir)
+
+        with (
+            patch("deep_agent.tools.mcp_manager.MultiServerMCPClient", FakeClient),
+            patch.object(MCPToolsManager, "_list_mcp_tools", list_tools),
+            patch("deep_agent.tools.mcp_manager.convert_mcp_tool_to_langchain_tool", return_value=tool),
+        ):
+            [wrapped_tool] = await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_dir,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/planner_save_plan",),
+            )
+
+        result = await wrapped_tool.arun(
+            {
+                "name": "demo",
+                "fileName": "test_case/aaa_demo.md",
+                "overview": "overview",
+                "suites": [],
+            },
+            tool_call_id="call-plan",
+        )
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "error")
+        self.assertEqual(tool.calls, 0)
+        self.assertFalse((project_dir / "test_case" / "aaaplanning_demo").exists())
+        payload = json.loads(result.content)
+        self.assertIn("test_case/aaaplanning_demo/aaa_demo.md", payload["error_message"])
+        self.assertIn("当前收到：`test_case/aaa_demo.md`", payload["error_message"])
+
+        await manager.close()
+
+    async def test_planner_save_plan_preserves_non_parent_directory_errors(self) -> None:
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        project_dir = (self.root_path / "planner-save-permission-denied").resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+        list_tools = AsyncMock(return_value=[SimpleNamespace(name="planner_save_plan")])
+        tool = FailingPlannerSaveTool()
+
+        with (
+            patch("deep_agent.tools.mcp_manager.MultiServerMCPClient", FakeClient),
+            patch.object(MCPToolsManager, "_list_mcp_tools", list_tools),
+            patch("deep_agent.tools.mcp_manager.convert_mcp_tool_to_langchain_tool", return_value=tool),
+        ):
+            [wrapped_tool] = await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_dir,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/planner_save_plan",),
+            )
+
+        result = await wrapped_tool.arun(
+            {
+                "name": "demo",
+                "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+                "overview": "overview",
+                "suites": [],
+            },
+            tool_call_id="call-plan",
+        )
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "error")
+        self.assertEqual(tool.calls, 1)
+        self.assertFalse((project_dir / "test_case" / "aaaplanning_demo").exists())
+        payload = json.loads(result.content)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["type"], "tool_error")
+        self.assertIn("PERMISSION_DENIED", payload["error_message"])
+
+        await manager.close()
+
+    async def test_planner_save_plan_accepts_content_list_from_raw_tool_implementation(self) -> None:
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        project_dir = (self.root_path / "planner-save-list-content").resolve()
+        project_dir.mkdir(parents=True, exist_ok=True)
+        list_tools = AsyncMock(return_value=[SimpleNamespace(name="planner_save_plan")])
+        tool = ListReturningPlannerSaveTool()
+
+        with (
+            patch("deep_agent.tools.mcp_manager.MultiServerMCPClient", FakeClient),
+            patch.object(MCPToolsManager, "_list_mcp_tools", list_tools),
+            patch("deep_agent.tools.mcp_manager.convert_mcp_tool_to_langchain_tool", return_value=tool),
+        ):
+            [wrapped_tool] = await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_dir,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/planner_save_plan",),
+            )
+
+        result = await wrapped_tool.arun(
+            {
+                "name": "demo",
+                "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+                "overview": "overview",
+                "suites": [],
+            },
+            tool_call_id="call-plan",
+        )
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.content, [{"type": "text", "text": "saved:test_case/aaaplanning_demo/aaa_demo.md"}])
+        self.assertEqual(tool.calls, 1)
 
         await manager.close()
 

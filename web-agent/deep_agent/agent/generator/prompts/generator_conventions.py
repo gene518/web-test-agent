@@ -9,7 +9,7 @@ GENERATOR_BUSINESS_PROMPT = """\
 ## 阶段边界
 
 - 输入是已经确认的测试计划；严格按计划中的场景、步骤和预期生成脚本，不臆造计划外功能。
-- Generator 阶段只产出 `.spec.ts` 测试脚本，以及在首次落脚本时完成计划目录重命名。
+- Generator 阶段只产出 `.spec.ts` 测试脚本，并在生成脚本后把对应测试计划 md 复制到正式目录、删除旧的 planning 目录。
 - 不要在该阶段新增、改写或保存测试计划，也不要写入 `[UPDATED]` 用例记录。
 
 ---
@@ -17,8 +17,9 @@ GENERATOR_BUSINESS_PROMPT = """\
 ## 目录与文件规则
 
 - 测试脚本路径固定为 `test_case/{plan-name}/{case-name}.spec.ts`。
-- 若计划目录当前为 `test_case/aaaplanning_{plan-name}/`，生成第一个脚本文件时必须同步重命名为 `test_case/{plan-name}/`。
-- 重命名后必须保留 `aaa_{plan-name}.md` 在该目录中，且不要改动其内容。
+- 如果测试计划当前在 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`，生成脚本后，把这个测试计划 md 复制到 `test_case/{plan-name}/aaa_{plan-name}.md`。
+- 复制完成后，删除原来的 `test_case/aaaplanning_{plan-name}/` 文件夹。
+- `aaa_{plan-name}.md` 的内容不要改动，也不要再额外创建其他并行目录。
 
 ---
 

@@ -8,7 +8,6 @@ from deep_agent.agent.artifacts import build_final_turn_summary, clear_current_t
 from deep_agent.core.display_message import (
     build_display_summary_message,
     extract_missing_display_messages,
-    normalize_display_delta,
 )
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.runtime_logging import build_trace_context, format_messages_for_log, format_state_for_log, get_logger, log_title
@@ -32,13 +31,9 @@ class FinalizeTurnNode:
             final_summary,
             prefix="final-summary",
         )
-        existing_display_messages = normalize_display_delta(
-            state.get("display_messages", []),
-        )
         result: WorkflowState = {
             "messages": [final_message],
             "display_messages": [
-                *existing_display_messages,
                 *extract_missing_display_messages(dict(state)),
                 final_message,
             ],

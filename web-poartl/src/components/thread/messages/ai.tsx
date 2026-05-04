@@ -12,11 +12,7 @@ import { ThreadView } from "../agent-inbox";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
-import {
-  getActiveInterrupt,
-  mergeVisibleMessages,
-  normalizeToolCalls,
-} from "../message-utils";
+import { normalizeToolCalls } from "../message-utils";
 
 function CustomComponent({
   message,
@@ -80,10 +76,16 @@ function Interrupt({
 export function AssistantMessage({
   message,
   isLoading,
+  interrupt,
+  isLastMessage,
+  hasNoAIOrToolMessages,
   handleRegenerate,
 }: {
   message: Message | undefined;
   isLoading: boolean;
+  interrupt?: unknown;
+  isLastMessage: boolean;
+  hasNoAIOrToolMessages: boolean;
   handleRegenerate: (parentCheckpoint: Checkpoint | null | undefined) => void;
 }) {
   const content = message?.content ?? [];
@@ -94,17 +96,7 @@ export function AssistantMessage({
   );
 
   const thread = useStreamContext();
-  const visibleMessages = mergeVisibleMessages(
-    thread.values.display_messages,
-    thread.messages,
-  );
-  const isLastMessage =
-    visibleMessages[visibleMessages.length - 1]?.id === message?.id;
-  const hasNoAIOrToolMessages = !visibleMessages.find(
-    (m) => m.type === "ai" || m.type === "tool",
-  );
   const meta = message ? thread.getMessagesMetadata(message) : undefined;
-  const threadInterrupt = getActiveInterrupt(thread.values, thread.interrupt);
 
   const parentCheckpoint = meta?.firstSeenState?.parent_checkpoint;
   const normalizedToolCalls = normalizeToolCalls(message);
@@ -123,7 +115,7 @@ export function AssistantMessage({
           <>
             <ToolResult message={message} />
             <Interrupt
-              interrupt={threadInterrupt}
+              interrupt={interrupt}
               isLastMessage={isLastMessage}
               hasNoAIOrToolMessages={hasNoAIOrToolMessages}
             />
@@ -147,7 +139,7 @@ export function AssistantMessage({
               />
             )}
             <Interrupt
-              interrupt={threadInterrupt}
+              interrupt={interrupt}
               isLastMessage={isLastMessage}
               hasNoAIOrToolMessages={hasNoAIOrToolMessages}
             />

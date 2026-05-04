@@ -57,7 +57,7 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 
 - 当工具结果里出现 `ok=false` 或 `type=tool_error` 时，表示上一步工具调用失败，但任务不能立即中断。
 - 必须基于已有操作历史继续推理，不能从头开始。
-- 禁止重复完全相同的工具调用和参数。
+- 除 `planner_save_plan` 规范路径因父目录不存在失败的情况外，禁止重复完全相同的工具调用和参数。
 - 先分析 `error_type`、`error_message` 和 `tool_name`。
 - 能恢复时，优先重新观察页面、修正参数、换工具、等待页面稳定。
 - 如果是点击被遮挡，不要重复相同的 `browser_click`；先 `browser_snapshot`，如果目标是输入框优先 `browser_type`。
@@ -70,6 +70,7 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 - 以 `planner_save_plan` 的成功结果作为计划完成信号。
 - 禁止在 `planner_save_plan` 失败后使用 `create_file` 或其他文件工具绕过 planner 工作流。
 - `planner_save_plan` 参数错误或保存失败时，必须先修正参数再重试。
+- 如果规范路径保存时提示父目录不存在，不要退回 `test_case/aaa_{plan-name}.md`；继续使用同一个 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md` 路径重试。
 - `planner_save_plan` 成功后，调用 `browser_run_code` 执行以下函数表达式关闭浏览器，然后停止：
 
 ```js

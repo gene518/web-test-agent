@@ -45,5 +45,5 @@ npm run test:headed -- test_case/demo_health_consultation/a_send_text_message.sp
 
 - `playwright.config.ts`：demo 已内置 macOS 和 Windows 的本地 Chrome 默认路径；如果你的 Chrome 安装目录不同，需要按本机实际路径手动调整。
 - `test_case/shared/base-test.ts`：按业务公共前置封装基础能力。
-- `test_case/{plan-name}/aaa_{plan-name}.md`：保存测试计划。
+- `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`：Plan 阶段保存测试计划。
 - `test_case/{plan-name}/*.spec.ts`：保存按计划生成的测试脚本。

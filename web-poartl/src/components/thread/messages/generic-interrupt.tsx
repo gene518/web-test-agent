@@ -22,6 +22,30 @@ function isUrl(value: any): boolean {
   }
 }
 
+function extractInterruptQuestion(
+  interrupt: Record<string, any> | Record<string, any>[],
+): string {
+  if (Array.isArray(interrupt)) {
+    for (const item of interrupt) {
+      if (
+        item &&
+        typeof item === "object" &&
+        typeof item.question === "string" &&
+        item.question.trim()
+      ) {
+        return item.question.trim();
+      }
+    }
+    return "";
+  }
+
+  if (typeof interrupt.question === "string" && interrupt.question.trim()) {
+    return interrupt.question.trim();
+  }
+
+  return "";
+}
+
 function renderInterruptStateItem(value: any): React.ReactNode {
   if (isComplexValue(value)) {
     return (
@@ -54,6 +78,7 @@ export function GenericInterruptView({
   const [isExpanded, setIsExpanded] = useState(false);
   const [reply, setReply] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const questionTitle = extractInterruptQuestion(interrupt);
 
   const contentStr = JSON.stringify(interrupt, null, 2);
   const contentLines = contentStr.split("\n");
@@ -89,7 +114,9 @@ export function GenericInterruptView({
     if (Array.isArray(interrupt)) {
       return isExpanded ? interrupt : interrupt.slice(0, 5);
     } else {
-      const entries = Object.entries(interrupt);
+      const entries = Object.entries(interrupt).filter(
+        ([key]) => key !== "question",
+      );
       if (!isExpanded && shouldTruncate) {
         // 折叠状态下逐个处理值，必要时截断。
         return entries.map(([key, value]) => [key, truncateValue(value)]);
@@ -155,7 +182,9 @@ export function GenericInterruptView({
     <div className="overflow-hidden rounded-lg border border-gray-200">
       <div className="border-b border-gray-200 bg-gray-50 px-4 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-medium text-gray-900">人工中断</h3>
+          <h3 className="font-medium text-gray-900">
+            {questionTitle ? `人工中断：${questionTitle}` : "人工中断"}
+          </h3>
         </div>
       </div>
       <motion.div

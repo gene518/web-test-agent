@@ -1,8 +1,12 @@
 import { ToolMessage } from "@langchain/langgraph-sdk";
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { RenderToolCall } from "../message-utils";
+
+const PREVIEW_CHAR_LIMIT = 500;
+const PREVIEW_LINE_LIMIT = 4;
+const STRUCTURED_PREVIEW_ITEMS = 5;
 
 function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
@@ -14,6 +18,57 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTextBlock(value: unknown): value is { type: "text"; text: string } {
   return isRecord(value) && value.type === "text" && typeof value.text === "string";
+}
+
+function truncatePreviewText(
+  text: string,
+  charLimit = PREVIEW_CHAR_LIMIT,
+  lineLimit = PREVIEW_LINE_LIMIT,
+): { text: string; truncated: boolean } {
+  const lines = text.split("\n");
+  let truncated = false;
+  let preview = text;
+
+  if (lines.length > lineLimit) {
+    preview = lines.slice(0, lineLimit).join("\n");
+    truncated = true;
+  }
+
+  if (preview.length > charLimit) {
+    preview = preview.slice(0, charLimit);
+    truncated = true;
+  }
+
+  return {
+    text: truncated ? `${preview}...` : preview,
+    truncated,
+  };
+}
+
+function summarizeStructuredValue(value: unknown): string {
+  if (value == null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return `Array(${value.length})`;
+  }
+
+  if (isRecord(value)) {
+    const keys = Object.keys(value);
+    const previewKeys = keys.slice(0, STRUCTURED_PREVIEW_ITEMS).join(", ");
+    const suffix = keys.length > STRUCTURED_PREVIEW_ITEMS ? ", ..." : "";
+    return previewKeys
+      ? `Object(${keys.length}) { ${previewKeys}${suffix} }`
+      : "Object(0)";
+  }
+
+  return String(value);
+}
+
+function looksLikeStructuredText(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
 }
 
 function normalizeStructuredContent(value: unknown): {
@@ -91,7 +146,57 @@ function resolveToolResultContent(message: ToolMessage): {
   };
 }
 
-function renderStructuredValue(value: unknown): React.ReactNode {
+function resolveToolResultPreview(message: ToolMessage): {
+  previewText: string;
+  canExpand: boolean;
+} {
+  const content = message.content;
+  const artifact = "artifact" in message ? message.artifact : undefined;
+
+  if (Array.isArray(content) || isComplexValue(content)) {
+    return {
+      previewText: summarizeStructuredValue(content),
+      canExpand: true,
+    };
+  }
+
+  if (typeof content === "string") {
+    if (content.trim() === "[object Object]" && artifact !== undefined) {
+      return {
+        previewText:
+          typeof artifact === "string"
+            ? truncatePreviewText(artifact).text
+            : summarizeStructuredValue(artifact),
+        canExpand: true,
+      };
+    }
+
+    const preview = truncatePreviewText(content);
+    return {
+      previewText: preview.text,
+      canExpand: preview.truncated || looksLikeStructuredText(content),
+    };
+  }
+
+  if (artifact !== undefined) {
+    return {
+      previewText:
+        typeof artifact === "string"
+          ? truncatePreviewText(artifact).text
+          : summarizeStructuredValue(artifact),
+      canExpand: true,
+    };
+  }
+
+  return {
+    previewText: String(content ?? ""),
+    canExpand: false,
+  };
+}
+
+function StructuredValue({ value }: { value: unknown }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   if (value == null) {
     return <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm">null</code>;
   }
@@ -101,9 +206,19 @@ function renderStructuredValue(value: unknown): React.ReactNode {
   }
 
   return (
-    <code className="block rounded bg-gray-50 px-2 py-1 font-mono text-sm whitespace-pre-wrap break-all">
-      {JSON.stringify(value, null, 2)}
-    </code>
+    <div className="flex flex-col gap-2">
+      <code className="block rounded bg-gray-50 px-2 py-1 font-mono text-sm whitespace-pre-wrap break-all">
+        {isExpanded ? JSON.stringify(value, null, 2) : summarizeStructuredValue(value)}
+      </code>
+      <button
+        type="button"
+        onClick={() => setIsExpanded((prev) => !prev)}
+        className="flex w-fit items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+      >
+        {isExpanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+        {isExpanded ? "收起" : "展开"}
+      </button>
+    </div>
   );
 }
 
@@ -149,7 +264,7 @@ export function ToolCalls({
                         {key}
                       </td>
                       <td className="px-4 py-2 text-sm text-gray-500">
-                        {renderStructuredValue(value)}
+                        <StructuredValue value={value} />
                       </td>
                     </tr>
                   ))}
@@ -174,22 +289,19 @@ export function ToolCalls({
 export function ToolResult({ message }: { message: ToolMessage }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const { parsedContent, isStructuredContent } = resolveToolResultContent(message);
-  const structuredEntries = isRecord(parsedContent)
-    ? Object.entries(parsedContent)
-    : [];
-
-  const contentStr = isStructuredContent
-    ? JSON.stringify(parsedContent, null, 2)
-    : String(parsedContent ?? "");
-  const contentLines = contentStr.split("\n");
-  const shouldTruncate = contentLines.length > 4 || contentStr.length > 500;
-  const displayedContent =
-    shouldTruncate && !isExpanded
-      ? contentStr.length > 500
-        ? contentStr.slice(0, 500) + "..."
-        : contentLines.slice(0, 4).join("\n") + "\n..."
-      : contentStr;
+  const preview = useMemo(() => resolveToolResultPreview(message), [message]);
+  const expandedContent = useMemo(
+    () => (isExpanded ? resolveToolResultContent(message) : null),
+    [isExpanded, message],
+  );
+  const parsedContent = expandedContent?.parsedContent;
+  const isStructuredContent = expandedContent?.isStructuredContent ?? false;
+  const structuredEntries = isRecord(parsedContent) ? Object.entries(parsedContent) : [];
+  const displayedText =
+    expandedContent && !isStructuredContent
+      ? String(parsedContent ?? "")
+      : preview.previewText;
+  const canToggle = preview.canExpand || isExpanded;
 
   return (
     <div className="mx-auto grid max-w-3xl grid-rows-[1fr_auto] gap-2">
@@ -220,52 +332,43 @@ export function ToolResult({ message }: { message: ToolMessage }) {
           transition={{ duration: 0.3 }}
         >
           <div className="p-3">
-            <AnimatePresence
-              mode="wait"
-              initial={false}
+            <motion.div
+              key={isExpanded ? "expanded" : "collapsed"}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.15 }}
             >
-              <motion.div
-                key={isExpanded ? "expanded" : "collapsed"}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                transition={{ duration: 0.2 }}
-              >
-                {isStructuredContent ? (
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <tbody className="divide-y divide-gray-200">
-                      {(Array.isArray(parsedContent)
-                        ? isExpanded
-                          ? parsedContent
-                          : parsedContent.slice(0, 5)
-                        : structuredEntries
-                      ).map((item, argIdx) => {
-                        const [key, value] = Array.isArray(parsedContent)
-                          ? [argIdx, item]
-                          : [item[0], item[1]];
-                        return (
-                          <tr key={argIdx}>
-                            <td className="px-4 py-2 text-sm font-medium whitespace-nowrap text-gray-900">
-                              {key}
-                            </td>
-                            <td className="px-4 py-2 text-sm text-gray-500">
-                              {renderStructuredValue(value)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <code className="block text-sm">{displayedContent}</code>
-                )}
-              </motion.div>
-            </AnimatePresence>
+              {isExpanded && isStructuredContent ? (
+                <table className="min-w-full divide-y divide-gray-200">
+                  <tbody className="divide-y divide-gray-200">
+                    {(Array.isArray(parsedContent)
+                      ? parsedContent
+                      : structuredEntries
+                    ).map((item, argIdx) => {
+                      const [key, value] = Array.isArray(parsedContent)
+                        ? [argIdx, item]
+                        : [item[0], item[1]];
+                      return (
+                        <tr key={argIdx}>
+                          <td className="px-4 py-2 text-sm font-medium whitespace-nowrap text-gray-900">
+                            {key}
+                          </td>
+                          <td className="px-4 py-2 text-sm text-gray-500">
+                            <StructuredValue value={value} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <code className="block text-sm whitespace-pre-wrap break-all">
+                  {displayedText}
+                </code>
+              )}
+            </motion.div>
           </div>
-          {((shouldTruncate && !isStructuredContent) ||
-            (isStructuredContent &&
-              Array.isArray(parsedContent) &&
-              parsedContent.length > 5)) && (
+          {canToggle && (
             <motion.button
               onClick={() => setIsExpanded(!isExpanded)}
               className="flex w-full cursor-pointer items-center justify-center border-t-[1px] border-gray-200 py-2 text-gray-500 transition-all duration-200 ease-in-out hover:bg-gray-50 hover:text-gray-600"
