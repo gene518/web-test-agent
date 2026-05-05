@@ -46,6 +46,7 @@ import {
   useArtifactContext,
 } from "./artifact";
 import {
+  filterConversationMessages,
   getActiveInterrupt,
   getHumanMessages,
   getLastLiveRenderSignal,
@@ -53,6 +54,18 @@ import {
   THREAD_STREAM_MODES,
 } from "./message-utils";
 import { isAgentInboxInterruptSchema } from "@/lib/agent-inbox-interrupt";
+import { StageProgressPanel } from "./stage-progress";
+
+function isThreadNotFoundError(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  return (
+    /Thread with ID .+ not found/i.test(message) ||
+    /HTTP 404:.*Thread with ID .+ not found/i.test(message)
+  );
+}
 
 function StickyToBottomContent(props: {
   content: ReactNode;
@@ -130,7 +143,7 @@ export function Thread() {
   );
   const [hideToolCalls, setHideToolCalls] = useQueryState(
     "hideToolCalls",
-    parseAsBoolean.withDefault(false),
+    parseAsBoolean.withDefault(true),
   );
   const [input, setInput] = useState("");
   const {
@@ -156,13 +169,19 @@ export function Thread() {
     () => mergeVisibleMessages(displayMessages, stateHumanMessages),
     [displayMessages, stateHumanMessages],
   );
-  const liveMessages = stream.messages;
+  const visibleLiveMessages = useMemo(
+    () =>
+      filterConversationMessages(stream.messages, {
+        includeToolMessages: !(hideToolCalls ?? true),
+      }),
+    [hideToolCalls, stream.messages],
+  );
   const messages = useMemo(
     () =>
-      persistedMessages === liveMessages
-        ? liveMessages
-        : mergeVisibleMessages(persistedMessages, liveMessages),
-    [persistedMessages, liveMessages],
+      persistedMessages === visibleLiveMessages
+        ? visibleLiveMessages
+        : mergeVisibleMessages(persistedMessages, visibleLiveMessages),
+    [persistedMessages, visibleLiveMessages],
   );
   const isLoading = stream.isLoading;
   const activeInterrupt = getActiveInterrupt(stream.values, stream.interrupt);
@@ -171,7 +190,7 @@ export function Thread() {
       ? activeInterrupt
       : undefined;
   const hasGenericInterrupt = !!activeGenericInterrupt;
-  const lastLiveRenderSignal = getLastLiveRenderSignal(liveMessages);
+  const lastLiveRenderSignal = getLastLiveRenderSignal(visibleLiveMessages);
 
   const lastError = useRef<string | undefined>(undefined);
 
@@ -192,6 +211,9 @@ export function Thread() {
       const message = (stream.error as any).message;
       if (!message || lastError.current === message) {
         // 消息已经记录过，不再修改 ref，直接返回。
+        return;
+      }
+      if (isThreadNotFoundError(message)) {
         return;
       }
 
@@ -296,6 +318,11 @@ export function Thread() {
         optimisticValues: (prev) => ({
           ...prev,
           context,
+          requested_pipeline: [],
+          pipeline_cursor: 0,
+          pending_stage_summaries: [],
+          completed_stage_summaries: [],
+          final_summary: "",
           messages: [
             ...(prev.messages ?? []),
             ...toolMessages,
@@ -480,6 +507,12 @@ export function Thread() {
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
               content={
                 <>
+                  {chatStarted && (
+                    <StageProgressPanel
+                      values={stream.values}
+                      isLoading={isLoading}
+                    />
+                  )}
                   {messages
                     .filter((m) => !m.id?.startsWith(DO_NOT_RENDER_ID_PREFIX))
                     .map((message, index) =>
@@ -574,7 +607,7 @@ export function Thread() {
                           <div className="flex items-center space-x-2">
                             <Switch
                               id="render-tool-calls"
-                              checked={hideToolCalls ?? false}
+                              checked={hideToolCalls ?? true}
                               onCheckedChange={setHideToolCalls}
                             />
                             <Label

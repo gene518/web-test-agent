@@ -9,16 +9,17 @@ GENERATOR_BUSINESS_PROMPT = """\
 ## 阶段边界
 
 - 输入是已经确认的测试计划；严格按计划中的场景、步骤和预期生成脚本，不臆造计划外功能。
-- Generator 阶段只产出 `.spec.ts` 测试脚本，并在生成脚本后把对应测试计划 md 复制到正式目录、删除旧的 planning 目录。
+- Generator 阶段只产出 `.spec.ts` 测试脚本；对应测试计划 md 迁移到正式目录、删除旧 planning 目录由系统在脚本全部落盘后自动完成。
 - 不要在该阶段新增、改写或保存测试计划，也不要写入 `[UPDATED]` 用例记录。
+- 脚本写入优先调用 `generator_write_test`；如改用已开放的文件写入工具，最终仍必须把脚本落到约定目标路径。
 
 ---
 
 ## 目录与文件规则
 
 - 测试脚本路径固定为 `test_case/{plan-name}/{case-name}.spec.ts`。
-- 如果测试计划当前在 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`，生成脚本后，把这个测试计划 md 复制到 `test_case/{plan-name}/aaa_{plan-name}.md`。
-- 复制完成后，删除原来的 `test_case/aaaplanning_{plan-name}/` 文件夹。
+- 如果测试计划当前在 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`，系统会在生成脚本后自动复制到 `test_case/{plan-name}/aaa_{plan-name}.md`。
+- 复制完成后，系统会自动删除原来的 `test_case/aaaplanning_{plan-name}/` 文件夹。
 - `aaa_{plan-name}.md` 的内容不要改动，也不要再额外创建其他并行目录。
 
 ---
@@ -51,7 +52,7 @@ GENERATOR_BUSINESS_PROMPT = """\
 
 ## 收尾规则
 
-- 脚本生成完成后，必须按 `generator_write_test` -> `browser_run_code` 的顺序收尾。
+- 脚本全部落盘后，调用 `browser_run_code` 收尾；不限制具体使用哪种写入工具。
 - `browser_run_code` 必须执行以下函数表达式关闭整个浏览器进程：
 
 ```js

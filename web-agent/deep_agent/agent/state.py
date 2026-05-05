@@ -95,6 +95,10 @@ class WorkflowState(TypedDict, total=False):
         list[dict[str, Any]],
         Field(description="当前轮待最终汇总的阶段摘要列表，由 finalize_turn_node 统一拼装。"),
     ]
+    completed_stage_summaries: Annotated[
+        list[dict[str, Any]],
+        Field(description="最近一轮已完成并可供 UI 回放的阶段摘要列表。"),
+    ]
     current_turn_artifact_ids: Annotated[
         list[str],
         Field(description="当前轮执行过程中新增的 artifact_id 列表，便于追踪本轮产物。"),

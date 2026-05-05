@@ -32,6 +32,16 @@ export type StateType = {
   display_messages?: Message[];
   ui?: UIMessage[];
   __interrupt__?: unknown[];
+  agent_type?: string | null;
+  next_action?: string;
+  requested_pipeline?: string[];
+  pipeline_cursor?: number;
+  final_summary?: string;
+  extracted_params?: Record<string, unknown>;
+  stage_result?: Record<string, unknown>;
+  latest_artifacts?: Record<string, Record<string, unknown>>;
+  pending_stage_summaries?: Record<string, unknown>[];
+  completed_stage_summaries?: Record<string, unknown>[];
 };
 
 type DisplayMessagesCustomEvent = {
@@ -92,6 +102,17 @@ async function checkGraphStatus(
   }
 }
 
+function isThreadNotFoundErrorMessage(message: string | null | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  return (
+    /Thread with ID .+ not found/i.test(message) ||
+    /HTTP 404:.*Thread with ID .+ not found/i.test(message)
+  );
+}
+
 const StreamSession = ({
   children,
   apiKey,
@@ -109,6 +130,12 @@ const StreamSession = ({
   const { getThreads, setThreads } = useThreads();
   const pendingDisplayMessagesRef = useRef<unknown[]>([]);
   const displayMessagesFrameRef = useRef<number | null>(null);
+  const initialThreadIdRef = useRef(threadId ?? null);
+  const locallyCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [initialThreadValidated, setInitialThreadValidated] = useState(
+    () => !threadId,
+  );
 
   const scheduleDisplayMessagesFlush = (
     messages: unknown[],
@@ -150,7 +177,7 @@ const StreamSession = ({
         "X-Auth-Scheme": authScheme,
       },
     }),
-    threadId: threadId ?? null,
+    threadId: activeThreadId,
     messagesKey: "display_messages",
     fetchStateHistory: true,
     onCustomEvent: (event, options) => {
@@ -167,12 +194,83 @@ const StreamSession = ({
       }
     },
     onThreadId: (id) => {
+      locallyCreatedThreadIdsRef.current.add(id);
+      setActiveThreadId(id);
+      setInitialThreadValidated(true);
       setThreadId(id);
       // thread ID 变化后重新拉取 thread 列表。
       // 延迟几秒后再拉取，确保新创建的 thread 已可见。
-      sleep().then(() => getThreads().then(setThreads).catch(console.error));
+      sleep().then(() =>
+        getThreads()
+          .then((threads) => {
+            setThreads(threads);
+            if (threads.some((thread) => thread.thread_id === id)) {
+              locallyCreatedThreadIdsRef.current.delete(id);
+            }
+          })
+          .catch(console.error),
+      );
     },
   });
+
+  useEffect(() => {
+    const candidate = initialThreadIdRef.current;
+    if (!candidate) {
+      setInitialThreadValidated(true);
+      return;
+    }
+
+    let cancelled = false;
+    getThreads()
+      .then((threads) => {
+        if (cancelled) {
+          return;
+        }
+
+        setThreads(threads);
+        if (threads.some((thread) => thread.thread_id === candidate)) {
+          setActiveThreadId(candidate);
+        } else {
+          setActiveThreadId(null);
+          setThreadId(null);
+          toast.error("历史 thread 不存在，已切换到新对话。", {
+            description: (
+              <p>
+                <strong>threadId：</strong> <code>{candidate}</code>
+              </p>
+            ),
+            richColors: true,
+            closeButton: true,
+          });
+        }
+        setInitialThreadValidated(true);
+      })
+      .catch((error) => {
+        console.error(error);
+        if (cancelled) {
+          return;
+        }
+        setActiveThreadId(candidate);
+        setInitialThreadValidated(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getThreads, setThreadId, setThreads]);
+
+  useEffect(() => {
+    if (!initialThreadValidated) {
+      return;
+    }
+
+    if (threadId && locallyCreatedThreadIdsRef.current.has(threadId)) {
+      setActiveThreadId(threadId);
+      return;
+    }
+
+    setActiveThreadId(threadId ?? null);
+  }, [initialThreadValidated, threadId]);
 
   useEffect(() => {
     checkGraphStatus(apiUrl, apiKey, authScheme).then((ok) => {
@@ -191,6 +289,25 @@ const StreamSession = ({
       }
     });
   }, [apiKey, apiUrl, authScheme]);
+
+  useEffect(() => {
+    const message = (streamValue.error as { message?: string } | undefined)?.message;
+    if (!isThreadNotFoundErrorMessage(message) || !threadId) {
+      return;
+    }
+
+    setActiveThreadId(null);
+    setThreadId(null);
+    toast.error("当前 thread 已失效，已切换到新对话。", {
+      description: (
+        <p>
+          <strong>错误：</strong> <code>{message}</code>
+        </p>
+      ),
+      richColors: true,
+      closeButton: true,
+    });
+  }, [streamValue.error, threadId, setThreadId]);
 
   useEffect(() => {
     return () => {

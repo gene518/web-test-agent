@@ -85,7 +85,7 @@ test/dev.sh
 启动成功后脚本会默认打开：
 
 ```text
-http://127.0.0.1:3000/?chatHistoryOpen=true&threadId=019dedfa-3e4d-7c91-9593-48efc4f0bc26
+http://127.0.0.1:3000/?chatHistoryOpen=true
 ```
 
 ## 日志

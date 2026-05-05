@@ -31,6 +31,7 @@ from deep_agent.core.display_message import (
     build_runtime_message_result,
     extract_missing_display_messages,
     normalize_display_delta,
+    sanitize_display_messages,
 )
 from deep_agent.core.runtime_logging import (
     build_trace_context,
@@ -582,10 +583,12 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             "missing_params": [],
             "pending_missing_params": [],
         }
-        display_messages = [
-            *extract_missing_display_messages(dict(state)),
-            *normalize_display_delta(raw_result.get("messages", [])),
-        ]
+        display_messages = sanitize_display_messages(
+            [
+                *extract_missing_display_messages(dict(state)),
+                *normalize_display_delta(raw_result.get("messages", [])),
+            ]
+        )
         if display_messages:
             result["display_messages"] = display_messages
         if self._workflow_managed_pipeline(state):
@@ -718,6 +721,99 @@ class BaseSpecialistAgent(BaseAgent, ABC):
 
         content = message.content
         return content if isinstance(content, str) else str(content)
+
+    def _tool_output_is_error(self, output: Any) -> bool:
+        """判断工具输出是否表示失败。"""
+
+        status = getattr(output, "status", None)
+        if status == "error":
+            return True
+
+        if isinstance(output, dict):
+            if output.get("status") == "error":
+                return True
+            content = output.get("content")
+            if isinstance(content, str) and content.lstrip().startswith("Error:"):
+                return True
+
+        content = getattr(output, "content", None)
+        if isinstance(content, str) and content.lstrip().startswith("Error:"):
+            return True
+
+        return False
+
+    def _collect_workspace_write_start(
+        self,
+        *,
+        event: dict[str, Any],
+        workspace_dir: Path | None,
+        pending_write_paths: list[str],
+    ) -> None:
+        """在写文件工具开始时记录目标路径。"""
+
+        if workspace_dir is None:
+            return
+        if event.get("name") not in {"write_file", "edit_file"} or event.get("event") != "on_tool_start":
+            return
+
+        payload = event.get("data", {}).get("input")
+        if not isinstance(payload, dict):
+            return
+
+        relative_path = self._normalize_workspace_relative_path(
+            workspace_dir,
+            payload.get("file_path") if "file_path" in payload else payload.get("path"),
+        )
+        if relative_path:
+            pending_write_paths.append(relative_path)
+
+    def _collect_workspace_write_result(
+        self,
+        *,
+        event: dict[str, Any],
+        pending_write_paths: list[str],
+        successful_write_paths: set[str],
+    ) -> None:
+        """在写文件工具结束时记录成功写入的 workspace 相对路径。"""
+
+        if event.get("name") not in {"write_file", "edit_file"}:
+            return
+
+        if event.get("event") == "on_tool_error":
+            if pending_write_paths:
+                pending_write_paths.pop(0)
+            return
+
+        if event.get("event") != "on_tool_end":
+            return
+
+        relative_path = pending_write_paths.pop(0) if pending_write_paths else None
+        if relative_path is None:
+            return
+
+        output = event.get("data", {}).get("output")
+        if not self._tool_output_is_error(output):
+            successful_write_paths.add(relative_path)
+
+    def _normalize_workspace_relative_path(self, workspace_dir: Path, value: Any) -> str | None:
+        """把绝对或相对路径归一化为 workspace 内的相对路径。"""
+
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = workspace_dir / candidate
+
+        resolved_workspace = workspace_dir.resolve()
+        resolved_candidate = candidate.resolve()
+        try:
+            return resolved_candidate.relative_to(resolved_workspace).as_posix()
+        except ValueError:
+            return None
 
     def log_get_logger(self) -> logging.Logger:
         """返回当前 Agent 模块对应的日志对象。"""

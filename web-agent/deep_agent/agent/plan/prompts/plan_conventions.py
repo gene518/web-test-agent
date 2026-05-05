@@ -67,11 +67,11 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 
 ## 保存与收尾
 
-- 以 `planner_save_plan` 的成功结果作为计划完成信号。
-- 禁止在 `planner_save_plan` 失败后使用 `create_file` 或其他文件工具绕过 planner 工作流。
+- 优先以 `planner_save_plan` 保存计划；如改用内置文件工具，最终 Markdown 仍必须落到规范路径。
+- 以规范路径下的测试计划 Markdown 已实际落盘作为计划完成信号。
 - `planner_save_plan` 参数错误或保存失败时，必须先修正参数再重试。
 - 如果规范路径保存时提示父目录不存在，不要退回 `test_case/aaa_{plan-name}.md`；继续使用同一个 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md` 路径重试。
-- `planner_save_plan` 成功后，调用 `browser_run_code` 执行以下函数表达式关闭浏览器，然后停止：
+- 测试计划 Markdown 落盘后，调用 `browser_run_code` 执行以下函数表达式关闭浏览器，然后停止：
 
 ```js
 async (page) => { const b = page.context().browser(); await b.close(); }

@@ -7,6 +7,7 @@ import type { RenderToolCall } from "../message-utils";
 const PREVIEW_CHAR_LIMIT = 500;
 const PREVIEW_LINE_LIMIT = 4;
 const STRUCTURED_PREVIEW_ITEMS = 5;
+const EXPANDED_VALUE_CHAR_LIMIT = 20000;
 
 function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
@@ -17,7 +18,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isTextBlock(value: unknown): value is { type: "text"; text: string } {
-  return isRecord(value) && value.type === "text" && typeof value.text === "string";
+  return (
+    isRecord(value) && value.type === "text" && typeof value.text === "string"
+  );
 }
 
 function truncatePreviewText(
@@ -64,6 +67,21 @@ function summarizeStructuredValue(value: unknown): string {
   }
 
   return String(value);
+}
+
+function formatExpandedStructuredValue(value: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(value, null, 2);
+  } catch {
+    text = String(value);
+  }
+
+  if (text.length <= EXPANDED_VALUE_CHAR_LIMIT) {
+    return text;
+  }
+
+  return `${text.slice(0, EXPANDED_VALUE_CHAR_LIMIT)}\n\n[UI 展示已截断，省略 ${text.length - EXPANDED_VALUE_CHAR_LIMIT} 个字符]`;
 }
 
 function looksLikeStructuredText(value: string): boolean {
@@ -198,7 +216,11 @@ function StructuredValue({ value }: { value: unknown }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (value == null) {
-    return <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm">null</code>;
+    return (
+      <code className="rounded bg-gray-50 px-2 py-1 font-mono text-sm">
+        null
+      </code>
+    );
   }
 
   if (!isComplexValue(value)) {
@@ -207,15 +229,21 @@ function StructuredValue({ value }: { value: unknown }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <code className="block rounded bg-gray-50 px-2 py-1 font-mono text-sm whitespace-pre-wrap break-all">
-        {isExpanded ? JSON.stringify(value, null, 2) : summarizeStructuredValue(value)}
+      <code className="block rounded bg-gray-50 px-2 py-1 font-mono text-sm break-all whitespace-pre-wrap">
+        {isExpanded
+          ? formatExpandedStructuredValue(value)
+          : summarizeStructuredValue(value)}
       </code>
       <button
         type="button"
         onClick={() => setIsExpanded((prev) => !prev)}
         className="flex w-fit items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
       >
-        {isExpanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+        {isExpanded ? (
+          <ChevronUp className="size-3" />
+        ) : (
+          <ChevronDown className="size-3" />
+        )}
         {isExpanded ? "收起" : "展开"}
       </button>
     </div>
@@ -239,7 +267,9 @@ export function ToolCalls({
         const hasArgs = Object.keys(args ?? {}).length > 0;
         const hasExplicitEmptyArgs = !!args && Object.keys(args).length === 0;
         const partialArgsText =
-          typeof tc.partialArgsText === "string" ? tc.partialArgsText.trim() : "";
+          typeof tc.partialArgsText === "string"
+            ? tc.partialArgsText.trim()
+            : "";
         return (
           <div
             key={tc.id || `${tc.name || "tool"}:${tc.index ?? idx}`}
@@ -271,7 +301,7 @@ export function ToolCalls({
                 </tbody>
               </table>
             ) : partialArgsText ? (
-              <code className="block p-3 text-sm whitespace-pre-wrap break-all">
+              <code className="block p-3 text-sm break-all whitespace-pre-wrap">
                 {partialArgsText}
               </code>
             ) : hasExplicitEmptyArgs ? (
@@ -296,7 +326,9 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   );
   const parsedContent = expandedContent?.parsedContent;
   const isStructuredContent = expandedContent?.isStructuredContent ?? false;
-  const structuredEntries = isRecord(parsedContent) ? Object.entries(parsedContent) : [];
+  const structuredEntries = isRecord(parsedContent)
+    ? Object.entries(parsedContent)
+    : [];
   const displayedText =
     expandedContent && !isStructuredContent
       ? String(parsedContent ?? "")
@@ -362,7 +394,7 @@ export function ToolResult({ message }: { message: ToolMessage }) {
                   </tbody>
                 </table>
               ) : (
-                <code className="block text-sm whitespace-pre-wrap break-all">
+                <code className="block text-sm break-all whitespace-pre-wrap">
                   {displayedText}
                 </code>
               )}

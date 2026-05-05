@@ -383,6 +383,64 @@ def extract_plan_artifact_from_planner_payload(
     )
 
 
+def extract_plan_artifact_from_saved_markdown(
+    *,
+    plan_file: str,
+    project_dir: Path,
+    project_name: str,
+    input_files: list[str] | None = None,
+) -> ArtifactHistoryEntry:
+    """从 workspace 中已经落盘的测试计划 Markdown 构建 Plan 阶段产物。"""
+
+    relative_plan_file = _validate_relative_workspace_path(
+        plan_file,
+        project_dir=project_dir,
+        expected_suffix=".md",
+        field_name="saved_plan_file",
+    )
+    _validate_planner_markdown_layout(
+        relative_plan_file,
+        field_name="saved_plan_file",
+    )
+    plan_path = project_dir / relative_plan_file
+    if not plan_path.is_file():
+        raise RuntimeError(f"测试计划 `{relative_plan_file}` 不存在，无法构建 Plan 阶段产物。")
+
+    plan_entries = _extract_plan_case_targets_from_markdown(
+        plan_text=plan_path.read_text(encoding="utf-8"),
+        plan_file=relative_plan_file,
+        project_dir=project_dir,
+    )
+    if not plan_entries:
+        raise RuntimeError(f"测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。")
+
+    items = [
+        ArtifactItem(
+            kind="test_case",
+            case_name=case_name,
+            file=target_file,
+        )
+        for case_name, target_file in plan_entries
+    ]
+    planned_test_case_files = _dedupe(target_file for _, target_file in plan_entries)
+    return ArtifactHistoryEntry(
+        artifact_id=_build_artifact_id("plan"),
+        stage="plan",
+        status="success",
+        project_name=project_name,
+        project_dir=str(project_dir),
+        input_files=_dedupe(input_files or []),
+        touched_files=[relative_plan_file],
+        output_files=[relative_plan_file],
+        items=items,
+        message=f"测试计划 `{relative_plan_file}` 已保存。",
+        test_plan_files=[relative_plan_file],
+        planned_test_case_files=planned_test_case_files,
+        saved_test_cases=items,
+        saved_test_case_files=[],
+    )
+
+
 def extract_generator_artifact_from_writes_and_snapshot(
     *,
     writes: list[dict[str, str]],

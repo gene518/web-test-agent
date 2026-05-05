@@ -95,6 +95,7 @@ class MasterAgent:
             "requested_pipeline": requested_pipeline,
             "pipeline_cursor": 0,
             "pending_stage_summaries": [],
+            "completed_stage_summaries": [],
             "current_turn_artifact_ids": [],
         }
         if "conversation_summary" in state_with_summary:

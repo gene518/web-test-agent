@@ -4,7 +4,7 @@ import unittest
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deep_agent.core.display_message import VisibleTranscriptCollector, build_runtime_message_result
+from deep_agent.core.display_message import VisibleTranscriptCollector, build_runtime_message_result, sanitize_display_messages
 
 
 class FakeCommand:
@@ -64,7 +64,7 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
             }
         )
 
-        self.assertEqual([message.id for message in collector.messages], ["ai-tool-call", "tool-1"])
+        self.assertEqual([message.id for message in collector.messages], [])
         self.assertEqual(collector.final_output["messages"][0].id, "ai-final")
 
     def test_build_runtime_message_result_falls_back_to_final_output(self) -> None:
@@ -87,7 +87,7 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
 
     def test_build_runtime_message_result_appends_missing_final_output_messages(self) -> None:
         collector = VisibleTranscriptCollector(
-            messages=[AIMessage(content="", id="ai-tool-call")],
+            messages=[AIMessage(content="阶段进展", id="ai-progress")],
             final_output={
                 "messages": [
                     AIMessage(content="existing", id="ai-existing"),
@@ -103,4 +103,28 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
             fallback_message="fallback",
         )
 
-        self.assertEqual([message.id for message in result["messages"]], ["ai-tool-call", "ai-final"])
+        self.assertEqual([message.id for message in result["messages"]], ["ai-progress", "ai-final"])
+
+    def test_sanitize_display_messages_truncates_large_content_and_tool_args(self) -> None:
+        large_text = "x" * 13000
+        messages = sanitize_display_messages(
+            [
+                AIMessage(
+                    content=large_text,
+                    id="ai-large",
+                    tool_calls=[
+                        {
+                            "name": "generator_write_test",
+                            "args": {"code": large_text},
+                            "id": "call-write",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        )
+
+        self.assertEqual(messages[0].id, "ai-large")
+        self.assertLess(len(messages[0].content), len(large_text))
+        self.assertIn("UI 展示已截断", messages[0].content)
+        self.assertIn("UI 展示已截断", messages[0].tool_calls[0]["args"]["code"])

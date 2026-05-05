@@ -4,6 +4,7 @@ from .display_messages import (
     build_display_summary_message,
     extract_missing_display_messages,
     normalize_display_delta,
+    sanitize_display_messages,
 )
 from .visible_runtime_messages import (
     VisibleTranscriptCollector,
@@ -18,4 +19,5 @@ __all__ = [
     "emit_display_message_delta",
     "extract_missing_display_messages",
     "normalize_display_delta",
+    "sanitize_display_messages",
 ]

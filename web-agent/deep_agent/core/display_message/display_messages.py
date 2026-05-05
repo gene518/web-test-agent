@@ -10,6 +10,11 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, BaseMessage, convert_to_messages
 
 
+DISPLAY_TEXT_CHAR_LIMIT = 12000
+DISPLAY_TOOL_ARG_CHAR_LIMIT = 4000
+DISPLAY_COLLECTION_ITEM_LIMIT = 40
+
+
 def build_display_summary_message(content: str, *, prefix: str) -> AIMessage:
     """构造一条仅用于 UI 展示去重的总结消息。"""
 
@@ -43,6 +48,95 @@ def normalize_display_delta(messages: Any) -> list[BaseMessage]:
     """过滤出可写入 display 时间线的消息列表。"""
 
     return _normalize_base_messages(messages)
+
+
+def sanitize_display_messages(messages: Any) -> list[BaseMessage]:
+    """把 UI 时间线消息裁剪到适合前端保存和渲染的体量。"""
+
+    return [_sanitize_display_message(message) for message in _normalize_base_messages(messages)]
+
+
+def _sanitize_display_message(message: BaseMessage) -> BaseMessage:
+    updates: dict[str, Any] = {
+        "content": _truncate_display_value(
+            message.content,
+            max_string_chars=DISPLAY_TEXT_CHAR_LIMIT,
+        )
+    }
+
+    tool_calls = getattr(message, "tool_calls", None)
+    if isinstance(tool_calls, list):
+        updates["tool_calls"] = _truncate_display_value(
+            tool_calls,
+            max_string_chars=DISPLAY_TOOL_ARG_CHAR_LIMIT,
+        )
+
+    additional_kwargs = getattr(message, "additional_kwargs", None)
+    if isinstance(additional_kwargs, Mapping) and additional_kwargs:
+        updates["additional_kwargs"] = _truncate_display_value(
+            dict(additional_kwargs),
+            max_string_chars=DISPLAY_TOOL_ARG_CHAR_LIMIT,
+        )
+
+    artifact = getattr(message, "artifact", None)
+    if artifact is not None:
+        updates["artifact"] = _truncate_display_value(
+            artifact,
+            max_string_chars=DISPLAY_TEXT_CHAR_LIMIT,
+        )
+
+    return message.model_copy(update=updates)
+
+
+def _truncate_display_value(
+    value: Any,
+    *,
+    max_string_chars: int,
+    depth: int = 0,
+) -> Any:
+    if isinstance(value, str):
+        return _truncate_display_text(value, max_string_chars=max_string_chars)
+
+    if isinstance(value, Mapping):
+        if depth >= 6:
+            return _truncate_display_text(str(dict(value)), max_string_chars=max_string_chars)
+        truncated: dict[str, Any] = {}
+        items = list(value.items())
+        for key, item_value in items[:DISPLAY_COLLECTION_ITEM_LIMIT]:
+            truncated[str(key)] = _truncate_display_value(
+                item_value,
+                max_string_chars=max_string_chars,
+                depth=depth + 1,
+            )
+        if len(items) > DISPLAY_COLLECTION_ITEM_LIMIT:
+            truncated["__truncated_items__"] = len(items) - DISPLAY_COLLECTION_ITEM_LIMIT
+        return truncated
+
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        if depth >= 6:
+            return _truncate_display_text(str(list(value)), max_string_chars=max_string_chars)
+        items = list(value)
+        truncated_items = [
+            _truncate_display_value(
+                item,
+                max_string_chars=max_string_chars,
+                depth=depth + 1,
+            )
+            for item in items[:DISPLAY_COLLECTION_ITEM_LIMIT]
+        ]
+        if len(items) > DISPLAY_COLLECTION_ITEM_LIMIT:
+            truncated_items.append({"type": "text", "text": f"[UI 展示已省略 {len(items) - DISPLAY_COLLECTION_ITEM_LIMIT} 个条目]"})
+        return truncated_items
+
+    return value
+
+
+def _truncate_display_text(value: str, *, max_string_chars: int) -> str:
+    if len(value) <= max_string_chars:
+        return value
+
+    omitted_chars = len(value) - max_string_chars
+    return f"{value[:max_string_chars]}\n\n[UI 展示已截断，省略 {omitted_chars} 个字符]"
 
 
 def _normalize_base_messages(messages: Any) -> list[BaseMessage]:

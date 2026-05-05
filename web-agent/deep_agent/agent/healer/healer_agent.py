@@ -333,5 +333,8 @@ class HealerAgent(BaseSpecialistAgent):
             "target page, context or browser has been closed",
             "browsercontext.newpage",
             "browser has been closed",
+            "remoteprotocolerror",
+            "peer closed connection without sending complete message body",
+            "incomplete chunked read",
         )
         return any(fragment in text for fragment in expected_fragments)

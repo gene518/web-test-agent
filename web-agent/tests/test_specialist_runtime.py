@@ -849,17 +849,74 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             [message.id for message in result["display_messages"]],
             [
                 "human-generator",
-                "generator-ai-tool",
-                "generator-tool-write",
                 "generator-ai-final",
             ],
         )
-        self.assertEqual(
-            result["display_messages"][1].tool_calls[0]["args"]["fileName"],
-            "test_case/demo/a_case.spec.ts",
+        self.assertEqual(result["display_messages"][1].content, "脚本已生成。")
+
+    async def test_generator_execute_accepts_write_file_when_expected_script_exists_by_node_end(self) -> None:
+        project_dir = self.root_path / "generator-write-file"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path)
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+        relative_script_path = "test_case/demo/a_case.spec.ts"
+        script_path = project_dir / relative_script_path
+        script_code = (
+            "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+            "test.describe('Demo', () => {\n"
+            "  test('a_case', async () => {});\n"
+            "});\n"
         )
-        self.assertEqual(result["display_messages"][2].name, "generator_write_test")
-        self.assertEqual(result["display_messages"][3].content, "脚本已生成。")
+
+        class FakeWriteFileStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "write_file",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "file_path": str(script_path.resolve()),
+                            "content": script_code,
+                        }
+                    },
+                }
+                script_path.parent.mkdir(parents=True, exist_ok=True)
+                script_path.write_text(script_code, encoding="utf-8")
+                yield {
+                    "event": "on_tool_end",
+                    "name": "write_file",
+                    "parent_ids": [],
+                    "data": {"output": f"Updated file {script_path.resolve()}"},
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="generator-finished")] }},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeWriteFileStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertEqual(
+            result["latest_artifacts"]["generator"]["output_files"],
+            [relative_script_path],
+        )
 
     async def test_generator_execute_fails_when_only_subset_of_expected_scripts_are_written(self) -> None:
         project_dir = self.root_path / "generator-partial"
@@ -978,6 +1035,12 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             result["latest_artifacts"]["generator"]["output_files"],
             ["test_case/demo/a_case.spec.ts", "test_case/demo/b_case.spec.ts"],
         )
+        self.assertTrue((project_dir / "test_case" / "demo" / "aaa_demo.md").is_file())
+        self.assertFalse((project_dir / "test_case" / "aaaplanning_demo").exists())
+        self.assertEqual(
+            result["latest_artifacts"]["generator"]["input_files"],
+            ["test_case/demo/aaa_demo.md"],
+        )
 
     async def test_generator_execute_only_requires_requested_test_case_subset(self) -> None:
         project_dir = self.root_path / "generator-subset"
@@ -1095,6 +1158,63 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Generator 阶段", result["messages"][0].content)
         self.assertIn("a_case.spec.ts", result["messages"][0].content)
 
+    async def test_generator_execute_treats_incomplete_chunked_read_after_write_as_success(self) -> None:
+        project_dir = self.root_path / "generator-remote-protocol-close"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path)
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+
+        class FakeRemoteProtocolCloseStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "fileName": "test_case/demo/a_case.spec.ts",
+                            "code": (
+                                "// spec: test_case/aaaplanning_demo/aaa_demo.md\n"
+                                "test.describe('Demo', () => {\n"
+                                "  test('a_case', async () => {});\n"
+                                "});\n"
+                            ),
+                        }
+                    },
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "generator_write_test",
+                    "parent_ids": [],
+                    "data": {"output": {"status": "success", "content": "ok"}},
+                }
+                raise RuntimeError(
+                    "RemoteProtocolError: peer closed connection without sending complete message body "
+                    "(incomplete chunked read)"
+                )
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeRemoteProtocolCloseStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertEqual(
+            result["latest_artifacts"]["generator"]["output_files"],
+            ["test_case/demo/a_case.spec.ts"],
+        )
+
     async def test_generator_runtime_binds_real_workspace_backend_for_deepagents_filesystem_tools(self) -> None:
         project_dir = self.root_path / "generator-backend"
         relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
@@ -1128,8 +1248,11 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"{resolved_project_dir}/test-results/**", read_deny_paths)
         self.assertIn(f"{resolved_project_dir}/node_modules", read_deny_paths)
         self.assertIn(f"{resolved_project_dir}/**/*.trace", read_deny_paths)
+        write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
+        self.assertEqual(write_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
         self.assertEqual(permissions[-1].operations, ["write"])
         self.assertEqual(permissions[-1].mode, "deny")
+        self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
 
     async def test_healer_execute_uses_streaming_deep_agent_runtime(self) -> None:
         project_dir = self.root_path / "healer-runtime"
@@ -1304,17 +1427,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             [message.id for message in result["display_messages"]],
             [
                 "human-healer",
-                "healer-ai-tool",
-                "healer-tool-run",
                 "healer-ai-final",
             ],
         )
-        self.assertEqual(
-            result["display_messages"][1].tool_calls[0]["args"]["locations"],
-            [relative_script_path],
-        )
-        self.assertEqual(result["display_messages"][2].name, "test_run")
-        self.assertEqual(result["display_messages"][3].content, "已修复并验证。")
+        self.assertEqual(result["display_messages"][1].content, "已修复并验证。")
 
     async def test_healer_runtime_binds_writable_workspace_permissions(self) -> None:
         project_dir = self.root_path / "healer-backend"

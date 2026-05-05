@@ -22,11 +22,17 @@ export type RenderToolCall = Omit<
   partialArgsText?: string;
 };
 
+type FilterConversationMessagesOptions = {
+  includeToolMessages?: boolean;
+};
+
 type ToolCallArgsState = {
   args?: Record<string, any>;
   completeness: 0 | 1 | 2;
   partialArgsText?: string;
 };
+
+const FINGERPRINT_VALUE_LIMIT = 2000;
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null;
@@ -76,14 +82,54 @@ function hasMeaningfulContent(content: Message["content"]): boolean {
   return Array.isArray(content) && content.length > 0;
 }
 
+function hasVisibleTextContent(content: Message["content"]): boolean {
+  if (typeof content === "string") {
+    return content.trim().length > 0;
+  }
+
+  if (!Array.isArray(content)) {
+    return false;
+  }
+
+  return content.some((block) => {
+    if (!isRecord(block)) {
+      return false;
+    }
+
+    const text = "text" in block ? block.text : undefined;
+    return typeof text === "string" && text.trim().length > 0;
+  });
+}
+
 function serializeContent(content: Message["content"]): string {
   if (typeof content === "string") {
-    return content;
+    return truncateFingerprintText(content);
   }
+  return stringifyFingerprintValue(content);
+}
+
+function truncateFingerprintText(
+  value: string,
+  limit = FINGERPRINT_VALUE_LIMIT,
+): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit)}[truncated:${value.length - limit}]`;
+}
+
+function stringifyFingerprintValue(value: unknown): string {
   try {
-    return JSON.stringify(content);
+    return truncateFingerprintText(
+      JSON.stringify(value, (_key, nestedValue) => {
+        if (typeof nestedValue === "string") {
+          return truncateFingerprintText(nestedValue);
+        }
+        return nestedValue;
+      }),
+    );
   } catch {
-    return String(content);
+    return truncateFingerprintText(String(value));
   }
 }
 
@@ -191,7 +237,10 @@ function hasToolCallIdentity(toolCall: {
 function hasToolCallPartialArgs(toolCall: {
   partialArgsText?: string;
 }): boolean {
-  return typeof toolCall.partialArgsText === "string" && toolCall.partialArgsText.trim().length > 0;
+  return (
+    typeof toolCall.partialArgsText === "string" &&
+    toolCall.partialArgsText.trim().length > 0
+  );
 }
 
 function finalizeToolCalls(toolCalls: RenderToolCall[]): RenderToolCall[] {
@@ -219,7 +268,9 @@ function readToolCallName(toolCall: Record<string, any>): string | undefined {
     return toolCall.name;
   }
 
-  const functionPayload = isRecord(toolCall.function) ? toolCall.function : undefined;
+  const functionPayload = isRecord(toolCall.function)
+    ? toolCall.function
+    : undefined;
   if (typeof functionPayload?.name === "string") {
     return functionPayload.name;
   }
@@ -228,7 +279,9 @@ function readToolCallName(toolCall: Record<string, any>): string | undefined {
 }
 
 function readToolCallArgs(toolCall: Record<string, any>): unknown {
-  const functionPayload = isRecord(toolCall.function) ? toolCall.function : undefined;
+  const functionPayload = isRecord(toolCall.function)
+    ? toolCall.function
+    : undefined;
   return (
     functionPayload?.arguments ??
     toolCall.args ??
@@ -367,7 +420,9 @@ export function normalizeToolCalls(
           {
             args: readToolCallArgs(toolCall),
             id: typeof toolCall.id === "string" ? toolCall.id : undefined,
-            index: isStringOrNumber(toolCall.index) ? toolCall.index : undefined,
+            index: isStringOrNumber(toolCall.index)
+              ? toolCall.index
+              : undefined,
             name: readToolCallName(toolCall),
             type: "tool_call",
           },
@@ -383,7 +438,10 @@ export function normalizeToolCalls(
         upsertToolCall(
           {
             args: readToolCallArgs(toolCallChunk),
-            id: typeof toolCallChunk.id === "string" ? toolCallChunk.id : undefined,
+            id:
+              typeof toolCallChunk.id === "string"
+                ? toolCallChunk.id
+                : undefined,
             index: isStringOrNumber(toolCallChunk.index)
               ? toolCallChunk.index
               : undefined,
@@ -409,7 +467,9 @@ export function normalizeToolCalls(
           {
             args: readToolCallArgs(toolCall),
             id: typeof toolCall.id === "string" ? toolCall.id : undefined,
-            index: isStringOrNumber(toolCall.index) ? toolCall.index : undefined,
+            index: isStringOrNumber(toolCall.index)
+              ? toolCall.index
+              : undefined,
             name: readToolCallName(toolCall),
             type: "tool_call",
           },
@@ -426,7 +486,10 @@ export function normalizeToolCalls(
         upsertToolCall(
           {
             args: readToolCallArgs(toolCallChunk),
-            id: typeof toolCallChunk.id === "string" ? toolCallChunk.id : undefined,
+            id:
+              typeof toolCallChunk.id === "string"
+                ? toolCallChunk.id
+                : undefined,
             index: isStringOrNumber(toolCallChunk.index)
               ? toolCallChunk.index
               : undefined,
@@ -595,7 +658,32 @@ export function normalizeMessages(messages: unknown): CanonicalMessage[] {
 }
 
 export function getHumanMessages(messages: unknown): CanonicalMessage[] {
-  return normalizeMessages(messages).filter((message) => message.type === "human");
+  return normalizeMessages(messages).filter(
+    (message) => message.type === "human",
+  );
+}
+
+export function filterConversationMessages(
+  messages: unknown,
+  options?: FilterConversationMessagesOptions,
+): CanonicalMessage[] {
+  const includeToolMessages = options?.includeToolMessages ?? false;
+
+  return normalizeMessages(messages).filter((message) => {
+    if (message.type === "human") {
+      return true;
+    }
+
+    if (message.type === "tool") {
+      return includeToolMessages;
+    }
+
+    if (hasVisibleTextContent(message.content)) {
+      return true;
+    }
+
+    return includeToolMessages && normalizeToolCalls(message).length > 0;
+  });
 }
 
 function contentFingerprint(message: CanonicalMessage): string {
@@ -610,7 +698,7 @@ function contentFingerprint(message: CanonicalMessage): string {
         toolCall.id || index,
         toolCall.name || "",
         toolCall.partialArgsText || "",
-        toolCall.args ? JSON.stringify(toolCall.args) : "",
+        toolCall.args ? stringifyFingerprintValue(toolCall.args) : "",
       ].join(":"),
     )
     .join("|");

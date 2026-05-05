@@ -147,6 +147,85 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["latest_artifacts"]["plan"]["saved_test_case_files"], [])
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
+        permissions = create_agent_mock.call_args.kwargs["permissions"]
+        write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
+        self.assertEqual(write_allow_rules[0].paths, [str(project_dir.resolve()), f"{project_dir.resolve()}/**"])
+
+    async def test_plan_execute_accepts_write_file_when_markdown_exists_by_node_end(self) -> None:
+        fake_manager = FakeMCPManager(self.tools)
+        project_dir = self.root_path / "write-file-project"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        plan_file = project_dir / relative_plan_path
+        plan_markdown = "\n".join(
+            [
+                "# demo Plan",
+                "",
+                "## Test Scenarios",
+                "",
+                "### 1. 登录场景",
+                "**Seed:** `test_case/specs/seed.spec.ts`",
+                "",
+                "#### 1.1. a_login_success",
+                "",
+                "**File:** `test_case/aaaplanning_demo/a_login_success.spec.ts`",
+                "",
+                "**Steps:**",
+                "1. 打开登录页",
+                "   - expect:",
+                "     - 显示登录表单",
+                "",
+            ]
+        )
+
+        class FakeWriteFilePlanAgent:
+            async def astream_events(self, input_data, config=None, version="v2"):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "write_file",
+                    "data": {"input": {"file_path": str(plan_file.resolve()), "content": plan_markdown}},
+                    "parent_ids": ["root"],
+                }
+                plan_file.parent.mkdir(parents=True, exist_ok=True)
+                plan_file.write_text(plan_markdown, encoding="utf-8")
+                yield {
+                    "event": "on_tool_end",
+                    "name": "write_file",
+                    "data": {"output": f"Updated file {plan_file.resolve()}"},
+                    "parent_ids": ["root"],
+                }
+                yield {
+                    "event": "on_chain_end",
+                    "name": "plan-specialist",
+                    "data": {"output": {"messages": [AIMessage(content="测试计划已保存")] }},
+                    "parent_ids": [],
+                }
+
+        agent = PlanAgent(self.settings, mcp_manager=fake_manager)
+        state = {
+            "messages": [],
+            "extracted_params": {
+                "project_name": "write-file-project",
+                "url": "https://example.com",
+                "project_dir": str(project_dir),
+            },
+        }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeWriteFilePlanAgent()),
+        ):
+            result = await agent.execute(state)
+
+        self.assertIn("Plan 阶段", result["messages"][0].content)
+        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertEqual(
+            result["latest_artifacts"]["plan"]["output_files"],
+            [relative_plan_path],
+        )
+        self.assertEqual(
+            result["latest_artifacts"]["plan"]["planned_test_case_files"],
+            ["test_case/aaaplanning_demo/a_login_success.spec.ts"],
+        )
 
     async def test_plan_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
         fake_manager = FakeMCPManager(self.tools)

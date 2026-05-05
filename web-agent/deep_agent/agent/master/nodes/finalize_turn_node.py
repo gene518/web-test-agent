@@ -26,6 +26,7 @@ class FinalizeTurnNode:
             log_title("执行", "节点入参", node_name="finalize_turn_node"), build_trace_context(config, node_name="finalize_turn_node", event_name="node_enter"), format_state_for_log(state),)
 
         final_summary = build_final_turn_summary(state.get("pending_stage_summaries"))
+        completed_stage_summaries = list(state.get("pending_stage_summaries", []))
         reset_buffers = clear_current_turn_buffers(dict(state))
         final_message = build_display_summary_message(
             final_summary,
@@ -38,6 +39,7 @@ class FinalizeTurnNode:
                 final_message,
             ],
             "final_summary": final_summary,
+            "completed_stage_summaries": completed_stage_summaries,
             "next_action": "end",
             **reset_buffers,
         }

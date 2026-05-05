@@ -10,9 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from deepagents.middleware import FilesystemPermission
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import extract_plan_artifact_from_planner_payload
+from deep_agent.agent.artifacts import (
+    diff_workspace_manifest,
+    extract_plan_artifact_from_planner_payload,
+    extract_plan_artifact_from_saved_markdown,
+    snapshot_workspace_manifest_async,
+)
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.core.display_message import (
     VisibleTranscriptCollector,
@@ -46,6 +52,13 @@ class PlanAgent(BaseSpecialistAgent):
     agent_type = "plan"
     display_name = "Plan Agent"
     runtime_config = PLAN_RUNTIME_CONFIG
+
+    def _build_deep_agent_permissions(self, workspace_dir: Path | None) -> list[FilesystemPermission] | None:
+        """允许 Plan 在当前项目目录内读写文件。"""
+
+        if workspace_dir is None:
+            return None
+        return self._build_workspace_permissions(workspace_dir, allow_workspace_writes=True)
 
     def _validate_extracted_params(self, state: WorkflowState) -> str | None:
         """确保 Plan 运行前至少具备工程名和 URL。"""
@@ -108,10 +121,11 @@ class PlanAgent(BaseSpecialistAgent):
             f"- 初始化完成后，必须使用 `browser_navigate` 打开 `{url}` 并开始探索。",
             "- 如果用户提供了 `feature_points`，优先覆盖这些功能点，但仍需结合页面探索补全关键场景。",
             "- 如果 `existing_test_plan_files` 非空，表示当前请求可能是在补充或更新已有计划；优先基于这些计划文件延续，而不是凭空新建无关计划。",
-            "- 只能使用当前可见工具；不要尝试调用 `planner_submit_plan` 或任何文件工具绕过 planner 工作流。",
+            "- 只能使用当前可见工具；不要尝试调用 `planner_submit_plan`。",
             "- 如确需查询工程文件，先用 `ls` 确认相关目录，再只读取必要文件；不要对整个 `project_dir` 做递归搜索。",
-            "- 必须通过 `planner_save_plan` 保存测试计划；只有 `planner_save_plan` 成功才算任务完成。",
-            "- `planner_save_plan` 成功后，调用 `browser_run_code` 执行关闭浏览器的函数表达式，然后停止。",
+            "- 优先通过 `planner_save_plan` 保存测试计划；若改用内置文件工具，最终 Markdown 仍必须落到规范路径。",
+            "- 只有当规范路径下的测试计划 Markdown 已实际落盘后，本阶段才算完成。",
+            "- 测试计划落盘后，调用 `browser_run_code` 执行关闭浏览器的函数表达式，然后停止。",
             "- 若关闭浏览器后出现 `Target page, context or browser has been closed` 一类报错，可视为成功收尾。",
         ]
         return "\n".join(prompt_sections)
@@ -155,11 +169,15 @@ class PlanAgent(BaseSpecialistAgent):
         planner_save_error: str | None = None
         planner_save_payload: dict[str, Any] | None = None
         stage_artifact: dict[str, Any] | None = None
+        pending_workspace_write_paths: list[str] = []
+        successful_workspace_write_paths: set[str] = set()
         extracted_params = state.get("extracted_params", {})
+        workspace_dir = execution_context.workspace_dir
         project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
-            execution_context.workspace_dir.name if execution_context.workspace_dir is not None else "unknown-project"
+            workspace_dir.name if workspace_dir is not None else "unknown-project"
         )
         input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
+        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
 
         try:
             # TODO(重点流程): Plan 使用事件流执行，是为了在模型推理过程中同步监听关键工具调用结果。
@@ -174,6 +192,11 @@ class PlanAgent(BaseSpecialistAgent):
             ):
                 self.log_stream_event(event, execution_context.trace_context)
                 emit_display_message_delta(collector.consume_event(event))
+                self._collect_workspace_write_start(
+                    event=event,
+                    workspace_dir=workspace_dir,
+                    pending_write_paths=pending_workspace_write_paths,
+                )
                 if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -188,17 +211,38 @@ class PlanAgent(BaseSpecialistAgent):
                     input_plan_files,
                     event,
                 )
+                self._collect_workspace_write_result(
+                    event=event,
+                    pending_write_paths=pending_workspace_write_paths,
+                    successful_write_paths=successful_workspace_write_paths,
+                )
                 self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
         except Exception as exc:  # noqa: BLE001
-            if planner_save_succeeded and self._is_expected_browser_close_error(exc):
-                self.log_browser_close_expected(execution_context.trace_context, exc)
-                result = build_runtime_message_result(
-                    collector=collector,
-                    existing_messages=existing_messages,
-                    fallback_message="测试计划已保存，浏览器已按预期关闭。",
-                )
-                result["artifact"] = stage_artifact
-                return result
+            if self._is_expected_browser_close_error(exc):
+                fallback_artifact = stage_artifact
+                fallback_error = planner_save_error
+                if fallback_artifact is None and workspace_dir is not None:
+                    try:
+                        fallback_artifact = await self._build_fallback_plan_artifact(
+                            workspace_dir=workspace_dir,
+                            project_name=project_name,
+                            input_plan_files=input_plan_files,
+                            successful_workspace_write_paths=successful_workspace_write_paths,
+                            before_manifest=before_manifest,
+                        )
+                    except Exception as artifact_exc:  # noqa: BLE001
+                        fallback_error = self.log_truncate(str(artifact_exc))
+                if planner_save_succeeded or fallback_artifact is not None:
+                    self.log_browser_close_expected(execution_context.trace_context, exc)
+                    result = build_runtime_message_result(
+                        collector=collector,
+                        existing_messages=existing_messages,
+                        fallback_message="测试计划已保存，浏览器已按预期关闭。",
+                    )
+                    result["artifact"] = fallback_artifact
+                    return result
+                if fallback_error:
+                    exc = RuntimeError(f"{exc} 最近一次文件落盘校验失败：{fallback_error}")
             return self._build_runtime_exception_result(
                 collector=collector,
                 existing_messages=existing_messages,
@@ -207,14 +251,33 @@ class PlanAgent(BaseSpecialistAgent):
 
         log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=collector.final_output, visible_messages=collector.messages)
 
-        # 即使模型说“已经完成”，只要没观察到 `planner_save_plan` 成功事件，这次执行也必须判定失败。
         if not planner_save_succeeded:
-            error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
-            return self._build_runtime_exception_result(
-                collector=collector,
-                existing_messages=existing_messages,
-                exc=RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"),
-            )
+            if workspace_dir is not None:
+                try:
+                    stage_artifact = await self._build_fallback_plan_artifact(
+                        workspace_dir=workspace_dir,
+                        project_name=project_name,
+                        input_plan_files=input_plan_files,
+                        successful_workspace_write_paths=successful_workspace_write_paths,
+                        before_manifest=before_manifest,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
+                    return self._build_runtime_exception_result(
+                        collector=collector,
+                        existing_messages=existing_messages,
+                        exc=RuntimeError(
+                            "Plan Agent 未成功通过 `planner_save_plan` 或最终文件落盘保存有效测试计划。"
+                            f"{error_suffix} 文件落盘校验失败：{self.log_truncate(str(exc))}"
+                        ),
+                    )
+            else:
+                error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
+                return self._build_runtime_exception_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    exc=RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"),
+                )
 
         result = build_runtime_message_result(
             collector=collector,
@@ -292,29 +355,64 @@ class PlanAgent(BaseSpecialistAgent):
             error=planner_save_error,
         )
 
-    def _tool_output_is_error(self, output: Any) -> bool:
-        """判断工具输出是否表示失败。
+    async def _build_fallback_plan_artifact(
+        self,
+        *,
+        workspace_dir: Path,
+        project_name: str,
+        input_plan_files: list[str],
+        successful_workspace_write_paths: set[str],
+        before_manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        """在未观测到 `planner_save_plan` 成功时，用最终落盘的 Markdown 回填 Plan 产物。"""
 
-        做这层兼容判断的目的，是适配不同工具实现返回 `status`、`content` 或对象属性的差异，
-        避免因为输出形态不同而漏掉真实失败。
-        """
+        after_manifest = await snapshot_workspace_manifest_async(workspace_dir)
+        diff = diff_workspace_manifest(before_manifest, after_manifest)
+        candidate_plan_files = self._candidate_plan_files_from_workspace(
+            workspace_dir=workspace_dir,
+            touched_paths=[
+                *diff["added"],
+                *diff["modified"],
+                *sorted(successful_workspace_write_paths),
+            ],
+        )
+        if not candidate_plan_files:
+            raise RuntimeError("节点结束时未识别到新建或更新的规范测试计划 Markdown。")
+        if len(candidate_plan_files) > 1:
+            candidate_text = "、".join(f"`{path}`" for path in candidate_plan_files)
+            raise RuntimeError(f"节点结束时识别到多个候选测试计划，无法唯一确定：{candidate_text}")
 
-        status = getattr(output, "status", None)
-        if status == "error":
-            return True
+        return extract_plan_artifact_from_saved_markdown(
+            plan_file=candidate_plan_files[0],
+            project_dir=workspace_dir,
+            project_name=project_name,
+            input_files=input_plan_files,
+        )
 
-        if isinstance(output, dict):
-            if output.get("status") == "error":
-                return True
-            content = output.get("content")
-            if isinstance(content, str) and content.lstrip().startswith("Error:"):
-                return True
+    def _candidate_plan_files_from_workspace(
+        self,
+        *,
+        workspace_dir: Path,
+        touched_paths: list[str],
+    ) -> list[str]:
+        """从本轮新增或更新的文件中筛选规范测试计划 Markdown。"""
 
-        content = getattr(output, "content", None)
-        if isinstance(content, str) and content.lstrip().startswith("Error:"):
-            return True
-
-        return False
+        candidate_files: list[str] = []
+        seen: set[str] = set()
+        for touched_path in touched_paths:
+            normalized_path = self._normalize_workspace_relative_path(workspace_dir, touched_path)
+            if not normalized_path or normalized_path in seen:
+                continue
+            path = Path(normalized_path)
+            if len(path.parts) != 3 or path.parts[0] != "test_case":
+                continue
+            if not path.parts[1].startswith("aaaplanning_") or not path.name.startswith("aaa_") or path.suffix != ".md":
+                continue
+            if not (workspace_dir / normalized_path).is_file():
+                continue
+            seen.add(normalized_path)
+            candidate_files.append(normalized_path)
+        return candidate_files
 
     def _is_expected_browser_close_error(self, exc: Exception) -> bool:
         """判断异常是否为关闭浏览器后的预期错误。
@@ -328,6 +426,9 @@ class PlanAgent(BaseSpecialistAgent):
             "target page, context or browser has been closed",
             "browsercontext.newpage",
             "browser has been closed",
+            "remoteprotocolerror",
+            "peer closed connection without sending complete message body",
+            "incomplete chunked read",
         )
         return any(fragment in text for fragment in expected_fragments)
 

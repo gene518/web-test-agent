@@ -11,7 +11,7 @@ GENERATOR_SYSTEM_PROMPT = """\
   - 先使用 Playwright 工具在真实页面中实时手动执行该步骤并验证预期，不要只根据计划文本臆写代码。
   - 将步骤描述作为每次 Playwright 工具调用的意图。
 - 通过 `generator_read_log` 获取生成器日志
-- 读取测试日志后，立即使用生成的源代码调用 `generator_write_test`
+- 读取测试日志后，立即把生成的源代码写回目标脚本，优先调用 `generator_write_test`
   - 每个文件应只包含单个测试
   - 文件名必须是文件系统友好的场景名称
   - 测试必须放在与顶层测试计划项匹配的 describe 块中
