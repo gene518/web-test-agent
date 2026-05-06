@@ -1,9 +1,16 @@
-import { v4 as uuidv4 } from "uuid";
-import { ReactNode, useEffect, useMemo, useRef } from "react";
+import { validate as isUuid, v4 as uuidv4 } from "uuid";
+import {
+  ReactNode,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/useStreamContext";
-import { useState, FormEvent } from "react";
 import { Button } from "../ui/button";
 import { Checkpoint, Message } from "@langchain/langgraph-sdk";
 import { AssistantMessage, AssistantMessageLoading } from "./messages/ai";
@@ -29,7 +36,6 @@ import ThreadHistory from "./history";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
-import { Switch } from "../ui/switch";
 import { GitHubSVG } from "../icons/github";
 import {
   Tooltip,
@@ -54,7 +60,20 @@ import {
   THREAD_STREAM_MODES,
 } from "./message-utils";
 import { isAgentInboxInterruptSchema } from "@/lib/agent-inbox-interrupt";
-import { StageProgressPanel } from "./stage-progress";
+import {
+  buildResumeSubmitKey,
+  tryLockResumeSubmit,
+  unlockResumeSubmit,
+} from "./resume-submit-guard";
+import {
+  clearActiveThreadRun,
+  clearExplicitNewThreadRequested,
+  getActiveThreadRunId,
+  getLatestActiveRun,
+  markExplicitNewThreadRequested,
+} from "@/lib/thread-session";
+import { summarizeThreadRequestTitle } from "@/lib/thread-title";
+import { CONTINUE_ON_DISCONNECT_RUN_OPTIONS } from "@/lib/run-submit-options";
 
 function isThreadNotFoundError(message: string | undefined): boolean {
   if (!message) {
@@ -65,6 +84,14 @@ function isThreadNotFoundError(message: string | undefined): boolean {
     /Thread with ID .+ not found/i.test(message) ||
     /HTTP 404:.*Thread with ID .+ not found/i.test(message)
   );
+}
+
+function getThreadMetadataForAssistant(
+  assistantId: string,
+): { graph_id: string } | { assistant_id: string } {
+  return isUuid(assistantId)
+    ? { assistant_id: assistantId }
+    : { graph_id: assistantId };
 }
 
 function StickyToBottomContent(props: {
@@ -141,10 +168,6 @@ export function Thread() {
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
   );
-  const [hideToolCalls, setHideToolCalls] = useQueryState(
-    "hideToolCalls",
-    parseAsBoolean.withDefault(true),
-  );
   const [input, setInput] = useState("");
   const {
     contentBlocks,
@@ -166,15 +189,16 @@ export function Thread() {
     [stream.values.messages],
   );
   const persistedMessages = useMemo(
-    () => mergeVisibleMessages(displayMessages, stateHumanMessages),
+    () =>
+      mergeVisibleMessages(
+        filterConversationMessages(displayMessages),
+        stateHumanMessages,
+      ),
     [displayMessages, stateHumanMessages],
   );
   const visibleLiveMessages = useMemo(
-    () =>
-      filterConversationMessages(stream.messages, {
-        includeToolMessages: !(hideToolCalls ?? true),
-      }),
-    [hideToolCalls, stream.messages],
+    () => filterConversationMessages(stream.messages),
+    [stream.messages],
   );
   const messages = useMemo(
     () =>
@@ -184,6 +208,13 @@ export function Thread() {
     [persistedMessages, visibleLiveMessages],
   );
   const isLoading = stream.isLoading;
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [genericResumeSubmitting, setGenericResumeSubmitting] =
+    useState(false);
+  const pendingGenericResumeKeyRef = useRef<{
+    key: string;
+    sawLoading: boolean;
+  } | null>(null);
   const activeInterrupt = getActiveInterrupt(stream.values, stream.interrupt);
   const activeGenericInterrupt =
     activeInterrupt && !isAgentInboxInterruptSchema(activeInterrupt)
@@ -195,12 +226,49 @@ export function Thread() {
   const lastError = useRef<string | undefined>(undefined);
 
   const setThreadId = (id: string | null) => {
+    if (id) {
+      clearExplicitNewThreadRequested();
+    } else {
+      markExplicitNewThreadRequested();
+    }
     _setThreadId(id);
 
     // 关闭 artifact 并重置 artifact 上下文。
     closeArtifact();
     setArtifactContext({});
   };
+
+  const clearPendingGenericResume = useCallback(() => {
+    const pending = pendingGenericResumeKeyRef.current;
+    if (!pending) {
+      return;
+    }
+    unlockResumeSubmit(pending.key);
+    pendingGenericResumeKeyRef.current = null;
+    setGenericResumeSubmitting(false);
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingGenericResumeKeyRef.current;
+    if (!pending) {
+      return;
+    }
+
+    if (isLoading) {
+      pending.sawLoading = true;
+      return;
+    }
+
+    if (pending.sawLoading || !hasGenericInterrupt) {
+      clearPendingGenericResume();
+    }
+  }, [clearPendingGenericResume, hasGenericInterrupt, isLoading]);
+
+  useEffect(() => {
+    return () => {
+      clearPendingGenericResume();
+    };
+  }, [clearPendingGenericResume]);
 
   useEffect(() => {
     if (!stream.error) {
@@ -253,7 +321,11 @@ export function Thread() {
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if ((input.trim().length === 0 && contentBlocks.length === 0) || isLoading)
+    if (
+      (input.trim().length === 0 && contentBlocks.length === 0) ||
+      isLoading ||
+      genericResumeSubmitting
+    )
       return;
     setFirstTokenReceived(false);
 
@@ -269,11 +341,15 @@ export function Thread() {
     const toolMessages = ensureToolCallsHaveResponses(
       stream.values.messages ?? [],
     );
+    const threadTitle = !threadId
+      ? summarizeThreadRequestTitle(input)
+      : "";
 
     const context =
       Object.keys(artifactContext).length > 0 ? artifactContext : undefined;
 
     if (hasGenericInterrupt) {
+      const resumeText = input.trim();
       if (contentBlocks.length > 0) {
         toast.error("缺参补全只支持文本回复。", {
           richColors: true,
@@ -282,27 +358,56 @@ export function Thread() {
         return;
       }
 
-      stream.submit(
-        {},
-        {
-          command: {
-            resume: {
-              text: input,
+      const resumeKey = buildResumeSubmitKey({
+        threadId,
+        interrupt: activeGenericInterrupt,
+        text: resumeText,
+      });
+      if (!tryLockResumeSubmit(resumeKey)) {
+        toast.info("补参正在提交，请稍候。", {
+          richColors: true,
+          closeButton: true,
+        });
+        return;
+      }
+      pendingGenericResumeKeyRef.current = {
+        key: resumeKey,
+        sawLoading: false,
+      };
+      setGenericResumeSubmitting(true);
+
+      try {
+        stream.submit(
+          {},
+          {
+            command: {
+              resume: {
+                text: resumeText,
+              },
             },
+            multitaskStrategy: "reject",
+            streamMode: [...THREAD_STREAM_MODES],
+            streamSubgraphs: true,
+            ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
+            optimisticValues: (prev) => ({
+              ...prev,
+              messages: [...(prev.messages ?? []), newHumanMessage],
+              display_messages: [
+                ...(prev.display_messages ?? prev.messages ?? []),
+                newHumanMessage,
+              ],
+            }),
           },
-          streamMode: [...THREAD_STREAM_MODES],
-          streamSubgraphs: true,
-          streamResumable: true,
-          optimisticValues: (prev) => ({
-            ...prev,
-            messages: [...(prev.messages ?? []), newHumanMessage],
-            display_messages: [
-              ...(prev.display_messages ?? prev.messages ?? []),
-              newHumanMessage,
-            ],
-          }),
-        },
-      );
+        );
+      } catch (error) {
+        clearPendingGenericResume();
+        console.error("提交补参回复失败", error);
+        toast.error("提交补参回复失败。", {
+          richColors: true,
+          closeButton: true,
+        });
+        return;
+      }
 
       setInput("");
       setContentBlocks([]);
@@ -312,9 +417,19 @@ export function Thread() {
     stream.submit(
       { messages: [...toolMessages, newHumanMessage], context },
       {
+        ...(threadTitle
+          ? {
+              metadata: {
+                ...getThreadMetadataForAssistant(stream.assistantId),
+                thread_title: threadTitle,
+              },
+            }
+          : {
+              metadata: getThreadMetadataForAssistant(stream.assistantId),
+        }),
         streamMode: [...THREAD_STREAM_MODES],
         streamSubgraphs: true,
-        streamResumable: true,
+        ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         optimisticValues: (prev) => ({
           ...prev,
           context,
@@ -349,9 +464,90 @@ export function Thread() {
       checkpoint: parentCheckpoint,
       streamMode: [...THREAD_STREAM_MODES],
       streamSubgraphs: true,
-      streamResumable: true,
+      ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
     });
   };
+
+  const handleCancelRun = useCallback(() => {
+    if (cancelSubmitting) {
+      return;
+    }
+
+    setCancelSubmitting(true);
+    const latestActiveRun = getLatestActiveRun();
+    const currentThreadId = threadId ?? latestActiveRun?.threadId ?? null;
+    const currentRunId =
+      (threadId ? getActiveThreadRunId(threadId) : null) ??
+      (latestActiveRun?.threadId === currentThreadId
+        ? latestActiveRun.runId
+        : null);
+
+    if (!currentThreadId) {
+      stream.stop();
+      setCancelSubmitting(false);
+      return;
+    }
+
+    const cancelServerRuns = async () => {
+      try {
+        const activeRunIds = new Set<string>();
+        if (currentRunId) {
+          activeRunIds.add(currentRunId);
+        }
+
+        try {
+          const runningRuns = await stream.client.runs.list(currentThreadId, {
+            limit: 10,
+            status: "running",
+            select: ["run_id", "status"],
+          });
+          const pendingRuns = await stream.client.runs.list(currentThreadId, {
+            limit: 10,
+            status: "pending",
+            select: ["run_id", "status"],
+          });
+          const activeRuns = [...runningRuns, ...pendingRuns].filter(
+            (run, index, runs) =>
+              runs.findIndex((candidate) => candidate.run_id === run.run_id) ===
+              index,
+          );
+          activeRuns.forEach((run) => activeRunIds.add(run.run_id));
+        } catch (error) {
+          console.error("查询当前执行失败，改用已记录的 run 取消。", error);
+        }
+
+        if (activeRunIds.size === 0) {
+          stream.stop();
+          return;
+        }
+
+        await Promise.allSettled(
+          [...activeRunIds].map((runId) =>
+            stream.client.runs.cancel(
+              currentThreadId,
+              runId,
+              true,
+              "interrupt",
+            ),
+          ),
+        );
+        activeRunIds.forEach((runId) =>
+          clearActiveThreadRun(currentThreadId, runId),
+        );
+      } catch (error) {
+        console.error("取消当前执行失败", error);
+        toast.error("取消当前执行失败。", {
+          richColors: true,
+          closeButton: true,
+        });
+      } finally {
+        stream.stop();
+        setCancelSubmitting(false);
+      }
+    };
+
+    void cancelServerRuns();
+  }, [cancelSubmitting, stream, threadId]);
 
   const chatStarted = !!threadId || !!messages.length;
   const hasNoAIOrToolMessages = !messages.find(
@@ -507,12 +703,6 @@ export function Thread() {
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
               content={
                 <>
-                  {chatStarted && (
-                    <StageProgressPanel
-                      values={stream.values}
-                      isLoading={isLoading}
-                    />
-                  )}
                   {messages
                     .filter((m) => !m.id?.startsWith(DO_NOT_RENDER_ID_PREFIX))
                     .map((message, index) =>
@@ -602,22 +792,7 @@ export function Thread() {
                         className="field-sizing-content resize-none border-none bg-transparent p-3.5 pb-0 shadow-none ring-0 outline-none focus:ring-0 focus:outline-none"
                       />
 
-                      <div className="flex items-center gap-6 p-2 pt-4">
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <Switch
-                              id="render-tool-calls"
-                              checked={hideToolCalls ?? true}
-                              onCheckedChange={setHideToolCalls}
-                            />
-                            <Label
-                              htmlFor="render-tool-calls"
-                              className="text-sm text-gray-600"
-                            >
-                              隐藏 Tool Calls
-                            </Label>
-                          </div>
-                        </div>
+                      <div className="flex items-center gap-4 p-2 pt-4">
                         <Label
                           htmlFor="file-input"
                           className="flex cursor-pointer items-center gap-2"
@@ -638,11 +813,13 @@ export function Thread() {
                         {stream.isLoading ? (
                           <Button
                             key="stop"
-                            onClick={() => stream.stop()}
+                            type="button"
+                            onClick={handleCancelRun}
                             className="ml-auto"
+                            disabled={cancelSubmitting}
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
-                            Cancel
+                            取消
                           </Button>
                         ) : (
                           <Button
@@ -650,6 +827,7 @@ export function Thread() {
                             className="ml-auto shadow-md transition-all"
                             disabled={
                               isLoading ||
+                              genericResumeSubmitting ||
                               (!input.trim() && contentBlocks.length === 0)
                             }
                           >

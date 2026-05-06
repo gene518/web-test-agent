@@ -38,7 +38,10 @@ class IntentClassification(BaseModel):
     )
     project_name: str | None = Field(default=None, description="自动化工程名字；Plan 阶段必填。")
     project_dir: str | None = Field(default=None, description="自动化项目目录或工程目录。")
-    url: str | None = Field(default=None, description="Plan 阶段需要的页面 URL。")
+    url: str | None = Field(
+        default=None,
+        description="Plan 阶段需要的被测页面地址；带协议的 URL 或裸域名都有效，例如 https://example.com 或 www.baidu.com。",
+    )
     feature_points: list[str] = Field(default_factory=list, description="Plan 阶段功能点列表。")
     test_plan_files: list[str] = Field(default_factory=list, description="Generator 阶段待消费的测试计划路径列表，可为文件或目录。")
     test_cases: list[str] = Field(default_factory=list, description="Generator 阶段测试用例列表。")

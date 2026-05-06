@@ -8,9 +8,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from deep_agent.agent.master import build_master_graph
 from deep_agent.agent.master.nodes import CompleteParamsNode, FinalizeTurnNode, GeneralTestNode, IntentJudgeNode, ResolveStageFilesNode
 from deep_agent.agent.state import WorkflowState
-from deep_agent.workflow import build_master_graph
 
 
 class FakeMasterService:

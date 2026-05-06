@@ -47,7 +47,7 @@ SERVER_LOG_LEVEL=ERROR tests/debug/dev.sh
 
 ## 3. 在 LangGraph Studio 发起对话
 
-在 LangGraph Studio 中选择 `master` graph，直接发起一次对话即可。你不需要手动指定 `thread_id`，也不需要把任何 session id 传进项目。
+在 LangGraph Studio 中选择 `web-autotest-agent` graph，直接发起一次对话即可。你不需要手动指定 `thread_id`，也不需要把任何 session id 传进项目。
 
 项目会从 LangGraph 运行时自动读取 `thread_id` 并写入关键日志。日志里的 `session_id` 只是检索别名，默认等于这个 `thread_id`。
 

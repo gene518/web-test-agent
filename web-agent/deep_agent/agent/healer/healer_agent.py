@@ -27,6 +27,7 @@ from deep_agent.core.display_message import (
     build_runtime_message_result,
     emit_display_message_delta,
 )
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.config.specialist_file_filter import HEALER_QUERY_FILTER_CONFIG
 from deep_agent.agent.healer.prompts.healer import HEALER_SYSTEM_PROMPT
 from deep_agent.agent.healer.prompts.healer_conventions import MOBILE_UI_CONVENTIONS_PROMPT
@@ -164,6 +165,8 @@ class HealerAgent(BaseSpecialistAgent):
                     if isinstance(payload, dict):
                         validation_runs.extend(self._normalized_test_scripts(payload.get("locations")))
         except Exception as exc:  # noqa: BLE001
+            if is_langgraph_user_cancellation(exc):
+                raise
             if collector.final_output is not None and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
                 if workspace_dir is not None:

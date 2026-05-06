@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.config import get_stream_writer
 
 from .display_messages import normalize_display_delta, sanitize_display_messages
@@ -127,6 +129,9 @@ def extract_stream_messages(event: Mapping[str, Any]) -> list[BaseMessage]:
     """从模型/工具事件里提取本轮新增的轻量可见消息。"""
 
     event_name = event.get("event")
+    if event_name == "on_tool_start":
+        return extract_tool_start_message(event)
+
     if event_name not in {"on_chat_model_end", "on_tool_end", "on_tool_error"}:
         return []
 
@@ -137,6 +142,38 @@ def extract_stream_messages(event: Mapping[str, Any]) -> list[BaseMessage]:
     value_key = "output" if event_name != "on_tool_error" else "error"
     extracted = extract_messages_from_event_value(data.get(value_key))
     return filter_display_worthy_messages(extracted)
+
+
+def extract_tool_start_message(event: Mapping[str, Any]) -> list[BaseMessage]:
+    """把工具开始事件转换成用户可见的轻量过程消息。"""
+
+    tool_name = event.get("name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return []
+
+    message_id = build_tool_start_message_id(event, tool_name)
+    return [
+        AIMessage(
+            content=f"正在调用工具 `{tool_name}`。",
+            id=message_id,
+            name="tool_start",
+        )
+    ]
+
+
+def build_tool_start_message_id(event: Mapping[str, Any], tool_name: str) -> str:
+    """生成稳定的工具开始消息 ID，便于流式去重。"""
+
+    run_id = event.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        return f"display-tool-start-{tool_name}-{run_id}"
+
+    data = event.get("data")
+    input_payload = data.get("input") if isinstance(data, Mapping) else None
+    fingerprint = hashlib.sha1(
+        json.dumps(input_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"display-tool-start-{tool_name}-{fingerprint}"
 
 
 def extract_messages_from_event_value(value: Any) -> list[BaseMessage]:
@@ -172,9 +209,11 @@ def extract_messages_from_event_value(value: Any) -> list[BaseMessage]:
 def is_display_worthy_message(message: BaseMessage) -> bool:
     """只保留适合进入主时间线的轻量消息。"""
 
-    if not isinstance(message, AIMessage):
-        return False
-    return content_has_visible_text(message.content)
+    if isinstance(message, ToolMessage):
+        return True
+    if isinstance(message, AIMessage):
+        return content_has_visible_text(message.content)
+    return False
 
 
 def filter_display_worthy_messages(messages: Sequence[BaseMessage]) -> list[BaseMessage]:

@@ -1,6 +1,6 @@
 {
   "name": "web-poartl",
-  "description": "面向 Web AutoTest LangGraph master graph 的 Agent Chat UI 前端。",
+  "description": "面向 Web AutoTest LangGraph web-autotest-agent graph 的 Agent Chat UI 前端。",
   "readme": "README.md",
   "homepage": "https://agentchat.vercel.app",
   "repository": {

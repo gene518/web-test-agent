@@ -25,6 +25,7 @@ from deep_agent.core.display_message import (
     build_runtime_message_result,
     emit_display_message_delta,
 )
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.config.specialist_file_filter import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
 from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
@@ -217,7 +218,17 @@ class PlanAgent(BaseSpecialistAgent):
                     successful_write_paths=successful_workspace_write_paths,
                 )
                 self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
+                if planner_save_succeeded:
+                    result = build_runtime_message_result(
+                        collector=collector,
+                        existing_messages=existing_messages,
+                        fallback_message="测试计划已保存。",
+                    )
+                    result["artifact"] = stage_artifact
+                    return result
         except Exception as exc:  # noqa: BLE001
+            if is_langgraph_user_cancellation(exc):
+                raise
             if self._is_expected_browser_close_error(exc):
                 fallback_artifact = stage_artifact
                 fallback_error = planner_save_error

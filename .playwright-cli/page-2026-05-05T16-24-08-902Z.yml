@@ -1,0 +1,92 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - generic [ref=e2]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button [ref=e7]:
+          - img
+        - heading "对话历史" [level=1] [ref=e8]
+      - generic [ref=e9]:
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e11]:
+          - generic [ref=e12]:
+            - paragraph [ref=e13]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e14]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e16]:
+          - generic [ref=e17]:
+            - paragraph [ref=e18]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e19]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e21]:
+          - generic [ref=e22]:
+            - paragraph [ref=e23]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e24]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例" [ref=e26]:
+          - paragraph [ref=e28]: 为www.baidu.com这个网站生成三条测试用例
+        - button "为www.baidu.com这个网站生成三条测试用例" [ref=e30]:
+          - paragraph [ref=e32]: 为www.baidu.com这个网站生成三条测试用例
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e34]:
+          - generic [ref=e35]:
+            - paragraph [ref=e36]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e37]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e39]:
+          - generic [ref=e40]:
+            - paragraph [ref=e41]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e42]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e44]:
+          - generic [ref=e45]:
+            - paragraph [ref=e46]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e47]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例" [ref=e49]:
+          - paragraph [ref=e51]: 为www.baidu.com这个网站生成三条测试用例
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e53]:
+          - generic [ref=e54]:
+            - paragraph [ref=e55]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e56]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e58]:
+          - generic [ref=e59]:
+            - paragraph [ref=e60]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e61]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 qn · 脚本调试" [ref=e63]:
+          - generic [ref=e64]:
+            - paragraph [ref=e65]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e66]: qn · 脚本调试
+        - button "为www.baidu.com这个网站生成三条测试用例 pn · 脚本调试" [ref=e68]:
+          - generic [ref=e69]:
+            - paragraph [ref=e70]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e71]: pn · 脚本调试
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e73]:
+          - generic [ref=e74]:
+            - paragraph [ref=e75]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e76]: baidu.com · 测试计划
+        - button "为www.baidu.com这个网站生成三条测试用例 脚本生成" [ref=e78]:
+          - generic [ref=e79]:
+            - paragraph [ref=e80]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e81]: 脚本生成
+        - button "为www.baidu.com这个网站生成三条测试用例 baidu.com · 测试计划" [ref=e83]:
+          - generic [ref=e84]:
+            - paragraph [ref=e85]: 为www.baidu.com这个网站生成三条测试用例
+            - paragraph [ref=e86]: baidu.com · 测试计划
+        - button "baidu.com 测试计划" [ref=e88]:
+          - generic [ref=e89]:
+            - paragraph [ref=e90]: baidu.com
+            - paragraph [ref=e91]: 测试计划
+    - generic [ref=e92]:
+      - generic [ref=e93]:
+        - link "GitHub" [ref=e96] [cursor=pointer]:
+          - /url: https://github.com/langchain-ai/agent-chat-ui
+          - img "GitHub" [ref=e97]
+        - generic [ref=e102]:
+          - generic [ref=e103]:
+            - img [ref=e104]
+            - heading "Agent Chat" [level=1] [ref=e122]
+          - generic [ref=e124]:
+            - textbox "输入消息..." [ref=e125]
+            - generic [ref=e126]:
+              - generic [ref=e127] [cursor=pointer]:
+                - img [ref=e128]
+                - generic [ref=e129]: Upload PDF or Image
+              - button "Send" [disabled]
+      - button [ref=e134] [cursor=pointer]:
+        - img [ref=e135]
+  - button "Open Next.js Dev Tools" [ref=e143] [cursor=pointer]:
+    - img [ref=e144]
+  - alert [ref=e147]

@@ -29,6 +29,7 @@ def build_master_complete_params_prompt(
         "补参处理要求：\n"
         f"1. 结构化输出里的 intent_type 必须继续使用 `{agent_type}`。\n"
         "2. 不要因为用户补充内容里出现新词就切换为其他 intent。\n"
-        "3. 如果本轮没有补齐任何字段，也保持原 intent，并只返回真实识别出的字段。\n"
-        "4. 抽取结果只能来自用户补充内容和已知上下文，不要臆造缺失字段。"
+        "3. 当缺失字段包含 `url` 时，`https://example.com`、`http://example.com/path` 和 `www.baidu.com` 这类裸域名都算有效页面地址。\n"
+        "4. 如果本轮没有补齐任何字段，也保持原 intent，并只返回真实识别出的字段。\n"
+        "5. 抽取结果只能来自用户补充内容和已知上下文，不要臆造缺失字段。"
     )

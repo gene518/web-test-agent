@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from deepagents.backends import FilesystemBackend
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph_api.errors import UserInterrupt
 
 from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.core.config import AppSettings
@@ -134,6 +135,22 @@ class DefaultRuntimeAgent(BaseSpecialistAgent):
     runtime_config = SpecialistRuntimeConfig(system_prompt_parts=("system",), load_project_standard=False)
 
 
+class UserInterruptRuntimeAgent(DefaultRuntimeAgent):
+    async def _prepare_execution(self, state, config=None):  # noqa: ANN001
+        return SpecialistExecutionContext(
+            workspace_dir=None,
+            system_prompt="system",
+            tools=[],
+            trace_context={},
+        )
+
+    def _create_specialist_agent(self, execution_context):  # noqa: ANN001
+        return object()
+
+    async def _run_deep_agent(self, specialist_agent, state, execution_context, config=None):  # noqa: ANN001
+        raise UserInterrupt()
+
+
 class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -216,6 +233,49 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["messages"][0].content, "runtime-finished")
         self.assertEqual(fake_agent.inputs[0][0], {"messages": []})
         self.assertEqual(fake_agent.inputs[0][1]["recursion_limit"], 123)
+
+    async def test_base_specialist_runtime_does_not_swallow_user_interrupt(self) -> None:
+        agent = UserInterruptRuntimeAgent(self._build_settings(), mcp_manager=FakeMCPManager([]))
+
+        with self.assertRaises(UserInterrupt):
+            await agent.execute({"messages": []})
+
+    async def test_streaming_specialists_do_not_swallow_user_interrupt(self) -> None:
+        project_dir = self.root_path / "cancel-runtime"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        script_path = "test_case/demo/a_case.spec.ts"
+        self._create_generator_plan_file(project_dir, plan_path)
+        self._create_healer_script_file(project_dir, script_path)
+        execution_context = SpecialistExecutionContext(
+            workspace_dir=project_dir.resolve(),
+            system_prompt="system",
+            tools=[],
+            trace_context={},
+        )
+
+        cases = [
+            (
+                PlanAgent(self._build_settings(), mcp_manager=FakeMCPManager([])),
+                {"messages": [], "extracted_params": {"project_name": "cancel-runtime"}},
+            ),
+            (
+                GeneratorAgent(self._build_settings(), mcp_manager=FakeMCPManager([])),
+                {"messages": [], "extracted_params": {"test_plan_files": [plan_path]}},
+            ),
+            (
+                HealerAgent(self._build_settings(), mcp_manager=FakeMCPManager([])),
+                {"messages": [], "extracted_params": {"test_scripts": [script_path]}},
+            ),
+        ]
+
+        for agent, state in cases:
+            with self.subTest(agent=agent.agent_type), self.assertRaises(UserInterrupt):
+                await agent._run_deep_agent(
+                    FakeStreamAgent({}, raise_on_stream=UserInterrupt()),
+                    state,
+                    execution_context,
+                )
 
     def test_plan_validation_rejects_null_like_project_name(self) -> None:
         agent = PlanAgent(self._build_settings(), mcp_manager=FakeMCPManager([]))
@@ -440,6 +500,89 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.workspace_dir, existing_project_dir.resolve())
         self.assertEqual((existing_project_dir / "marker.txt").read_text(encoding="utf-8"), "keep")
+
+    async def test_plan_execute_returns_immediately_after_planner_save_success(self) -> None:
+        project_dir = self.root_path / "plan-handoff"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        manager = FakeMCPManager(self._build_plan_tools())
+        template_dir = self._create_template_dir()
+        agent = TemplateBackedPlanAgent(self._build_settings(), template_dir, mcp_manager=manager)
+        planner_payload = {
+            "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+            "name": "Demo Plan",
+            "overview": "仅用于验证 plan 保存成功后立即结束。",
+            "suites": [
+                {
+                    "name": "Demo Suite",
+                    "seedFile": "seed.spec.ts",
+                    "tests": [
+                        {
+                            "name": "a_case",
+                            "file": "test_case/aaaplanning_demo/a_case.spec.ts",
+                            "steps": [
+                                {
+                                    "perform": "打开页面",
+                                    "expect": ["页面可见"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        marker = {"late_event_reached": False}
+
+        class FakePlanStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "parent_ids": [],
+                    "data": {"input": planner_payload},
+                }
+                yield {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "parent_ids": [],
+                    "data": {"output": {"status": "success", "content": "ok"}},
+                }
+                marker["late_event_reached"] = True
+                yield {
+                    "event": "on_tool_start",
+                    "name": "write_file",
+                    "parent_ids": [],
+                    "data": {
+                        "input": {
+                            "file_path": str((project_dir / "test_case" / "aaaplanning_demo" / "a_case.spec.ts").resolve()),
+                            "content": "test('should not run', async () => {});",
+                        }
+                    },
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakePlanStreamAgent()),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [HumanMessage(content="先做计划，再生成脚本", id="human-plan")],
+                    "requested_pipeline": ["plan", "generator"],
+                    "pipeline_cursor": 0,
+                    "extracted_params": {
+                        "project_name": "plan-handoff",
+                        "project_dir": str(project_dir),
+                        "url": "https://example.com",
+                    },
+                }
+            )
+
+        self.assertFalse(marker["late_event_reached"])
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(result["stage_result"]["status"], "success")
+        self.assertEqual(
+            result["latest_artifacts"]["plan"]["output_files"],
+            ["test_case/aaaplanning_demo/aaa_demo.md"],
+        )
 
     def test_generator_validation_requires_project_identifier_and_test_plan_files(self) -> None:
         agent = GeneratorAgent(self._build_settings(), mcp_manager=FakeMCPManager([]))
@@ -702,10 +845,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertEqual(
-            [message.content for message in result["display_messages"][:-1]],
-            ["existing", "generator-finished"],
-        )
+        self.assertEqual(result["display_messages"][0].content, "existing")
+        self.assertIn("Generator 阶段开始", result["display_messages"][1].content)
+        self.assertIn("正在调用工具 `generator_write_test`", result["display_messages"][2].content)
+        self.assertEqual(result["display_messages"][3].content, "generator-finished")
         self.assertIn("Generator 阶段", result["display_messages"][-1].content)
         self.assertIn("a_case.spec.ts", result["messages"][0].content)
         self.assertEqual(fake_deep_agent.inputs[0][0]["messages"][0].content, "existing")
@@ -748,9 +891,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["messages"], [])
         self.assertEqual(
-            [message.content for message in result["display_messages"]],
+            [message.content for message in result["display_messages"][:-1]],
             ["用户原话", "runtime-finished"],
         )
+        self.assertIn("Plan 阶段", result["display_messages"][-1].content)
 
     async def test_generator_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
         project_dir = self.root_path / "generator-visible-stream"
@@ -845,14 +989,14 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["messages"], [])
-        self.assertEqual(
-            [message.id for message in result["display_messages"]],
-            [
-                "human-generator",
-                "generator-ai-final",
-            ],
-        )
-        self.assertEqual(result["display_messages"][1].content, "脚本已生成。")
+        self.assertEqual(result["display_messages"][0].id, "human-generator")
+        self.assertIn("Generator 阶段开始", result["display_messages"][1].content)
+        self.assertIn("正在调用工具 `generator_write_test`", result["display_messages"][2].content)
+        self.assertEqual(result["display_messages"][3].id, "generator-tool-write")
+        self.assertEqual(result["display_messages"][3].name, "generator_write_test")
+        self.assertEqual(result["display_messages"][4].id, "generator-ai-final")
+        self.assertEqual(result["display_messages"][4].content, "脚本已生成。")
+        self.assertIn("Generator 阶段", result["display_messages"][-1].content)
 
     async def test_generator_execute_accepts_write_file_when_expected_script_exists_by_node_end(self) -> None:
         project_dir = self.root_path / "generator-write-file"
@@ -1423,14 +1567,58 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["messages"], [])
-        self.assertEqual(
-            [message.id for message in result["display_messages"]],
-            [
-                "human-healer",
-                "healer-ai-final",
-            ],
+        self.assertEqual(result["display_messages"][0].id, "human-healer")
+        self.assertIn("Healer 阶段开始", result["display_messages"][1].content)
+        self.assertIn("正在调用工具 `test_run`", result["display_messages"][2].content)
+        self.assertEqual(result["display_messages"][3].id, "healer-tool-run")
+        self.assertEqual(result["display_messages"][3].name, "test_run")
+        self.assertEqual(result["display_messages"][4].id, "healer-ai-final")
+        self.assertEqual(result["display_messages"][4].content, "已修复并验证。")
+        self.assertIn("Healer 阶段", result["display_messages"][-1].content)
+
+    async def test_generator_execute_emits_stage_start_display_message(self) -> None:
+        project_dir = self.root_path / "generator-stage-start"
+        relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
+        self._create_generator_plan_file(project_dir, relative_plan_path)
+        manager = FakeMCPManager(self._build_generator_tools())
+        agent = GeneratorAgent(self._build_settings(), mcp_manager=manager)
+        emitted_messages: list[BaseMessage] = []
+
+        class FakeGeneratorStreamAgent:
+            async def astream_events(self, input_data, config=None, version=None):  # noqa: ANN001
+                yield {
+                    "event": "on_chain_end",
+                    "name": "generator-specialist",
+                    "parent_ids": [],
+                    "data": {"output": {"messages": [AIMessage(content="generator-finished")] }},
+                }
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeGeneratorStreamAgent()),
+            patch(
+                "deep_agent.agent.base_agent.emit_display_message_delta",
+                side_effect=lambda messages: emitted_messages.extend(messages),
+            ),
+        ):
+            await agent.execute(
+                {
+                    "messages": [HumanMessage(content="继续生成脚本", id="human-generator")],
+                    "requested_pipeline": ["generator"],
+                    "pipeline_cursor": 0,
+                    "extracted_params": {
+                        "project_dir": str(project_dir),
+                        "test_plan_files": [relative_plan_path],
+                    },
+                }
+            )
+
+        self.assertTrue(
+            any(
+                isinstance(message, AIMessage) and "Generator 阶段开始" in str(message.content)
+                for message in emitted_messages
+            )
         )
-        self.assertEqual(result["display_messages"][1].content, "已修复并验证。")
 
     async def test_healer_runtime_binds_writable_workspace_permissions(self) -> None:
         project_dir = self.root_path / "healer-backend"

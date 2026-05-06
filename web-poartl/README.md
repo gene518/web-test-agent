@@ -5,7 +5,7 @@
 - 上游仓库：https://github.com/langchain-ai/agent-chat-ui
 - 引入提交：`5201e3ab6d35b22c86c1aad34acd32d1032e5279`
 - 本地默认 LangGraph API：`http://127.0.0.1:2024`
-- 本地默认 graph id：`master`
+- 本地默认 graph id：`web-autotest-agent`
 
 ## 安装
 
@@ -33,7 +33,7 @@ pnpm dev
 
 ```bash
 NEXT_PUBLIC_API_URL=http://127.0.0.1:2024
-NEXT_PUBLIC_ASSISTANT_ID=master
+NEXT_PUBLIC_ASSISTANT_ID=web-autotest-agent
 NEXT_PUBLIC_AUTH_SCHEME=
 ```
 

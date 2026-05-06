@@ -12,7 +12,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "Web AutoTest Agent",
-  description: "面向 Web AutoTest LangGraph master graph 的 Agent Chat UI。",
+  description: "面向 Web AutoTest LangGraph web-autotest-agent graph 的 Agent Chat UI。",
 };
 
 export default function RootLayout({

@@ -6,7 +6,7 @@ import React, {
   useRef,
 } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
-import { type Message } from "@langchain/langgraph-sdk";
+import { type Message, type Thread } from "@langchain/langgraph-sdk";
 import {
   uiMessageReducer,
   isUIMessage,
@@ -26,6 +26,15 @@ import { getApiKey } from "@/lib/api-key";
 import { useThreads } from "./Thread";
 import { toast } from "sonner";
 import { mergeVisibleMessages } from "@/components/thread/message-utils";
+import {
+  clearActiveThreadRun,
+  clearExplicitNewThreadRequested,
+  getActiveThreadRunId,
+  hasThreadRunJoined,
+  isExplicitNewThreadRequested,
+  markActiveThreadRun,
+  markThreadRunJoined,
+} from "@/lib/thread-session";
 
 export type StateType = {
   messages: Message[];
@@ -113,6 +122,30 @@ function isThreadNotFoundErrorMessage(message: string | null | undefined): boole
   );
 }
 
+function hasRestorableThreadContent(thread: Thread<StateType>): boolean {
+  const values = thread.values;
+  return (
+    (Array.isArray(values?.display_messages) &&
+      values.display_messages.length > 0) ||
+    (Array.isArray(values?.messages) && values.messages.length > 0)
+  );
+}
+
+function pickMostRecentRestorableThread(
+  threads: Thread<StateType>[],
+): Thread<StateType> | undefined {
+  return [...threads]
+    .sort(
+      (a, b) =>
+        Date.parse(b.updated_at || "") - Date.parse(a.updated_at || ""),
+    )
+    .find(hasRestorableThreadContent);
+}
+
+function isRunStillActive(status: unknown): boolean {
+  return status === "pending" || status === "running";
+}
+
 const StreamSession = ({
   children,
   apiKey,
@@ -132,6 +165,7 @@ const StreamSession = ({
   const displayMessagesFrameRef = useRef<number | null>(null);
   const initialThreadIdRef = useRef(threadId ?? null);
   const locallyCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const reconnectingRunKeysRef = useRef<Set<string>>(new Set());
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [initialThreadValidated, setInitialThreadValidated] = useState(
     () => !threadId,
@@ -180,6 +214,19 @@ const StreamSession = ({
     threadId: activeThreadId,
     messagesKey: "display_messages",
     fetchStateHistory: true,
+    onCreated: (run) => {
+      markActiveThreadRun(run.thread_id, run.run_id);
+    },
+    onFinish: (_state, run) => {
+      if (run) {
+        clearActiveThreadRun(run.thread_id, run.run_id);
+      }
+    },
+    onError: (_error, run) => {
+      if (run) {
+        clearActiveThreadRun(run.thread_id, run.run_id);
+      }
+    },
     onCustomEvent: (event, options) => {
       if (isUIMessage(event) || isRemoveUIMessage(event)) {
         options.mutate((prev) => {
@@ -195,6 +242,7 @@ const StreamSession = ({
     },
     onThreadId: (id) => {
       locallyCreatedThreadIdsRef.current.add(id);
+      clearExplicitNewThreadRequested();
       setActiveThreadId(id);
       setInitialThreadValidated(true);
       setThreadId(id);
@@ -216,8 +264,41 @@ const StreamSession = ({
   useEffect(() => {
     const candidate = initialThreadIdRef.current;
     if (!candidate) {
-      setInitialThreadValidated(true);
-      return;
+      if (isExplicitNewThreadRequested()) {
+        setInitialThreadValidated(true);
+        return;
+      }
+
+      let cancelled = false;
+      getThreads()
+        .then((threads) => {
+          if (cancelled) {
+            return;
+          }
+
+          setThreads(threads);
+          const latestThread = pickMostRecentRestorableThread(
+            threads as Thread<StateType>[],
+          );
+          if (latestThread) {
+            clearExplicitNewThreadRequested();
+            setActiveThreadId(latestThread.thread_id);
+            setThreadId(latestThread.thread_id);
+          } else {
+            setActiveThreadId(null);
+          }
+          setInitialThreadValidated(true);
+        })
+        .catch((error) => {
+          console.error(error);
+          if (!cancelled) {
+            setInitialThreadValidated(true);
+          }
+        });
+
+      return () => {
+        cancelled = true;
+      };
     }
 
     let cancelled = false;
@@ -260,6 +341,12 @@ const StreamSession = ({
   }, [getThreads, setThreadId, setThreads]);
 
   useEffect(() => {
+    if (threadId) {
+      clearExplicitNewThreadRequested();
+    }
+  }, [threadId]);
+
+  useEffect(() => {
     if (!initialThreadValidated) {
       return;
     }
@@ -271,6 +358,52 @@ const StreamSession = ({
 
     setActiveThreadId(threadId ?? null);
   }, [initialThreadValidated, threadId]);
+
+  useEffect(() => {
+    if (!initialThreadValidated || streamValue.isLoading || !activeThreadId) {
+      return;
+    }
+
+    const runId = getActiveThreadRunId(activeThreadId);
+    if (!runId || hasThreadRunJoined(activeThreadId, runId)) {
+      return;
+    }
+
+    const reconnectKey = `${activeThreadId}:${runId}`;
+    if (reconnectingRunKeysRef.current.has(reconnectKey)) {
+      return;
+    }
+    reconnectingRunKeysRef.current.add(reconnectKey);
+    markThreadRunJoined(activeThreadId, runId);
+
+    let cancelled = false;
+    const reconnect = async () => {
+      try {
+        const run = await streamValue.client.runs.get(activeThreadId, runId);
+        if (!isRunStillActive(run.status)) {
+          clearActiveThreadRun(activeThreadId, runId);
+          return;
+        }
+        if (cancelled) {
+          return;
+        }
+        await streamValue.joinStream(runId, undefined, {
+          streamMode: ["values", "messages-tuple", "custom"],
+        });
+      } catch (error) {
+        console.error("恢复执行流失败，已停止本次自动重连。", error);
+        clearActiveThreadRun(activeThreadId, runId);
+      } finally {
+        reconnectingRunKeysRef.current.delete(reconnectKey);
+      }
+    };
+
+    void reconnect();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadId, initialThreadValidated, streamValue]);
 
   useEffect(() => {
     checkGraphStatus(apiUrl, apiKey, authScheme).then((ok) => {
@@ -331,7 +464,7 @@ const StreamSession = ({
 
 // 本地默认值指向本仓库的 LangGraph dev server 和 graph id。
 const DEFAULT_API_URL = "http://127.0.0.1:2024";
-const DEFAULT_ASSISTANT_ID = "master";
+const DEFAULT_ASSISTANT_ID = "web-autotest-agent";
 const AGENT_BUILDER_AUTH_SCHEME = "langsmith-api-key";
 
 export const StreamProvider: React.FC<{ children: ReactNode }> = ({

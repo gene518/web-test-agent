@@ -10,6 +10,7 @@ import { useQueryState } from "nuqs";
 import { constructOpenInStudioURL, buildDecisionFromState } from "../utils";
 import { Decision, HITLRequest, DecisionType, ActionRequest } from "../types";
 import { useStreamContext } from "@/providers/useStreamContext";
+import { CONTINUE_ON_DISCONNECT_RUN_OPTIONS } from "@/lib/run-submit-options";
 
 interface ThreadActionsViewProps {
   interrupt: Interrupt<HITLRequest>;
@@ -94,6 +95,15 @@ export function ThreadActionsView({
     Map<number, Decision>
   >(new Map());
   const [submittingAll, setSubmittingAll] = useState(false);
+  const lastInterruptSignature = useMemo(
+    () =>
+      JSON.stringify({
+        id: interrupt.id ?? null,
+        action_requests: interrupt.value?.action_requests ?? [],
+        review_configs: interrupt.value?.review_configs ?? [],
+      }),
+    [interrupt.id, interrupt.value],
+  );
 
   const hitlValue = interrupt.value;
   const actionRequests = useMemo(
@@ -150,7 +160,7 @@ export function ThreadActionsView({
   useEffect(() => {
     setCurrentIndex(0);
     setAddressedActions(new Map());
-  }, [interrupt]);
+  }, [lastInterruptSignature]);
 
   const handleOpenInStudio = () => {
     if (!apiUrl) {
@@ -181,6 +191,7 @@ export function ThreadActionsView({
           command: {
             resume: { decisions: allDecisions },
           },
+          ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         },
       );
 
@@ -228,6 +239,7 @@ export function ThreadActionsView({
           command: {
             resume: { decisions: allDecisions },
           },
+          ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         },
       );
 

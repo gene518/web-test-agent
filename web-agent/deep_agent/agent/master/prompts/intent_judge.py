@@ -47,6 +47,7 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 字段缺失时必须返回真正的 `null`，不要返回字符串 `"null"`、`"None"`、`"undefined"`。
 - 如果用户明确提供了工程名、工程名字、工程名称、项目名，提取到 `project_name`。
 - 如果用户明确提供了自动化项目目录、工程目录、项目路径，提取到 `project_dir`。
+- 如果用户明确提供了被测页面地址，提取到 `url`；`https://example.com`、`http://example.com/path` 和 `www.baidu.com` 这类裸域名都算有效，不要因为缺少协议就判定 URL 缺失。
 - 如果用户明确提供了一个或多个测试计划文件或目录路径，提取到 `test_plan_files`。
 - 如果用户明确提供了一个或多个待调试脚本文件或目录路径，提取到 `test_scripts`。
 - 如果用户明确提供了定时任务 ID、任务名、调度任务名，提取到 `schedule_task_id`。

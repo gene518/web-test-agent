@@ -14,7 +14,7 @@ import {
 import { createClient } from "./client";
 
 const DEFAULT_API_URL = "http://127.0.0.1:2024";
-const DEFAULT_ASSISTANT_ID = "master";
+const DEFAULT_ASSISTANT_ID = "web-autotest-agent";
 
 interface ThreadContextType {
   getThreads: () => Promise<Thread[]>;
@@ -34,6 +34,30 @@ function getThreadSearchMetadata(
   } else {
     return { graph_id: assistantId };
   }
+}
+
+function isThreadForCurrentAssistant(
+  thread: Thread,
+  expectedMetadata: { graph_id: string } | { assistant_id: string },
+): boolean {
+  const metadata =
+    thread.metadata &&
+    typeof thread.metadata === "object" &&
+    !Array.isArray(thread.metadata)
+      ? (thread.metadata as Record<string, unknown>)
+      : {};
+  const hasGraphMarker =
+    typeof metadata.graph_id === "string" ||
+    typeof metadata.assistant_id === "string";
+
+  // 旧 thread 创建时没有写入 graph 元数据，不能因为缺少标记就从历史列表里消失。
+  if (!hasGraphMarker) {
+    return true;
+  }
+
+  return Object.entries(expectedMetadata).every(
+    ([key, value]) => metadata[key] === value,
+  );
 }
 
 export function ThreadProvider({ children }: { children: ReactNode }) {
@@ -64,14 +88,24 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
       authScheme || undefined,
     );
 
+    const expectedMetadata = getThreadSearchMetadata(resolvedAssistantId);
     const threads = await client.threads.search({
-      metadata: {
-        ...getThreadSearchMetadata(resolvedAssistantId),
-      },
       limit: 100,
+      sortBy: "updated_at",
+      sortOrder: "desc",
+      select: [
+        "thread_id",
+        "created_at",
+        "updated_at",
+        "metadata",
+        "status",
+        "values",
+      ],
     });
 
-    return threads;
+    return threads.filter((thread) =>
+      isThreadForCurrentAssistant(thread, expectedMetadata),
+    );
   }, [apiUrl, assistantId, authScheme, envAssistantId]);
 
   const value = {

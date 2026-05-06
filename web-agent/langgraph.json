@@ -2,7 +2,7 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "master": "./deep_agent/app.py:agent_graph"
+    "web-autotest-agent": "./deep_agent/app.py:agent_graph"
   },
   "env": ".env"
 }

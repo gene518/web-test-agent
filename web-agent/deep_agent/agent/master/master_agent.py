@@ -256,7 +256,7 @@ class MasterAgent:
 
         mapping = {
             "project_name": "请提供自动化工程名字，例如 `baidu-web` 或 `demo`；如果已有现成工程目录，也可以直接提供 `project_dir`。",
-            "url": "请提供被测页面的完整 URL。",
+            "url": "请提供被测页面地址，支持 `https://example.com` 或 `www.example.com` 这类裸域名。",
             "feature_points": "请提供你希望覆盖的功能点列表，至少 1 条。",
             "test_plan_files": "请提供待生成脚本的测试计划文件或目录路径，至少 1 个；优先传相对 `project_dir` 的路径。",
             "test_cases": "请提供待生成脚本的测试用例列表，至少 1 条。",

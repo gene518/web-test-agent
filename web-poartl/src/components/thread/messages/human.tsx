@@ -8,6 +8,7 @@ import { BranchSwitcher, CommandBar } from "./shared";
 import { MultimodalPreview } from "@/components/thread/MultimodalPreview";
 import { isBase64ContentBlock } from "@/lib/multimodal-utils";
 import { THREAD_STREAM_MODES } from "../message-utils";
+import { CONTINUE_ON_DISCONNECT_RUN_OPTIONS } from "@/lib/run-submit-options";
 
 function EditableContent({
   value,
@@ -60,7 +61,7 @@ export function HumanMessage({
         checkpoint: parentCheckpoint,
         streamMode: [...THREAD_STREAM_MODES],
         streamSubgraphs: true,
-        streamResumable: true,
+        ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         optimisticValues: (prev) => {
           const values = meta?.firstSeenState?.values;
           if (!values) return prev;
@@ -116,7 +117,7 @@ export function HumanMessage({
             )}
             {/* Render text if present, otherwise fallback to file/image name */}
             {contentString ? (
-              <p className="bg-muted ml-auto w-fit rounded-3xl px-4 py-2 text-right whitespace-pre-wrap">
+              <p className="bg-muted ml-auto w-fit max-w-[min(42rem,85vw)] rounded-3xl px-4 py-2 text-right whitespace-pre-wrap break-words [overflow-wrap:anywhere] [text-align-last:right]">
                 {contentString}
               </p>
             ) : null}

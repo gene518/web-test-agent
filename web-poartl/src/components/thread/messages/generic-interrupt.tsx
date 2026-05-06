@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useStreamContext } from "@/providers/useStreamContext";
@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { v4 as uuidv4 } from "uuid";
 import { THREAD_STREAM_MODES } from "../message-utils";
+import {
+  buildResumeSubmitKey,
+  tryLockResumeSubmit,
+  unlockResumeSubmit,
+} from "../resume-submit-guard";
+import { useQueryState } from "nuqs";
+import { CONTINUE_ON_DISCONNECT_RUN_OPTIONS } from "@/lib/run-submit-options";
 
 function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
@@ -75,9 +82,14 @@ export function GenericInterruptView({
   interrupt: Record<string, any> | Record<string, any>[];
 }) {
   const thread = useStreamContext();
+  const [threadId] = useQueryState("threadId");
   const [isExpanded, setIsExpanded] = useState(false);
   const [reply, setReply] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const pendingResumeKeyRef = useRef<{
+    key: string;
+    sawLoading: boolean;
+  } | null>(null);
   const questionTitle = extractInterruptQuestion(interrupt);
 
   const contentStr = JSON.stringify(interrupt, null, 2);
@@ -127,10 +139,55 @@ export function GenericInterruptView({
 
   const displayEntries = processEntries();
 
+  const clearPendingResume = useCallback(() => {
+    const pending = pendingResumeKeyRef.current;
+    if (!pending) {
+      return;
+    }
+    unlockResumeSubmit(pending.key);
+    pendingResumeKeyRef.current = null;
+    setSubmitting(false);
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingResumeKeyRef.current;
+    if (!pending) {
+      return;
+    }
+
+    if (thread.isLoading) {
+      pending.sawLoading = true;
+      return;
+    }
+
+    if (pending.sawLoading) {
+      clearPendingResume();
+    }
+  }, [clearPendingResume, thread.isLoading]);
+
+  useEffect(() => {
+    return () => {
+      clearPendingResume();
+    };
+  }, [clearPendingResume]);
+
   const handleResume = async () => {
     const text = reply.trim();
     if (!text) {
       toast.error("请先补充必要信息。", {
+        richColors: true,
+        closeButton: true,
+      });
+      return;
+    }
+
+    const resumeKey = buildResumeSubmitKey({
+      threadId,
+      interrupt,
+      text,
+    });
+    if (!tryLockResumeSubmit(resumeKey)) {
+      toast.info("补参正在提交，请稍候。", {
         richColors: true,
         closeButton: true,
       });
@@ -145,6 +202,10 @@ export function GenericInterruptView({
 
     try {
       setSubmitting(true);
+      pendingResumeKeyRef.current = {
+        key: resumeKey,
+        sawLoading: false,
+      };
       thread.submit(
         {},
         {
@@ -153,9 +214,10 @@ export function GenericInterruptView({
               text,
             },
           },
+          multitaskStrategy: "reject",
           streamMode: [...THREAD_STREAM_MODES],
           streamSubgraphs: true,
-          streamResumable: true,
+          ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
           optimisticValues: (prev) => ({
             ...prev,
             messages: [...(prev.messages ?? []), newHumanMessage],
@@ -168,13 +230,12 @@ export function GenericInterruptView({
       );
       setReply("");
     } catch (error) {
+      clearPendingResume();
       console.error("提交补参回复失败", error);
       toast.error("提交补参回复失败。", {
         richColors: true,
         closeButton: true,
       });
-    } finally {
-      setSubmitting(false);
     }
   };
 

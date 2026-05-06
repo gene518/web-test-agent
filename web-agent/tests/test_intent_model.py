@@ -131,6 +131,7 @@ class IntentModelTestCase(unittest.TestCase):
                 "url": "www.baidu.com",
             },
         )
+        self.assertEqual(compute_missing_params(classification), [])
 
     def test_generator_list_values_drop_null_like_entries(self) -> None:
         classification = IntentClassification(

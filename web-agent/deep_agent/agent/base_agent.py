@@ -7,20 +7,18 @@ workspace 解析、MCP 工具准备、prompt 拼装和 Deep Agent 调用细节�
 
 from __future__ import annotations
 import asyncio
-import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from deep_agent.core.config import AppSettings
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.agent.artifacts import (
     append_artifact_history,
     append_stage_summary,
@@ -28,7 +26,7 @@ from deep_agent.agent.artifacts import (
 )
 from deep_agent.core.display_message import (
     build_display_summary_message,
-    build_runtime_message_result,
+    emit_display_message_delta,
     extract_missing_display_messages,
     normalize_display_delta,
     sanitize_display_messages,
@@ -39,7 +37,6 @@ from deep_agent.core.runtime_logging import (
     debug_max_chars,
     format_messages_for_log,
     format_state_for_log,
-    format_value_for_log,
     get_logger,
     log_debug_event,
     log_title,
@@ -48,62 +45,18 @@ from deep_agent.core.runtime_logging import (
     with_trace_context,
 )
 from deep_agent.agent.state import WorkflowState
-from deep_agent.config.specialist_file_filter import SpecialistFileFilter
+from deep_agent.agent.specialist_helpers import (
+    SpecialistDisplayMixin,
+    SpecialistExecutionContext,
+    SpecialistLoggingMixin,
+    SpecialistRuntimeConfig,
+    SpecialistWorkspaceMixin,
+)
 from deep_agent.tools import MCPToolsManager, get_mcp_tools_manager
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
 
 
 logger = get_logger(__name__)
-
-
-@dataclass(slots=True)
-class SpecialistExecutionContext:
-    """承接单次 Specialist 执行所需的完整运行上下文。
-
-    把 workspace、system prompt 和工具集合提前整理成一个对象，是为了让后续
-    “创建 Agent”和“执行 Agent”两个阶段只关心消费结果，不再重复关心准备过程。
-    """
-
-    workspace_dir: Path | None = field(metadata={"description": "当前 Specialist 执行所在的项目目录；没有工作目录约束时为 None。"})
-    system_prompt: str = field(
-        metadata={"description": "本次执行最终拼装后的 system prompt，已经包含运行时上下文和规范补充。"}
-    )
-    tools: Sequence[BaseTool] = field(
-        metadata={"description": "当前 Specialist 允许调用的工具集合，通常由 MCP 管理器按白名单过滤后返回。"}
-    )
-    trace_context: dict[str, Any] = field(
-        metadata={"description": "本次 Specialist 执行对应的 session/thread/run 调试标识。"}
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class SpecialistRuntimeConfig:
-    """描述单个 Specialist 的静态变化点。
-
-    这个配置对象的目的，是把每种 Specialist 的差异收敛成“system prompt 片段、工具白名单、项目规范策略”
-    这样的静态参数，进而复用同一条执行主链路，减少子类里散落的条件分支。
-    """
-
-    system_prompt_parts: tuple[str, ...] = field(
-        default_factory=tuple,
-        metadata={"description": "当前 Specialist 的 system prompt 片段列表，会按顺序拼装成最终提示词。"},
-    )
-    allowed_playwright_test_mcp_tools: tuple[str, ...] = field(
-        default=(),
-        metadata={"description": "允许暴露给当前 Specialist 的 Playwright Test MCP 工具白名单。"},
-    )
-    load_project_standard: bool = field(
-        default=True,
-        metadata={"description": "是否尝试从项目目录加载额外的项目规范文件。"},
-    )
-    project_standard_file_name: str = field(
-        default="web_standard.md",
-        metadata={"description": "项目规范文件名，默认会在 workspace 下查找该文件并附加到 prompt。"},
-    )
-    query_filter_config: SpecialistFileFilter = field(
-        default_factory=SpecialistFileFilter,
-        metadata={"description": "当前 Specialist 的文件查询过滤配置，会转成内置文件工具的读权限规则。"},
-    )
 
 
 class BaseAgent(ABC):
@@ -128,7 +81,13 @@ class BaseAgent(ABC):
         """
 
 
-class BaseSpecialistAgent(BaseAgent, ABC):
+class BaseSpecialistAgent(
+    SpecialistDisplayMixin,
+    SpecialistWorkspaceMixin,
+    SpecialistLoggingMixin,
+    BaseAgent,
+    ABC,
+):
     """为 Plan / Generator / Healer 提供统一的 Deep Agents 执行骨架。
 
     它存在的目的，是把“准备运行上下文 -> 创建 Deep Agent -> 执行并提取新增消息”
@@ -192,23 +151,37 @@ class BaseSpecialistAgent(BaseAgent, ABC):
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
             return result
 
+        stage_start_message: AIMessage | None = None
         try:
             # 这里把“准备上下文”、“创建 Agent”、“执行 Agent”明确拆开，
             # 目的是让每一步职责稳定，后续子类要覆写某一步时不必复制整段流程。
             execution_context = await self._prepare_execution(state, config=config)
+            stage_start_message = self._build_stage_start_display_message(
+                state=state,
+                execution_context=execution_context,
+            )
+            emit_display_message_delta([stage_start_message])
             specialist_agent = self._create_specialist_agent(execution_context)
             raw_result = await self._run_deep_agent(specialist_agent, state, execution_context, config=config)
-            result = await self._build_final_summary_result(state=state, raw_result=raw_result, config=config)
+            result = await self._build_final_summary_result(
+                state=state,
+                raw_result=raw_result,
+                config=config,
+                preface_messages=[stage_start_message],
+            )
             logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result.get("messages", []), self._settings),)
             return result
         except Exception as exc:  # noqa: BLE001
+            if is_langgraph_user_cancellation(exc):
+                raise
             logger.exception("%s event=node_error trace=%s %s 执行失败。",
                 log_title("执行", "节点异常", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_error"), self.display_name,)
             result = await self._build_final_summary_result(
                 state=state,
                 raw_result={"status": "exception", "message": self._build_unhandled_exception_message(exc)},
                 config=config,
+                preface_messages=[stage_start_message] if stage_start_message is not None else (),
             )
             logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
                 log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
@@ -437,126 +410,13 @@ class BaseSpecialistAgent(BaseAgent, ABC):
 
         return "## 本次运行上下文\n" + "\n".join(prompt_lines)
 
-    def _build_workspace_permissions(
-        self,
-        workspace_dir: Path,
-        *,
-        allow_workspace_writes: bool,
-    ) -> list[FilesystemPermission]:
-        """根据当前 Specialist 配置构建 workspace 级别的文件权限。"""
-
-        workspace_path = workspace_dir.resolve().as_posix()
-        permissions: list[FilesystemPermission] = []
-        denied_read_paths = self._build_query_filter_read_paths(
-            workspace_dir=workspace_dir,
-            query_filter_config=self._get_runtime_config().query_filter_config,
-        )
-        for denied_path in denied_read_paths:
-            permissions.append(FilesystemPermission(operations=["read"], paths=[denied_path], mode="deny"))
-
-        permissions.append(
-            FilesystemPermission(
-                operations=["read"],
-                paths=[workspace_path, f"{workspace_path}/**"],
-                mode="allow",
-            )
-        )
-        permissions.append(FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"))
-
-        if allow_workspace_writes:
-            permissions.append(
-                FilesystemPermission(
-                    operations=["write"],
-                    paths=[workspace_path, f"{workspace_path}/**"],
-                    mode="allow",
-                )
-            )
-        permissions.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
-        return permissions
-
-    def _build_query_filter_read_paths(
-        self,
-        *,
-        workspace_dir: Path,
-        query_filter_config: SpecialistFileFilter,
-    ) -> list[str]:
-        """把查询过滤配置展开成 workspace 作用域下的绝对 deny 路径列表。"""
-
-        blocked_paths: list[str] = []
-        for pattern in query_filter_config.blocked_path_globs:
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, pattern))
-
-        for extension in query_filter_config.blocked_file_extensions:
-            normalized_extension = extension if extension.startswith(".") else f".{extension}"
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, f"*{normalized_extension}"))
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, f"**/*{normalized_extension}"))
-
-        deduplicated_paths: list[str] = []
-        seen: set[str] = set()
-        for path in blocked_paths:
-            if path in seen:
-                continue
-            seen.add(path)
-            deduplicated_paths.append(path)
-        return deduplicated_paths
-
-    def _resolve_workspace_query_glob(self, workspace_dir: Path, pattern: str) -> str:
-        """把相对 workspace 的查询 glob 转成绝对权限路径。"""
-
-        normalized_pattern = pattern.strip().replace("\\", "/")
-        if not normalized_pattern:
-            raise ValueError("查询过滤规则不允许空路径模式。")
-        if normalized_pattern.startswith("/"):
-            return normalized_pattern
-
-        normalized_pattern = normalized_pattern[2:] if normalized_pattern.startswith("./") else normalized_pattern
-        workspace_path = workspace_dir.resolve().as_posix()
-        if normalized_pattern in {".", ""}:
-            return workspace_path
-        return f"{workspace_path}/{normalized_pattern}"
-
-    def _build_query_guard_prompt(self, runtime_config: SpecialistRuntimeConfig) -> str:
-        """构建所有 Specialist 共用的文件查询约束提示词。"""
-
-        guidance_lines = [
-            "- 如果需要查询文件，先使用 `ls` 观察候选目录结构，再把范围缩小到最小必要的单个子目录或单个文件。",
-            "- 不要直接对 `project_dir`、`workspace_dir` 或其他大目录执行 `glob=\"**/*\"`、递归 `grep` 或无范围全量搜索。",
-            "- `grep` 首次检索优先使用默认的 `files_with_matches`；只有缩小到少量候选文件后，才使用 `output_mode=\"content\"` 查看正文。",
-        ]
-        query_filter_config = runtime_config.query_filter_config
-        if query_filter_config.blocked_path_globs:
-            blocked_paths = ", ".join(f"`{pattern}`" for pattern in query_filter_config.blocked_path_globs)
-            guidance_lines.append(f"- 禁止查询这些路径模式：{blocked_paths}")
-        if query_filter_config.blocked_file_extensions:
-            blocked_types = ", ".join(f"`{suffix}`" for suffix in query_filter_config.blocked_file_extensions)
-            guidance_lines.append(f"- 禁止查询这些文件类型：{blocked_types}")
-        return "## 文件查询约束\n" + "\n".join(guidance_lines)
-
-    def _extract_new_messages(self, result: dict[str, Any], existing_message_count: int) -> list[Any]:
-        """从 Agent 输出中截取新增消息。
-
-        这里只返回新增消息，目的是让 LangGraph 合并状态时保持增量语义，避免把历史消息重复写回，
-        进而造成状态膨胀和后续节点误判。
-        """
-
-        all_messages = result.get("messages", [])
-        if not isinstance(all_messages, list):
-            raise RuntimeError(f"{self.display_name} 返回的 messages 结构非法。")
-
-        # 这里按调用前的消息数量截断，是因为 Deep Agent 返回的是“完整消息历史”，
-        # 而工作流节点真正需要写回的只有这次新增的部分。
-        new_messages = all_messages[existing_message_count:]
-        if not new_messages:
-            raise RuntimeError(f"{self.display_name} 未返回新的消息结果。")
-
-        return new_messages
-
     async def _build_final_summary_result(
         self,
         *,
         state: WorkflowState,
         raw_result: dict[str, Any],
         config: RunnableConfig | None = None,
+        preface_messages: Sequence[BaseMessage] = (),
     ) -> WorkflowState:
         """把 Specialist 原始结果整理成统一的结构化阶段结果。"""
 
@@ -583,10 +443,16 @@ class BaseSpecialistAgent(BaseAgent, ABC):
             "missing_params": [],
             "pending_missing_params": [],
         }
+        stage_summary_message = build_display_summary_message(
+            stage_summary["text"],
+            prefix=f"{self.agent_type}-summary",
+        )
         display_messages = sanitize_display_messages(
             [
                 *extract_missing_display_messages(dict(state)),
+                *normalize_display_delta(preface_messages),
                 *normalize_display_delta(raw_result.get("messages", [])),
+                stage_summary_message,
             ]
         )
         if display_messages:
@@ -594,327 +460,6 @@ class BaseSpecialistAgent(BaseAgent, ABC):
         if self._workflow_managed_pipeline(state):
             result["messages"] = []
         else:
-            final_message = build_display_summary_message(
-                stage_summary["text"],
-                prefix=f"{self.agent_type}-summary",
-            )
-            result["messages"] = [final_message]
-            result["display_messages"] = [*display_messages, final_message]
+            result["messages"] = [stage_summary_message]
+            result["display_messages"] = display_messages
         return result
-
-    def _resolve_stage_status(self, raw_result: dict[str, Any]) -> str:
-        """解析当前阶段状态，默认把无显式错误视为成功。"""
-
-        status = raw_result.get("status")
-        if isinstance(status, str) and status:
-            return status
-        return "success"
-
-    def _extract_stage_artifact(self, raw_result: dict[str, Any]) -> dict[str, Any] | None:
-        """从阶段原始结果中取出结构化产物。"""
-
-        artifact = raw_result.get("artifact")
-        if isinstance(artifact, dict):
-            return artifact
-        return None
-
-    def _workflow_managed_pipeline(self, state: WorkflowState) -> bool:
-        """判断当前阶段是否由统一工作流 finalizer 管理用户回复。"""
-
-        requested_pipeline = state.get("requested_pipeline")
-        return isinstance(requested_pipeline, list) and bool(requested_pipeline)
-
-    def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
-        """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""
-
-        status = raw_result.get("status")
-        message = raw_result.get("message")
-        if status and status != "success" and message:
-            return str(message)
-
-        messages = raw_result.get("messages", [])
-        if isinstance(messages, list):
-            for message in reversed(messages):
-                if isinstance(message, BaseMessage):
-                    text = self._message_to_text(message).strip()
-                    if text:
-                        return text
-
-        if message:
-            return str(message)
-
-        status = raw_result.get("status")
-        if status:
-            return str(status)
-
-        return "阶段已结束，但总结模型暂时不可用，未能生成最终总结。"
-
-    def _build_runtime_exception_result(
-        self,
-        *,
-        collector: Any,
-        existing_messages: Sequence[Any],
-        exc: Exception,
-    ) -> WorkflowState:
-        """保留已流出的运行时消息，同时把当前阶段标记为异常。"""
-
-        message = self._build_unhandled_exception_message(exc)
-        result: WorkflowState = build_runtime_message_result(
-            collector=collector,
-            existing_messages=existing_messages,
-            fallback_message=message,
-        )
-        result["status"] = "exception"
-        result["message"] = message
-        return result
-
-    def _build_stage_result(
-        self,
-        raw_result: dict[str, Any],
-        *,
-        stage_status: str,
-        artifact: dict[str, Any] | None,
-        stage_summary: dict[str, Any],
-    ) -> dict[str, Any]:
-        """构造写入 state 的内部阶段结果，不直接暴露给用户。"""
-
-        return {
-            "agent_type": self.agent_type,
-            "display_name": self.display_name,
-            "status": stage_status,
-            "artifact": artifact,
-            "stage_summary": stage_summary,
-            "raw_messages": [self._message_to_text(message) for message in raw_result.get("messages", []) if isinstance(message, BaseMessage)],
-            "raw_result": {
-                key: value
-                for key, value in raw_result.items()
-                if key != "messages"
-            },
-        }
-
-    def _format_stage_result_for_prompt(self, raw_result: dict[str, Any]) -> str:
-        """把阶段原始结果压成总结提示词文本。"""
-
-        lines: list[str] = []
-        for key, value in raw_result.items():
-            if key == "messages" and isinstance(value, list):
-                message_lines = [f"{message.__class__.__name__}: {self._message_to_text(message)}" for message in value if isinstance(message, BaseMessage)]
-                lines.append(f"messages:\n" + "\n".join(message_lines))
-                continue
-            lines.append(f"{key}: {value}")
-        text = "\n".join(lines)
-        max_chars = debug_max_chars(self._settings)
-        if len(text) <= max_chars:
-            return text
-        return f"{text[:max_chars]}... [truncated]"
-
-    def _latest_human_message_text(self, messages: Sequence[Any]) -> str:
-        """返回最近一条用户消息文本。"""
-
-        for message in reversed(messages):
-            if isinstance(message, HumanMessage):
-                return self._message_to_text(message)
-        return ""
-
-    def _message_to_text(self, message: BaseMessage) -> str:
-        """把消息内容转换成字符串。"""
-
-        content = message.content
-        return content if isinstance(content, str) else str(content)
-
-    def _tool_output_is_error(self, output: Any) -> bool:
-        """判断工具输出是否表示失败。"""
-
-        status = getattr(output, "status", None)
-        if status == "error":
-            return True
-
-        if isinstance(output, dict):
-            if output.get("status") == "error":
-                return True
-            content = output.get("content")
-            if isinstance(content, str) and content.lstrip().startswith("Error:"):
-                return True
-
-        content = getattr(output, "content", None)
-        if isinstance(content, str) and content.lstrip().startswith("Error:"):
-            return True
-
-        return False
-
-    def _collect_workspace_write_start(
-        self,
-        *,
-        event: dict[str, Any],
-        workspace_dir: Path | None,
-        pending_write_paths: list[str],
-    ) -> None:
-        """在写文件工具开始时记录目标路径。"""
-
-        if workspace_dir is None:
-            return
-        if event.get("name") not in {"write_file", "edit_file"} or event.get("event") != "on_tool_start":
-            return
-
-        payload = event.get("data", {}).get("input")
-        if not isinstance(payload, dict):
-            return
-
-        relative_path = self._normalize_workspace_relative_path(
-            workspace_dir,
-            payload.get("file_path") if "file_path" in payload else payload.get("path"),
-        )
-        if relative_path:
-            pending_write_paths.append(relative_path)
-
-    def _collect_workspace_write_result(
-        self,
-        *,
-        event: dict[str, Any],
-        pending_write_paths: list[str],
-        successful_write_paths: set[str],
-    ) -> None:
-        """在写文件工具结束时记录成功写入的 workspace 相对路径。"""
-
-        if event.get("name") not in {"write_file", "edit_file"}:
-            return
-
-        if event.get("event") == "on_tool_error":
-            if pending_write_paths:
-                pending_write_paths.pop(0)
-            return
-
-        if event.get("event") != "on_tool_end":
-            return
-
-        relative_path = pending_write_paths.pop(0) if pending_write_paths else None
-        if relative_path is None:
-            return
-
-        output = event.get("data", {}).get("output")
-        if not self._tool_output_is_error(output):
-            successful_write_paths.add(relative_path)
-
-    def _normalize_workspace_relative_path(self, workspace_dir: Path, value: Any) -> str | None:
-        """把绝对或相对路径归一化为 workspace 内的相对路径。"""
-
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-
-        candidate = Path(text).expanduser()
-        if not candidate.is_absolute():
-            candidate = workspace_dir / candidate
-
-        resolved_workspace = workspace_dir.resolve()
-        resolved_candidate = candidate.resolve()
-        try:
-            return resolved_candidate.relative_to(resolved_workspace).as_posix()
-        except ValueError:
-            return None
-
-    def log_get_logger(self) -> logging.Logger:
-        """返回当前 Agent 模块对应的日志对象。"""
-
-        return get_logger(type(self).__module__)
-
-    def log_stream_event(self, event: dict[str, Any], trace_context: dict[str, Any] | None = None) -> None:
-        """打印 Specialist 事件流中的关键模型与工具事件。"""
-
-        event_name = event.get("event", "")
-        name = event.get("name", "")
-        base_trace_context = trace_context or {}
-        node_name = base_trace_context.get("node_name") or f"{self.agent_type}_node"
-        agent_logger = self.log_get_logger()
-
-        if event_name == "on_chat_model_start":
-            agent_logger.info("%s event=model_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "model_start"), name, format_value_for_log(event.get("data", {}).get("input"), self._settings),)
-            return
-
-        if event_name == "on_chat_model_end":
-            agent_logger.info("%s event=model_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "model_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
-            return
-
-        if event_name == "on_tool_start":
-            agent_logger.info("%s event=tool_start trace=%s name=%s input=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "tool_start"), name, format_value_for_log(event.get("data", {}).get("input"), self._settings),)
-            return
-
-        if event_name == "on_tool_end":
-            agent_logger.info("%s event=tool_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "tool_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
-            return
-
-        if event_name == "on_tool_error":
-            agent_logger.warning("%s event=tool_error trace=%s name=%s error=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "tool_error"), name, format_value_for_log(event.get("data", {}).get("error"), self._settings),)
-            return
-
-        if event_name == "on_chain_end" and not event.get("parent_ids"):
-            agent_logger.info("%s event=deep_agent_end trace=%s name=%s output=%s",
-                log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(base_trace_context, "deep_agent_end"), name, format_value_for_log(event.get("data", {}).get("output"), self._settings),)
-
-    def log_browser_close_expected(self, trace_context: dict[str, Any], exc: Exception) -> None:
-        """记录浏览器在收尾阶段按预期关闭的异常。"""
-
-        node_name = trace_context.get("node_name") or f"{self.agent_type}_node"
-        self.log_get_logger().info("%s event=browser_close_expected trace=%s error=%s",
-            log_title("执行", "事件流", node_name=node_name), self.log_event_trace_context(trace_context, "browser_close_expected"), self.log_truncate(str(exc)),)
-
-    def log_tool_state(
-        self,
-        *,
-        trace_context: dict[str, Any],
-        event_name: str,
-        status: str,
-        error: str | None,
-    ) -> None:
-        """记录关键工具执行状态，便于按 session grep。"""
-
-        node_name = trace_context.get("node_name") or f"{self.agent_type}_node"
-        self.log_get_logger().info("%s event=%s trace=%s status=%s error=%s",
-            log_title("执行", "事件流", node_name=node_name), event_name, self.log_event_trace_context(trace_context, event_name), status, error,)
-
-    def log_event_trace_context(self, trace_context: dict[str, Any], event_name: str) -> dict[str, Any]:
-        """复用节点 trace 标识，只替换当前日志事件名。"""
-
-        event_trace_context = dict(trace_context)
-        event_trace_context["event_name"] = event_name
-        return event_trace_context
-
-    def log_truncate(self, value: Any, max_length: int | None = None) -> str:
-        """压缩日志输出长度。"""
-
-        resolved_max_length = max_length if max_length is not None else debug_max_chars(self._settings)
-        text = value if isinstance(value, str) else repr(value)
-        if len(text) <= resolved_max_length:
-            return text
-        return f"{text[:resolved_max_length]}..."
-
-    def _build_unhandled_exception_message(self, exc: Exception) -> str:
-        """把漏网异常压缩成一条用户可读、不会打爆 graph 的消息。"""
-
-        error_message = str(exc).strip() or exc.__class__.__name__
-        if len(error_message) > 1200:
-            error_message = f"{error_message[:1200]}... [truncated]"
-        return (
-            f"{self.display_name} 执行过程中遇到未处理异常，已停止当前阶段但不会中断整个工作流。"
-            f"此前已完成的操作历史仍然保留。"
-            f"错误类型：`{exc.__class__.__name__}`。"
-            f"错误信息：{error_message}"
-        )
-
-    def _format_prompt_value(self, value: Any) -> str:
-        """把运行时参数格式化成适合拼接进 prompt 的文本。"""
-
-        if isinstance(value, list):
-            if not value:
-                return "[]"
-            # 列表在 prompt 里统一转成扁平字符串，目的是减少模型对 Python 原始结构的依赖。
-            return ", ".join(str(item) for item in value)
-
-        return str(value)

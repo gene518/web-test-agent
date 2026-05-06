@@ -9,8 +9,6 @@ import {
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { BaseMessage } from "@langchain/core/messages";
-import { ToolCall } from "@langchain/core/messages/tool";
-import { ToolCallTable } from "./tool-call-table";
 import { Button } from "@/components/ui/button";
 import { MarkdownText } from "../../markdown-text";
 
@@ -41,10 +39,22 @@ const messageTypeToLabel = (message: BaseMessage) => {
   }
 };
 
+function isToolMessage(message: BaseMessage): boolean {
+  if ("type" in message && typeof message.type === "string") {
+    return message.type.toLowerCase() === "tool";
+  }
+
+  if ("getType" in message) {
+    return message.getType().toLowerCase() === "tool";
+  }
+
+  return false;
+}
+
 function MessagesRenderer({ messages }: { messages: BaseMessage[] }) {
   return (
     <div className="flex w-full flex-col gap-1">
-      {messages.map((msg, idx) => {
+      {messages.filter((msg) => !isToolMessage(msg)).map((msg, idx) => {
         const messageTypeLabel = messageTypeToLabel(msg);
         const content =
           typeof msg.content === "string"
@@ -57,16 +67,6 @@ function MessagesRenderer({ messages }: { messages: BaseMessage[] }) {
           >
             <p className="font-medium text-gray-700">{messageTypeLabel}:</p>
             {content && <MarkdownText>{content}</MarkdownText>}
-            {"tool_calls" in msg && msg.tool_calls ? (
-              <div className="flex w-full flex-col items-start gap-1">
-                {(msg.tool_calls as ToolCall[]).map((tc, idx) => (
-                  <ToolCallTable
-                    key={tc.id ?? `tool-call-${idx}`}
-                    toolCall={tc}
-                  />
-                ))}
-              </div>
-            ) : null}
           </div>
         );
       })}

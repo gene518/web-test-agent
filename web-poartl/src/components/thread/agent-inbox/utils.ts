@@ -45,14 +45,10 @@ export function baseMessageObject(item: unknown): string {
       typeof item.content === "string"
         ? item.content
         : JSON.stringify(item.content, null);
-    let toolCallText = "";
-    if ("tool_calls" in item) {
-      toolCallText = JSON.stringify(item.tool_calls, null);
-    }
     if ("type" in item) {
-      return `${item.type}:${contentText ? ` ${contentText}` : ""}${toolCallText ? ` - 工具调用：${toolCallText}` : ""}`;
+      return `${item.type}:${contentText ? ` ${contentText}` : ""}`;
     } else if ("getType" in item) {
-      return `${(item as BaseMessage).getType()}:${contentText ? ` ${contentText}` : ""}${toolCallText ? ` - 工具调用：${toolCallText}` : ""}`;
+      return `${(item as BaseMessage).getType()}:${contentText ? ` ${contentText}` : ""}`;
     }
   } else if (
     typeof item === "object" &&
@@ -64,11 +60,7 @@ export function baseMessageObject(item: unknown): string {
       typeof item.content === "string"
         ? item.content
         : JSON.stringify(item.content, null);
-    let toolCallText = "";
-    if ("tool_calls" in item) {
-      toolCallText = JSON.stringify(item.tool_calls, null);
-    }
-    return `${item.type}:${contentText ? ` ${contentText}` : ""}${toolCallText ? ` - 工具调用：${toolCallText}` : ""}`;
+    return `${item.type}:${contentText ? ` ${contentText}` : ""}`;
   }
 
   if (typeof item === "object") {
@@ -86,7 +78,7 @@ export function unknownToPrettyDate(input: unknown): string | undefined {
     ) {
       return format(new Date(input as string), "MM/dd/yyyy hh:mm a");
     }
-  } catch (_) {
+  } catch {
     // 日期解析失败，无需处理。
   }
   return undefined;

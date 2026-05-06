@@ -339,14 +339,17 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             result = await agent.execute(state)
 
         self.assertEqual(result["messages"], [])
-        self.assertEqual(
-            [message.id for message in result["display_messages"]],
-            ["ai-tool-call", "tool-write-todos", "tool-save-plan", "ai-final"],
-        )
-        self.assertEqual(result["display_messages"][0].tool_calls[0]["name"], "write_todos")
+        display_ids = [message.id for message in result["display_messages"]]
+        self.assertTrue(display_ids[0].startswith("display-plan-start-"))
+        self.assertEqual(display_ids[1], "tool-write-todos")
+        self.assertTrue(display_ids[2].startswith("display-tool-start-planner_save_plan-"))
+        self.assertEqual(display_ids[3], "tool-save-plan")
+        self.assertTrue(display_ids[4].startswith("display-plan-summary-"))
+        self.assertNotIn("ai-tool-call", display_ids)
         self.assertEqual(result["display_messages"][1].name, "write_todos")
-        self.assertEqual(result["display_messages"][2].name, "planner_save_plan")
-        self.assertEqual(result["display_messages"][3].content, "已生成并保存测试计划。")
+        self.assertIn("正在调用工具 `planner_save_plan`", result["display_messages"][2].content)
+        self.assertEqual(result["display_messages"][3].name, "planner_save_plan")
+        self.assertIn("Plan 阶段", result["display_messages"][4].content)
 
     async def test_plan_execute_passes_custom_recursion_limit(self) -> None:
         fake_manager = FakeMCPManager(self.tools)

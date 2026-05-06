@@ -57,7 +57,7 @@ cd /Users/jin/Documents/code/github/web-test-agent/web-agent
 tests/debug/dev.sh
 ```
 
-当前 `master` graph 除了 `plan / generator / healer / general` 外，还支持一个 `scheduler` 节点：
+当前 `web-autotest-agent` graph 除了 `plan / generator / healer / general` 外，还支持一个 `scheduler` 节点：
 
 - 该节点只负责修改 `SCHEDULER_CONFIG_PATH` 指向的已存在定时任务配置
 - 它不会直接执行测试，也不会创建新的定时任务
@@ -70,22 +70,23 @@ cd /Users/jin/Documents/code/github/web-test-agent
 test/dev.sh
 ```
 
-脚本会先检查并关闭相关端口上的旧监听进程：
+脚本会先尝试使用默认端口，并清理相关端口上的旧监听进程：
 
 - 后端：`127.0.0.1:2024`
 - 前端：`127.0.0.1:3000`
 
-同时会先尝试停止其他仍在运行的 `test/dev.sh` 进程，然后再清理固定端口上的旧监听进程。
+同时会先尝试停止其他仍在运行的 `test/dev.sh` 进程，然后再清理默认端口上的旧监听进程。
+如果默认端口在等待 `PORT_WAIT_SECONDS` 后仍然不可绑定，脚本会自动切换到同 host 上的可用端口，并同步更新前端 API 地址和默认打开 URL。
 
-然后按固定命令直接启动：
+然后按解析后的端口直接启动：
 
-- 后端：`web-agent/.venv/bin/langgraph dev --host 127.0.0.1 --port 2024 --no-browser --no-reload`
-- 前端：`pnpm exec next dev --hostname 127.0.0.1 --port 3000`
+- 后端：`web-agent/.venv/bin/langgraph dev --host 127.0.0.1 --port <resolved-backend-port> --no-browser --no-reload`
+- 前端：`pnpm exec next dev --hostname 127.0.0.1 --port <resolved-frontend-port>`
 
 启动成功后脚本会默认打开：
 
 ```text
-http://127.0.0.1:3000/?chatHistoryOpen=true
+http://127.0.0.1:<resolved-frontend-port>/?chatHistoryOpen=true
 ```
 
 ## 日志
@@ -127,7 +128,7 @@ http://127.0.0.1:3000
 
 ```bash
 NEXT_PUBLIC_API_URL=http://127.0.0.1:2024
-NEXT_PUBLIC_ASSISTANT_ID=master
+NEXT_PUBLIC_ASSISTANT_ID=web-autotest-agent
 NEXT_PUBLIC_AUTH_SCHEME=
 ```
 
@@ -160,11 +161,13 @@ NO_RELOAD=0 test/dev.sh
 OPEN_BROWSER=0 test/dev.sh
 FRONTEND_OPEN_URL=http://127.0.0.1:3000/?chatHistoryOpen=true test/dev.sh
 SERVER_LOG_LEVEL=ERROR test/dev.sh
+PORT_WAIT_SECONDS=60 test/dev.sh
 STARTUP_WAIT_SECONDS=60 test/dev.sh
+BACKEND_PORT=2025 FRONTEND_PORT=3001 test/dev.sh
 ```
 
 默认会关闭 LangGraph 热加载，并禁止 `langgraph dev` 自动打开 LangSmith Studio。
-端口固定为 `2024` 和 `3000`。如果清理其他 `dev.sh` 进程和监听进程后端口仍不可绑定，脚本会直接失败并提示当前监听进程。
+脚本默认优先使用 `2024` 和 `3000`。脚本会先清理其他 `dev.sh` 进程和当前监听者；如果默认端口在等待 `PORT_WAIT_SECONDS` 后仍不可用，就自动切到可绑定端口，避免被旧连接的收尾状态卡死。`STARTUP_WAIT_SECONDS` 则控制后端/前端服务真正启动并对外可连通的等待时间。
 
 ## 停止服务
 

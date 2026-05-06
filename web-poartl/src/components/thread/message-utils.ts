@@ -22,10 +22,6 @@ export type RenderToolCall = Omit<
   partialArgsText?: string;
 };
 
-type FilterConversationMessagesOptions = {
-  includeToolMessages?: boolean;
-};
-
 type ToolCallArgsState = {
   args?: Record<string, any>;
   completeness: 0 | 1 | 2;
@@ -665,24 +661,17 @@ export function getHumanMessages(messages: unknown): CanonicalMessage[] {
 
 export function filterConversationMessages(
   messages: unknown,
-  options?: FilterConversationMessagesOptions,
 ): CanonicalMessage[] {
-  const includeToolMessages = options?.includeToolMessages ?? false;
-
   return normalizeMessages(messages).filter((message) => {
     if (message.type === "human") {
       return true;
     }
 
     if (message.type === "tool") {
-      return includeToolMessages;
-    }
-
-    if (hasVisibleTextContent(message.content)) {
       return true;
     }
 
-    return includeToolMessages && normalizeToolCalls(message).length > 0;
+    return hasVisibleTextContent(message.content);
   });
 }
 
@@ -713,11 +702,25 @@ function contentFingerprint(message: CanonicalMessage): string {
 }
 
 function messageFingerprints(message: CanonicalMessage): string[] {
+  if (message.id && shouldUseIdOnlyFingerprint(message)) {
+    return [`id:${message.id}`];
+  }
+
   const fingerprints = [contentFingerprint(message)];
   if (message.id) {
     fingerprints.unshift(`id:${message.id}`);
   }
   return fingerprints;
+}
+
+function shouldUseIdOnlyFingerprint(message: CanonicalMessage): boolean {
+  if (!message.id) {
+    return false;
+  }
+  if (message.type === "tool") {
+    return false;
+  }
+  return /^display-(plan|generator|healer|final)-summary-/.test(message.id);
 }
 
 function mergeCanonicalMessages(
@@ -885,7 +888,11 @@ export function getActiveInterrupt(
 
 export function getLastLiveRenderSignal(messages: unknown): string {
   const lastRenderableMessage = normalizeMessages(messages)
-    .filter((message) => message.type === "ai" || message.type === "tool")
+    .filter(
+      (message) =>
+        message.type === "tool" ||
+        (message.type === "ai" && hasVisibleTextContent(message.content)),
+    )
     .at(-1);
 
   if (!lastRenderableMessage) {

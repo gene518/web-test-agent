@@ -64,8 +64,25 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
             }
         )
 
-        self.assertEqual([message.id for message in collector.messages], [])
+        self.assertEqual([message.id for message in collector.messages], ["tool-1"])
         self.assertEqual(collector.final_output["messages"][0].id, "ai-final")
+
+    def test_collector_extracts_tool_start_message(self) -> None:
+        collector = VisibleTranscriptCollector()
+
+        messages = collector.consume_event(
+            {
+                "event": "on_tool_start",
+                "name": "browser_snapshot",
+                "data": {"input": {"random": "input"}},
+                "parent_ids": [],
+            }
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], AIMessage)
+        self.assertTrue(messages[0].id.startswith("display-tool-start-browser_snapshot-"))
+        self.assertEqual(messages[0].content, "正在调用工具 `browser_snapshot`。")
 
     def test_build_runtime_message_result_falls_back_to_final_output(self) -> None:
         collector = VisibleTranscriptCollector(
@@ -104,6 +121,31 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
         )
 
         self.assertEqual([message.id for message in result["messages"]], ["ai-progress", "ai-final"])
+
+    def test_build_runtime_message_result_keeps_final_tool_messages(self) -> None:
+        collector = VisibleTranscriptCollector(
+            final_output={
+                "messages": [
+                    AIMessage(content="existing", id="ai-existing"),
+                    AIMessage(content="", id="ai-tool-call"),
+                    ToolMessage(
+                        content='{"ok": true}',
+                        id="tool-final",
+                        name="write_todos",
+                        tool_call_id="call-final",
+                    ),
+                    AIMessage(content="final", id="ai-final"),
+                ]
+            }
+        )
+
+        result = build_runtime_message_result(
+            collector=collector,
+            existing_messages=[AIMessage(content="existing", id="ai-existing")],
+            fallback_message="fallback",
+        )
+
+        self.assertEqual([message.id for message in result["messages"]], ["tool-final", "ai-final"])
 
     def test_sanitize_display_messages_truncates_large_content_and_tool_args(self) -> None:
         large_text = "x" * 13000

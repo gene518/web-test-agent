@@ -14,17 +14,17 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import {
+  summarizeThreadRequestTitle,
+  truncateThreadTitle,
+} from "@/lib/thread-title";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
 function truncateText(value: string, maxLength = 32): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, maxLength - 1)}…`;
+  return truncateThreadTitle(value, maxLength);
 }
 
 function basename(value: string): string {
@@ -42,7 +42,9 @@ function simplifyUrlLabel(rawUrl: string): string {
     return "";
   }
 
-  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const candidate = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
   try {
     const parsed = new URL(candidate);
     return parsed.hostname.replace(/^www\./i, "");
@@ -113,6 +115,10 @@ function getStringField(record: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function getThreadMetadata(thread: Thread): Record<string, unknown> {
+  return isRecord(thread.metadata) ? thread.metadata : {};
+}
+
 function getFirstString(values: unknown): string {
   if (!Array.isArray(values)) {
     return "";
@@ -139,6 +145,9 @@ function buildThreadTitle(thread: Thread): { title: string; subtitle?: string } 
   const testScriptFile = basename(getFirstString(extractedParams.test_scripts));
   const scheduleTaskId = getStringField(extractedParams, "schedule_task_id");
   const firstHumanText = getFirstHumanText(thread);
+  const metadataTitle = getStringField(getThreadMetadata(thread), "thread_title");
+  const summarizedHumanTitle =
+    metadataTitle || summarizeThreadRequestTitle(firstHumanText);
 
   const primaryTarget =
     urlLabel ||
@@ -146,21 +155,25 @@ function buildThreadTitle(thread: Thread): { title: string; subtitle?: string } 
     testScriptFile ||
     testPlanFile ||
     scheduleTaskId;
+  const subtitleParts = [
+    primaryTarget,
+    stage !== "对话" ? stage : "",
+  ].filter(Boolean);
+  const stageSubtitle = subtitleParts.length
+    ? truncateText(subtitleParts.join(" · "), 40)
+    : undefined;
 
-  if (primaryTarget) {
+  if (summarizedHumanTitle) {
     return {
-      title: truncateText(`${primaryTarget} · ${stage}`),
-      subtitle:
-        firstHumanText && firstHumanText !== primaryTarget
-          ? truncateText(firstHumanText, 40)
-          : undefined,
+      title: summarizedHumanTitle,
+      subtitle: stageSubtitle,
     };
   }
 
-  if (firstHumanText) {
+  if (primaryTarget) {
     return {
-      title: truncateText(firstHumanText),
-      subtitle: stage !== "对话" ? stage : undefined,
+      title: truncateText(primaryTarget),
+      subtitle: stage !== "对话" ? truncateText(stage, 40) : undefined,
     };
   }
 

@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Decision, DecisionWithEdits, HITLRequest, SubmitType } from "../types";
 import { buildDecisionFromState, createDefaultHumanResponse } from "../utils";
+import { CONTINUE_ON_DISCONNECT_RUN_OPTIONS } from "@/lib/run-submit-options";
 
 interface UseInterruptedActionsInput {
   interrupt: Interrupt<HITLRequest>;
@@ -54,9 +55,20 @@ export default function useInterruptedActions({
   const [hasAddedResponse, setHasAddedResponse] = useState(false);
   const [approveAllowed, setApproveAllowed] = useState(false);
   const initialHumanInterruptEditValue = useRef<Record<string, string>>({});
+  const lastInitializedSignature = useRef<string>("");
 
   useEffect(() => {
     const hitlValue = interrupt.value as HITLRequest | undefined;
+    const signature = JSON.stringify({
+      action_requests: hitlValue?.action_requests ?? [],
+      review_configs: hitlValue?.review_configs ?? [],
+    });
+
+    if (lastInitializedSignature.current === signature) {
+      return;
+    }
+
+    lastInitializedSignature.current = signature;
     initialHumanInterruptEditValue.current = {};
 
     if (!hitlValue) {
@@ -94,6 +106,7 @@ export default function useInterruptedActions({
               decisions,
             },
           },
+          ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         },
       );
       return true;
@@ -194,6 +207,7 @@ export default function useInterruptedActions({
           command: {
             goto: END,
           },
+          ...CONTINUE_ON_DISCONNECT_RUN_OPTIONS,
         },
       );
 

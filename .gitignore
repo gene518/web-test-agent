@@ -32,3 +32,7 @@ dist/
 !/test/log/.gitkeep
 /web-poartl/vite.config.d.ts
 /web-poartl/vite.config.js
+/start/config.env
+/start/.cache/
+/start/logs/*
+!/start/logs/.gitkeep
