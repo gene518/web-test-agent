@@ -27,6 +27,8 @@ class IntentJudgeNode:
             log_title("执行", "节点入参", node_name="intent_judge_node"), build_trace_context(config, node_name="intent_judge_node", event_name="node_enter"), format_state_for_log(state),)
 
         if state.get("pipeline_handoff") or state.get("return_to_master"):
+            # TODO(重点流程): 这里处理 Specialist 阶段回流后的下一步决策；
+            # 如果还有后续阶段就继续推进，否则直接进入统一汇总。
             next_stage = next_pipeline_stage(state)
             stage_status = self._stage_status(state)
             if next_stage is not None and stage_status == "success":
@@ -59,6 +61,8 @@ class IntentJudgeNode:
                 log_title("执行", "节点出参", node_name="intent_judge_node"), build_trace_context(config, node_name="intent_judge_node", event_name="node_exit"), format_state_for_log(result),)
             return result
 
+        # TODO(重点流程): 这里进入首轮意图识别；Master 会在此决定当前请求应该去写用例、
+        # 写脚本、调试修复、改定时任务，还是直接走 general 回答。
         classification_state = await self._master_agent.classify_intent_and_params(state, config=config)
         agent_type = classification_state.get("agent_type")
         if agent_type in {"plan", "generator", "healer"}:

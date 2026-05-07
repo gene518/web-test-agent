@@ -198,6 +198,8 @@ class PlanAgent(BaseSpecialistAgent):
                     workspace_dir=workspace_dir,
                     pending_write_paths=pending_workspace_write_paths,
                 )
+                # TODO(重点流程): 这里开始监听 `planner_save_plan`，它是“写用例并真正落盘”
+                # 的唯一硬完成信号，不能只看模型自然语言里说自己已经完成。
                 if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -219,6 +221,8 @@ class PlanAgent(BaseSpecialistAgent):
                 )
                 self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
                 if planner_save_succeeded:
+                    # TODO(重点流程): 一旦确认测试计划已保存成功，就立刻结束本阶段，
+                    # 避免后续无关输出覆盖“写用例已完成”的稳定结果。
                     result = build_runtime_message_result(
                         collector=collector,
                         existing_messages=existing_messages,
@@ -244,6 +248,8 @@ class PlanAgent(BaseSpecialistAgent):
                     except Exception as artifact_exc:  # noqa: BLE001
                         fallback_error = self.log_truncate(str(artifact_exc))
                 if planner_save_succeeded or fallback_artifact is not None:
+                    # TODO(重点流程): 浏览器关闭后的预期异常不应打断“写用例成功”；
+                    # 只要计划文件已经落盘，就把它当作正常收尾。
                     self.log_browser_close_expected(execution_context.trace_context, exc)
                     result = build_runtime_message_result(
                         collector=collector,

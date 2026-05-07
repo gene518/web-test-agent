@@ -25,6 +25,8 @@ class FinalizeTurnNode:
         logger.info("%s event=node_enter trace=%s state=%s",
             log_title("执行", "节点入参", node_name="finalize_turn_node"), build_trace_context(config, node_name="finalize_turn_node", event_name="node_enter"), format_state_for_log(state),)
 
+        # TODO(重点流程): 这里统一收口当前轮所有阶段结果；无论前面经历了写用例、
+        # 写脚本还是调试修复，最终都要折叠成一条面向用户的汇总消息。
         final_summary = build_final_turn_summary(state.get("pending_stage_summaries"))
         completed_stage_summaries = list(state.get("pending_stage_summaries", []))
         reset_buffers = clear_current_turn_buffers(dict(state))

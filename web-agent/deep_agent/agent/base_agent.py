@@ -252,6 +252,8 @@ class BaseSpecialistAgent(
         memory 或执行模式时，只改这一处，不影响前后的上下文准备和结果提取逻辑。
         """
 
+        # TODO(重点流程): 这里开始初始化当前 Specialist 的模型实例；后续写用例、写脚本、
+        # 调试修复等阶段都会基于这一个模型对象继续进入 Deep Agent 编排。
         model_kwargs = self._settings.build_model_kwargs(self._settings.specialist_model)
         model = init_chat_model(**model_kwargs)
         logger.info("%s %s 模型初始化完成 model_kwargs=%s",

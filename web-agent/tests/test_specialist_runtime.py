@@ -14,6 +14,7 @@ from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecution
 from deep_agent.core.config import AppSettings
 from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
+from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.plan import PLAN_RUNTIME_CONFIG, PlanAgent
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
 
@@ -182,6 +183,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(kwargs["base_url"], "https://open.bigmodel.cn/api/paas/v4/")
         self.assertFalse(kwargs["use_responses_api"])
+        self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
 
     def test_specialist_agent_uses_configured_model_instance(self) -> None:
         settings = AppSettings(
@@ -208,9 +210,26 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, fake_deep_agent)
         self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
         self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
+        self.assertEqual(init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False})
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertIsNone(create_agent_mock.call_args.kwargs["backend"])
         self.assertIsNone(create_agent_mock.call_args.kwargs["permissions"])
+
+    def test_master_agent_uses_same_thinking_switch_as_specialist(self) -> None:
+        settings = AppSettings(
+            master_model="openai:gpt-5.4",
+            openai_api_key="test-key",
+            openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
+        )
+        fake_model = object()
+
+        with patch("deep_agent.agent.master.master_agent.init_chat_model", return_value=fake_model) as init_model_mock:
+            agent = MasterAgent(settings)
+
+        self.assertIs(agent._model, fake_model)
+        self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
+        self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
+        self.assertEqual(init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False})
 
     async def test_base_specialist_runtime_passes_configured_recursion_limit(self) -> None:
         agent = DefaultRuntimeAgent(

@@ -70,6 +70,8 @@ class MasterAgent:
     ) -> WorkflowState:
         """识别用户意图并抽取第一批参数。"""
 
+        # TODO(重点流程): 这里开始意图识别的结构化模型调用；输出会直接决定后续进入写用例、
+        # 写脚本、调试修复还是仅做 general 问答。
         classifier_model = self._model.with_structured_output(
             IntentClassification,
             method="function_calling",
@@ -115,6 +117,8 @@ class MasterAgent:
     ) -> dict[str, Any]:
         """从 interrupt 恢复文本中抽取参数，并固定原始意图不变。"""
 
+        # TODO(重点流程): 这里开始固定意图的补参结构化调用；当前节点只允许补齐参数，
+        # 不允许把既定阶段从 plan / generator / healer / scheduler 切走。
         classifier_model = self._model.with_structured_output(
             IntentClassification,
             method="function_calling",
@@ -149,6 +153,8 @@ class MasterAgent:
         """按测试专家提示词回答 general 请求，并返回原始回答文本。"""
 
         state_with_summary = await self.ensure_conversation_summary(state, config=config)
+        # TODO(重点流程): 这里开始 general 问答模型调用；只有不进入写用例、写脚本、
+        # 调试修复等专项阶段时，才会走这条直接回答链路。
         model_messages = [
             SystemMessage(content=GENERAL_TEST_SYSTEM_PROMPT),
             *self._messages_for_model(state_with_summary),
@@ -180,6 +186,8 @@ class MasterAgent:
             SystemMessage(content=FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT),
             HumanMessage(content=summary_request),
         ]
+        # TODO(重点流程): 这里开始最终总结模型调用；它负责把写用例、写脚本、调试通过等
+        # 阶段原始结果统一包装成用户最终可见的一条总结回复。
         log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="summary", event_name="model_start"), model="master_summary", messages=model_messages)
         try:
             response = await self._model.ainvoke(model_messages, config=config)

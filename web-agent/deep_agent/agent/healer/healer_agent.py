@@ -149,6 +149,8 @@ class HealerAgent(BaseSpecialistAgent):
         stage_artifact: dict[str, Any] | None = None
 
         try:
+            # TODO(重点流程): Healer 使用事件流执行，是为了在调试过程中持续监听运行事件，
+            # 确认脚本确实被执行、修复并完成验证，而不是只看模型最后一句总结。
             async for event in specialist_agent.astream_events(
                 {"messages": existing_messages},
                 config=with_trace_context(
@@ -160,6 +162,8 @@ class HealerAgent(BaseSpecialistAgent):
             ):
                 self.log_stream_event(event, execution_context.trace_context)
                 emit_display_message_delta(collector.consume_event(event))
+                # TODO(重点流程): 这里采集 `test_run` 的验证范围；后续阶段产物会据此标记
+                # 当前轮真正调试过、回归过的脚本集合。
                 if event.get("name") == "test_run" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -170,6 +174,8 @@ class HealerAgent(BaseSpecialistAgent):
             if collector.final_output is not None and self._is_expected_browser_close_error(exc):
                 self.log_browser_close_expected(execution_context.trace_context, exc)
                 if workspace_dir is not None:
+                    # TODO(重点流程): 即便浏览器以预期方式关闭，这里仍要抽取一次调试产物，
+                    # 把本轮修复后的脚本变化和验证运行结果固化下来。
                     stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
                         before_manifest=before_manifest,
                         after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
@@ -202,6 +208,8 @@ class HealerAgent(BaseSpecialistAgent):
         )
 
         if workspace_dir is not None:
+            # TODO(重点流程): 正常结束时，这里统一汇总调试产物，明确哪些脚本被修改、
+            # 哪些脚本被重新执行验证，作为“调试通过/收尾”的最终依据。
             stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
                 before_manifest=before_manifest,
                 after_manifest=await snapshot_workspace_manifest_async(workspace_dir),

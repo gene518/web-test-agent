@@ -291,6 +291,8 @@ class GeneratorAgent(BaseSpecialistAgent):
         stage_artifact: dict[str, Any] | None = None
 
         try:
+            # TODO(重点流程): Generator 使用事件流执行，是为了边生成边监听关键写文件事件，
+            # 确认“写脚本”不是口头完成，而是目标脚本真正写到了工程目录。
             async for event in specialist_agent.astream_events(
                 {"messages": existing_messages},
                 config=with_trace_context(
@@ -307,6 +309,8 @@ class GeneratorAgent(BaseSpecialistAgent):
                     workspace_dir=workspace_dir,
                     pending_write_paths=pending_workspace_write_paths,
                 )
+                # TODO(重点流程): 这里开始监听 `generator_write_test`；它是当前阶段最直接的
+                # 写脚本信号，后续还会结合工作区快照校验预期脚本是否全部落盘。
                 if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
@@ -355,6 +359,8 @@ class GeneratorAgent(BaseSpecialistAgent):
                             existing_messages=existing_messages,
                             exc=artifact_exc,
                         )
+                # TODO(重点流程): 浏览器关闭后的预期异常不应中断“写脚本成功”；
+                # 只要目标脚本已经生成并通过落盘校验，就按正常完成返回。
                 result = build_runtime_message_result(
                     collector=collector,
                     existing_messages=existing_messages,
@@ -382,6 +388,8 @@ class GeneratorAgent(BaseSpecialistAgent):
 
         if workspace_dir is not None:
             try:
+                # TODO(重点流程): 这里最终校验预期脚本是否全部落盘；
+                # 只有 `expected_test_scripts` 对应文件完整写入后，本阶段才算真正完成。
                 stage_artifact = await runtime_helper.build_stage_artifact(
                     successful_write_payloads=successful_write_payloads,
                     successful_workspace_write_paths=successful_workspace_write_paths,

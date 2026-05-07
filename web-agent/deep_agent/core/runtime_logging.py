@@ -153,6 +153,7 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         ),
         "scheduler_poll_interval_seconds": getattr(settings, "scheduler_poll_interval_seconds", None),
         "llm_timeout_seconds": getattr(settings, "llm_timeout_seconds", None),
+        "llm_enable_thinking": getattr(settings, "llm_enable_thinking", None),
         "stream_chunk_timeout_seconds": getattr(settings, "resolved_stream_chunk_timeout_seconds", None),
         "specialist_recursion_limit": getattr(settings, "specialist_recursion_limit", None),
         "max_conversation_turns": getattr(settings, "max_conversation_turns", None),
@@ -181,6 +182,11 @@ def summarize_model_kwargs(model_kwargs: Mapping[str, Any]) -> dict[str, Any]:
         "stream_chunk_timeout": model_kwargs.get("stream_chunk_timeout"),
         "max_retries": model_kwargs.get("max_retries"),
         "use_responses_api": model_kwargs.get("use_responses_api"),
+        "enable_thinking": (
+            model_kwargs.get("extra_body", {}).get("enable_thinking")
+            if isinstance(model_kwargs.get("extra_body"), Mapping)
+            else None
+        ),
         "has_api_key": bool(model_kwargs.get("api_key")),
         "has_base_url": bool(model_kwargs.get("base_url")),
     }

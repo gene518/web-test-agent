@@ -60,6 +60,10 @@ class AppSettings(BaseSettings):
         default=60,
         description="单次模型调用的超时时间，单位为秒。",
     )
+    llm_enable_thinking: bool = Field(
+        default=False,
+        description="是否统一开启混合思考模型的 thinking 模式；默认关闭以兼容结构化输出。",
+    )
     stream_chunk_timeout_seconds: int | None = Field(
         default=None,
         description=(
@@ -207,6 +211,12 @@ class AppSettings(BaseSettings):
                 # 明确关闭后可以避免 gpt-5/codex 等模型名或 Deep Agents 默认策略把请求打到
                 # `{base_url}/responses`，导致兼容平台返回 404。
                 kwargs["use_responses_api"] = False
+            # DashScope 等 OpenAI 兼容平台会通过 `extra_body.enable_thinking` 控制混合思考模式；
+            # 这里统一收敛到一个全局开关，避免 Master / Specialist 分别维护不同默认值。
+            extra_body = kwargs.get("extra_body")
+            normalized_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+            normalized_extra_body["enable_thinking"] = self.llm_enable_thinking
+            kwargs["extra_body"] = normalized_extra_body
             # 显式覆盖 LangChain OpenAI 默认的 120s 流式静默超时，避免它先于总超时触发。
             kwargs["stream_chunk_timeout"] = self.resolved_stream_chunk_timeout_seconds
 
