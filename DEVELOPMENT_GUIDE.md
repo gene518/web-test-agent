@@ -14,6 +14,13 @@
 - 影响目录结构、运行方式、核心文档职责、关键实现边界的修改，必须同步更新对应根目录文档，例如 `DEVELOPMENT_GUIDE.md`、`PRD-当前实现需求总结.md`，以及仓库中实际存在的 README。
 - 如果项目接入或调整 `LangGraph` 本地开发方式，需同步维护 `web-agent/langgraph.json`、环境变量模板和对应使用说明。
 
+## 2.1 环境变量维护
+
+- `web-agent/.env` 是项目环境变量的唯一配置源；新增或调整配置键时，必须先更新该文件，并按当前分组结构放到正确位置。
+- `web-agent/.env.example` 只作为脱敏镜像和分发模板使用；完成本地验证后，必须把同名配置同步到该文件，并移除真实密钥、令牌和私有地址等敏感信息。
+- 禁止只改 `web-agent/.env.example` 而不改 `web-agent/.env`；两者的配置键集合、顺序、分组标题和注释说明都必须以 `web-agent/.env` 为准保持一致。
+- 启动脚本相关配置，例如 `START_FORCE_SETUP`、`START_INSTALL_PLAYWRIGHT_BROWSERS`、`OPEN_BROWSER`、`FRONTEND_OPEN_URL`，也统一维护在 `web-agent/.env`，不要再为 `start/` 或 `start/script/` 目录单独维护配置副本。
+
 ## 3. 目录与变更策略
 
 - 优先复用现有目录和模块，不要为了局部需求随意新增文件夹、脚本或文档副本。
