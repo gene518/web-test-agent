@@ -88,7 +88,7 @@ function getReportName() {
 function resolveChromeExecutablePath() {
   const chromePathByPlatform: Record<string, string> = {
     darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    win32: 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   };
 
   const executablePath = chromePathByPlatform[process.platform];
