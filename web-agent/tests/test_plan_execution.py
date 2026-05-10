@@ -29,11 +29,18 @@ class FakeMCPManager:
     def __init__(self, tools: list[BaseTool]) -> None:
         self.tools = tools
         self.requests: list[tuple[str, object, tuple[str, ...] | None]] = []
+        self.closed_sessions: list[tuple[str, object]] = []
 
     async def get_tools(self, server_name, workspace_dir=None, allowed_tool_ids=None):  # noqa: ANN001
         normalized_ids = None if allowed_tool_ids is None else tuple(allowed_tool_ids)
         self.requests.append((server_name, workspace_dir, normalized_ids))
         return self.tools
+
+    async def close_session(self, server_name, workspace_dir=None):  # noqa: ANN001
+        """记录 Plan runtime 收尾时的关闭调用，供测试断言。"""
+
+        self.closed_sessions.append((server_name, workspace_dir))
+        return True
 
 
 class FakeEventAgent:
@@ -150,6 +157,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         permissions = create_agent_mock.call_args.kwargs["permissions"]
         write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
         self.assertEqual(write_allow_rules[0].paths, [str(project_dir.resolve()), f"{project_dir.resolve()}/**"])
+        # 阶段结束后必须兜底关闭当前 workspace 的 Playwright MCP 会话，
+        # 避免 Chromium 子进程驻留。
+        self.assertEqual(
+            fake_manager.closed_sessions,
+            [("playwright-test", project_dir.resolve())],
+        )
 
     async def test_plan_execute_accepts_write_file_when_markdown_exists_by_node_end(self) -> None:
         fake_manager = FakeMCPManager(self.tools)
@@ -338,7 +351,10 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertEqual(result["messages"], [])
+        # 单阶段请求（`requested_pipeline=["plan"]`）不再走 `finalize_turn_node`；
+        # Specialist 自己把阶段摘要作为唯一一条用户可见消息发出，避免 UI 重复。
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("Plan 阶段", result["messages"][0].content)
         display_ids = [message.id for message in result["display_messages"]]
         self.assertTrue(display_ids[0].startswith("display-plan-start-"))
         self.assertEqual(display_ids[1], "tool-write-todos")
@@ -442,6 +458,11 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_manager.requests[0][0], PLAYWRIGHT_TEST_MCP_SERVER_NAME)
         self.assertIn("Plan Agent 执行过程中遇到未处理异常", result["messages"][0].content)
         self.assertIn("planner_save_plan", result["messages"][0].content)
+        # 失败路径同样要兜底关闭 Playwright MCP 会话，避免浏览器子进程残留。
+        self.assertEqual(
+            fake_manager.closed_sessions,
+            [("playwright-test", project_dir.resolve())],
+        )
 
     async def test_plan_execute_rejects_invalid_planner_payload_even_when_tool_succeeds(self) -> None:
         fake_manager = FakeMCPManager(self.tools)

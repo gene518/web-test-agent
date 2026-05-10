@@ -32,7 +32,7 @@ class ResolveStageFilesNode:
                 log_title("执行", "节点出参", node_name="resolve_stage_files_node"), build_trace_context(config, node_name="resolve_stage_files_node", event_name="node_exit"), format_state_for_log(result),)
             return result
 
-        # TODO(重点流程): 这里统一解析当前阶段的输入文件；它会把用户显式传入的计划/脚本
+        # 主链路：这里统一解析当前阶段的输入文件；它会把用户显式传入的计划/脚本
         # 与上一阶段沉淀下来的产物合并，为后续写脚本或调试修复准备稳定输入。
         extracted_params = resolve_stage_inputs(
             stage=stage,
@@ -41,7 +41,7 @@ class ResolveStageFilesNode:
             previous_stage=previous_pipeline_stage(state),
         )
         missing_params = compute_missing_params_for_intent(stage, extracted_params)
-        # TODO(重点流程): 文件解析结束后，如果关键输入仍然不足就回到 complete_params；
+        # 主链路：文件解析结束后，如果关键输入仍然不足就回到 complete_params；
         # 否则直接进入对应 Specialist 执行当前阶段。
         result: WorkflowState = {
             "agent_type": stage,

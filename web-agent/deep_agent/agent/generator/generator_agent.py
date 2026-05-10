@@ -1,7 +1,9 @@
 """Generator 阶段专项智能体。
 
-Generator 阶段的目标，是基于已经确认过的测试计划稳定产出脚本，因此这里只保留
-“脚本生成”所需的 prompt 和工具边界，避免它重新承担页面规划或失败修复职责。
+Generator 阶段的目标，是基于已经确认过的测试计划稳定产出 Playwright 脚本。Agent 类
+只承担"阶段配置 + 参数校验 + workspace 解析 + prompt + 写权限"这类静态职责；事件流
+监听、`generator_write_test` 状态机、产物抽取等运行期逻辑全部委托给
+`GeneratorRuntimeHelper`，分层方式与 Master 子图节点保持一致。
 """
 
 from __future__ import annotations
@@ -14,22 +16,24 @@ from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.artifacts import (
     extract_expected_generator_test_scripts_from_plan_files,
-    snapshot_workspace_manifest_async,
 )
-from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
+from deep_agent.agent.base_agent import (
+    BaseSpecialistAgent,
+    SpecialistExecutionContext,
+    SpecialistRuntimeConfig,
+)
 from deep_agent.agent.generator.runtime import GeneratorRuntimeHelper
-from deep_agent.core.display_message import (
-    VisibleTranscriptCollector,
-    build_runtime_message_result,
-    emit_display_message_delta,
+from deep_agent.agent.specialist_helpers import (
+    bundled_demo_template_dir,
+    normalize_runtime_text,
+    normalize_string_list,
+    resolve_workspace_scoped_files,
 )
-from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.config.specialist_file_filter import GENERATOR_QUERY_FILTER_CONFIG
 from deep_agent.agent.generator.prompts.generator_conventions import GENERATOR_BUSINESS_PROMPT
 from deep_agent.agent.generator.prompts.generator import GENERATOR_SYSTEM_PROMPT
 from deep_agent.agent.state import WorkflowState
-from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
-from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
+from deep_agent.core.autotest_project_directory import resolve_autotest_project_dir
 from deep_agent.tools.playwright import GENERATOR_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS
 
 
@@ -84,7 +88,7 @@ class GeneratorAgent(BaseSpecialistAgent):
         project_name = self._normalized_project_name(extracted_params.get("project_name"))
         return resolve_autotest_project_dir(
             automation_root=self._settings.resolved_default_automation_project_root,
-            bundled_template_dir=self._bundled_demo_template_dir(),
+            bundled_template_dir=bundled_demo_template_dir(),
             project_name=project_name,
             raw_project_dir=extracted_params.get("project_dir"),
             missing_project_name_error="Generator 模式缺少合法的 `project_name`，无法按 Plan 规则推导自动化工程目录。",
@@ -125,15 +129,12 @@ class GeneratorAgent(BaseSpecialistAgent):
     def _bundled_demo_template_dir(self) -> Path:
         """返回仓库内置的 demo 模板目录。"""
 
-        template_dir = Path(__file__).resolve().parents[2] / "assets" / DEFAULT_AUTOTEST_DEMO_PROJECT_NAME
-        if not template_dir.is_dir():
-            raise RuntimeError(f"内置 demo 模板目录不存在：`{template_dir}`。")
-        return template_dir
+        return bundled_demo_template_dir()
 
     def _normalized_project_name(self, project_name: Any) -> str | None:
         """把工程名归一化为可判空的字符串。"""
 
-        return self._normalized_runtime_text(project_name)
+        return normalize_runtime_text(project_name)
 
     def _normalized_runtime_text(self, value: Any) -> str | None:
         """把运行时文本参数归一化为可判空字符串。"""
@@ -143,84 +144,22 @@ class GeneratorAgent(BaseSpecialistAgent):
     def _normalized_test_plan_files(self, value: Any) -> list[str]:
         """把测试计划输入参数归一化为去重后的字符串列表。"""
 
-        if isinstance(value, (list, tuple)):
-            candidate_values = value
-        elif value is None:
-            candidate_values = []
-        else:
-            candidate_values = [value]
-
-        normalized_files: list[str] = []
-        seen: set[str] = set()
-        for item in candidate_values:
-            normalized_item = self._normalized_runtime_text(item)
-            if not normalized_item or normalized_item in seen:
-                continue
-            seen.add(normalized_item)
-            normalized_files.append(normalized_item)
-        return normalized_files
+        return normalize_string_list(value)
 
     def _normalized_test_cases(self, value: Any) -> list[str]:
         """把测试用例筛选参数归一化为去重后的字符串列表。"""
 
-        if isinstance(value, (list, tuple)):
-            candidate_values = value
-        elif value is None:
-            candidate_values = []
-        else:
-            candidate_values = [value]
-
-        normalized_cases: list[str] = []
-        seen: set[str] = set()
-        for item in candidate_values:
-            normalized_item = self._normalized_runtime_text(item)
-            if not normalized_item or normalized_item in seen:
-                continue
-            seen.add(normalized_item)
-            normalized_cases.append(normalized_item)
-        return normalized_cases
+        return normalize_string_list(value)
 
     def _resolve_test_plan_files(self, *, workspace_dir: Path, raw_test_plan_files: Any) -> list[Path]:
         """把测试计划文件或目录解析成项目目录下的绝对路径，并展开成计划文件列表。"""
 
-        normalized_test_plan_files = self._normalized_test_plan_files(raw_test_plan_files)
-        if not normalized_test_plan_files:
-            raise RuntimeError("Generator 模式缺少合法的 `test_plan_files`，无法继续生成脚本。")
-
-        resolved_paths: list[Path] = []
-        for raw_file in normalized_test_plan_files:
-            candidate_path = Path(raw_file).expanduser()
-            if not candidate_path.is_absolute():
-                candidate_path = workspace_dir / candidate_path
-
-            resolved_path = candidate_path.resolve()
-            try:
-                resolved_path.relative_to(workspace_dir)
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"Generator 模式测试计划文件 `{resolved_path}` 不在项目目录 `{workspace_dir}` 下，无法继续。"
-                ) from exc
-
-            if resolved_path.is_file():
-                resolved_paths.append(resolved_path)
-                continue
-
-            if resolved_path.is_dir():
-                resolved_paths.extend(self._expand_test_plan_directory(resolved_path))
-                continue
-
-            raise RuntimeError(f"Generator 模式测试计划路径 `{resolved_path}` 不存在，无法继续。")
-
-        deduplicated_paths: list[Path] = []
-        seen: set[str] = set()
-        for path in resolved_paths:
-            normalized_key = str(path)
-            if normalized_key in seen:
-                continue
-            seen.add(normalized_key)
-            deduplicated_paths.append(path)
-
-        return deduplicated_paths
+        return resolve_workspace_scoped_files(
+            workspace_dir=workspace_dir,
+            raw_values=raw_test_plan_files,
+            kind_label="Generator 模式测试计划文件",
+            directory_expander=self._expand_test_plan_directory,
+        )
 
     def _expand_test_plan_directory(self, directory: Path) -> list[Path]:
         """把测试计划目录按约定展开成 Markdown 测试计划文件列表。"""
@@ -260,157 +199,11 @@ class GeneratorAgent(BaseSpecialistAgent):
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """使用事件流执行 Generator，并输出与 Plan 同级别的调试日志。"""
+        """将事件流运行委托给 `GeneratorRuntimeHelper`，保持 Agent 类职责单一。"""
 
-        existing_messages = state.get("messages", [])
-        runtime_helper = GeneratorRuntimeHelper(
-            normalize_files=self._normalized_test_plan_files,
-            log_truncate=self.log_truncate,
-            tool_output_is_error=self._tool_output_is_error,
+        return await GeneratorRuntimeHelper.from_agent(agent=self, settings=self._settings).run(
+            specialist_agent=specialist_agent,
+            state=state,
+            execution_context=execution_context,
+            config=config,
         )
-        collector = VisibleTranscriptCollector()
-        generator_write_succeeded = False
-        generator_write_error: str | None = None
-        pending_write_payloads: list[dict[str, str]] = []
-        successful_write_payloads: list[dict[str, str]] = []
-        pending_workspace_write_paths: list[str] = []
-        successful_workspace_write_paths: set[str] = set()
-        workspace_dir = execution_context.workspace_dir
-        extracted_params = state.get("extracted_params", {})
-        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
-            workspace_dir.name if workspace_dir is not None else "unknown-project"
-        )
-        input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
-        expected_test_scripts: list[str] = []
-        if workspace_dir is not None:
-            _, _, expected_test_scripts = self._resolve_generation_targets(
-                workspace_dir=workspace_dir,
-                extracted_params=extracted_params,
-            )
-        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
-        stage_artifact: dict[str, Any] | None = None
-
-        try:
-            # TODO(重点流程): Generator 使用事件流执行，是为了边生成边监听关键写文件事件，
-            # 确认“写脚本”不是口头完成，而是目标脚本真正写到了工程目录。
-            async for event in specialist_agent.astream_events(
-                {"messages": existing_messages},
-                config=with_trace_context(
-                    config,
-                    execution_context.trace_context,
-                    recursion_limit=self._settings.specialist_recursion_limit,
-                ),
-                version="v2",
-            ):
-                self.log_stream_event(event, execution_context.trace_context)
-                emit_display_message_delta(collector.consume_event(event))
-                self._collect_workspace_write_start(
-                    event=event,
-                    workspace_dir=workspace_dir,
-                    pending_write_paths=pending_workspace_write_paths,
-                )
-                # TODO(重点流程): 这里开始监听 `generator_write_test`；它是当前阶段最直接的
-                # 写脚本信号，后续还会结合工作区快照校验预期脚本是否全部落盘。
-                if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
-                    payload = event.get("data", {}).get("input")
-                    if isinstance(payload, dict):
-                        file_name = self._normalized_runtime_text(payload.get("fileName"))
-                        code = payload.get("code")
-                        if file_name and isinstance(code, str):
-                            pending_write_payloads.append({"fileName": file_name, "code": code})
-                generator_write_succeeded, generator_write_error = runtime_helper.update_generator_write_state(
-                    generator_write_succeeded,
-                    generator_write_error,
-                    pending_write_payloads,
-                    successful_write_payloads,
-                    event,
-                )
-                self._collect_workspace_write_result(
-                    event=event,
-                    pending_write_paths=pending_workspace_write_paths,
-                    successful_write_paths=successful_workspace_write_paths,
-                )
-                runtime_helper.log_generator_write_state(
-                    agent=self,
-                    event=event,
-                    generator_write_succeeded=generator_write_succeeded,
-                    generator_write_error=generator_write_error,
-                    trace_context=execution_context.trace_context,
-                )
-        except Exception as exc:  # noqa: BLE001
-            if is_langgraph_user_cancellation(exc):
-                raise
-            if runtime_helper.is_expected_browser_close_error(exc):
-                self.log_browser_close_expected(execution_context.trace_context, exc)
-                if workspace_dir is not None:
-                    try:
-                        stage_artifact = await runtime_helper.build_stage_artifact(
-                            successful_write_payloads=successful_write_payloads,
-                            successful_workspace_write_paths=successful_workspace_write_paths,
-                            before_manifest=before_manifest,
-                            workspace_dir=workspace_dir,
-                            project_name=project_name,
-                            input_files=input_plan_files,
-                            expected_test_scripts=expected_test_scripts,
-                        )
-                    except Exception as artifact_exc:  # noqa: BLE001
-                        return self._build_runtime_exception_result(
-                            collector=collector,
-                            existing_messages=existing_messages,
-                            exc=artifact_exc,
-                        )
-                # TODO(重点流程): 浏览器关闭后的预期异常不应中断“写脚本成功”；
-                # 只要目标脚本已经生成并通过落盘校验，就按正常完成返回。
-                result = build_runtime_message_result(
-                    collector=collector,
-                    existing_messages=existing_messages,
-                    fallback_message="测试脚本已生成，浏览器已按预期关闭。",
-                )
-                result["artifact"] = stage_artifact
-                return result
-            return self._build_runtime_exception_result(
-                collector=collector,
-                existing_messages=existing_messages,
-                exc=exc,
-            )
-
-        log_debug_event(
-            self.log_get_logger(),
-            self._settings,
-            log_title("执行", "事件流"),
-            "generator_final_output",
-            self.log_event_trace_context(execution_context.trace_context, "generator_final_output"),
-            generator_write_succeeded=generator_write_succeeded,
-            generator_write_error=generator_write_error,
-            final_output=collector.final_output,
-            visible_messages=collector.messages,
-        )
-
-        if workspace_dir is not None:
-            try:
-                # TODO(重点流程): 这里最终校验预期脚本是否全部落盘；
-                # 只有 `expected_test_scripts` 对应文件完整写入后，本阶段才算真正完成。
-                stage_artifact = await runtime_helper.build_stage_artifact(
-                    successful_write_payloads=successful_write_payloads,
-                    successful_workspace_write_paths=successful_workspace_write_paths,
-                    before_manifest=before_manifest,
-                    workspace_dir=workspace_dir,
-                    project_name=project_name,
-                    input_files=input_plan_files,
-                    expected_test_scripts=expected_test_scripts,
-                )
-            except Exception as exc:  # noqa: BLE001
-                error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
-                return self._build_runtime_exception_result(
-                    collector=collector,
-                    existing_messages=existing_messages,
-                    exc=RuntimeError(f"Generator Agent 未成功生成有效脚本。{error_suffix} 文件落盘校验失败：{self.log_truncate(str(exc))}"),
-                )
-
-        result = build_runtime_message_result(
-            collector=collector,
-            existing_messages=existing_messages,
-            fallback_message="测试脚本生成阶段已完成。",
-        )
-        result["artifact"] = stage_artifact
-        return result

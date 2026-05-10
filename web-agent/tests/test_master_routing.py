@@ -124,17 +124,43 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         service = FakeMasterService()
         node = IntentJudgeNode(service)
 
-        result = await node.execute(
+        # 单阶段请求（如 ["generator"]）回流时，不再走 finalize_turn：
+        # Specialist 自己已经把 stage_summary 作为用户可见消息发出，
+        # 这里直接 end 并清空本轮缓冲，避免 UI 出现两条重复总结。
+        single_stage_result = await node.execute(
             {
                 "pipeline_handoff": True,
                 "agent_type": "generator",
                 "requested_pipeline": ["generator"],
                 "pipeline_cursor": 0,
                 "stage_result": {"status": "success"},
+                "pending_stage_summaries": [
+                    {"stage": "generator", "status": "success", "text": "Generator 阶段已完成。"}
+                ],
             }
         )
 
-        self.assertEqual(result["next_action"], "finalize_turn")
+        self.assertEqual(single_stage_result["next_action"], "end")
+        self.assertEqual(single_stage_result["pending_stage_summaries"], [])
+        self.assertEqual(service.classify_calls, 0)
+
+        # 多阶段请求（如 ["plan", "generator"] 已经走完）回流时，保持原有行为：
+        # 走 finalize_turn 把多个 stage_summary 统一汇总成一条。
+        multi_stage_result = await node.execute(
+            {
+                "pipeline_handoff": True,
+                "agent_type": "generator",
+                "requested_pipeline": ["plan", "generator"],
+                "pipeline_cursor": 1,
+                "stage_result": {"status": "success"},
+                "pending_stage_summaries": [
+                    {"stage": "plan", "status": "success", "text": "Plan 阶段已完成。"},
+                    {"stage": "generator", "status": "success", "text": "Generator 阶段已完成。"},
+                ],
+            }
+        )
+
+        self.assertEqual(multi_stage_result["next_action"], "finalize_turn")
         self.assertEqual(service.classify_calls, 0)
 
     async def test_complete_params_node_merges_resume_params_and_keeps_existing_context(self) -> None:

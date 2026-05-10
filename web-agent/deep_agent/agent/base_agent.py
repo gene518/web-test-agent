@@ -203,7 +203,7 @@ class BaseSpecialistAgent(
         这样真正进入模型调用阶段时，数据来源已经稳定，排查问题也更聚焦。
         """
 
-        # TODO(重点流程): 这里先取出当前 Specialist 的静态配置，后续工具白名单、
+        # 主链路：这里先取出当前 Specialist 的静态配置，后续工具白名单、
         # prompt 结构和项目规范加载策略都以它为准。
         runtime_config = self._get_runtime_config()
         node_name = f"{self.agent_type}_node"
@@ -213,7 +213,7 @@ class BaseSpecialistAgent(
 
         # 先确定工作目录，再按目录维度请求工具，是为了让 MCP server 能拿到正确的项目上下文。
         workspace_dir = await asyncio.to_thread(self._resolve_workspace_dir, state)
-        # TODO(重点流程): 这里真正向 MCP 管理器申请当前 Specialist 可见的工具集合，
+        # 主链路：这里真正向 MCP 管理器申请当前 Specialist 可见的工具集合，
         # 工具白名单是否合理会直接决定模型后续能做什么、不能做什么。
         tools = await self._mcp_manager.get_tools(
             PLAYWRIGHT_TEST_MCP_SERVER_NAME,
@@ -252,7 +252,7 @@ class BaseSpecialistAgent(
         memory 或执行模式时，只改这一处，不影响前后的上下文准备和结果提取逻辑。
         """
 
-        # TODO(重点流程): 这里开始初始化当前 Specialist 的模型实例；后续写用例、写脚本、
+        # 主链路：这里开始初始化当前 Specialist 的模型实例；后续写用例、写脚本、
         # 调试修复等阶段都会基于这一个模型对象继续进入 Deep Agent 编排。
         model_kwargs = self._settings.build_model_kwargs(self._settings.specialist_model)
         model = init_chat_model(**model_kwargs)
@@ -262,7 +262,7 @@ class BaseSpecialistAgent(
         backend = self._build_deep_agent_backend(execution_context.workspace_dir)
         permissions = self._build_deep_agent_permissions(execution_context.workspace_dir)
 
-        # TODO(重点流程): 这里完成 Deep Agent 实例化，后续所有工具调用和模型推理
+        # 主链路：这里完成 Deep Agent 实例化，后续所有工具调用和模型推理
         # 都会沿着这个 agent 的编排能力执行。
         # `create_deep_agent` 会在这里把我们传入的 system prompt 前置，再自动追加
         # Deep Agents 自带的 BASE_AGENT_PROMPT，并注入内置工具（如 `read_file` / `ls`）。
@@ -306,7 +306,7 @@ class BaseSpecialistAgent(
         """
 
         existing_messages = state.get("messages", [])
-        # TODO(重点流程): 这里开始真正调用 Specialist 背后的大模型/工具编排链路。
+        # 主链路：这里开始真正调用 Specialist 背后的大模型/工具编排链路。
         result = await specialist_agent.ainvoke(
             {"messages": existing_messages},
             config=with_trace_context(
@@ -336,6 +336,52 @@ class BaseSpecialistAgent(
         """返回当前 Specialist 的运行时配置。"""
 
         return self.runtime_config
+
+    async def _close_playwright_mcp_session(
+        self,
+        *,
+        workspace_dir: Path | None,
+        trace_context: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """在阶段结束时关闭当前 workspace 对应的 Playwright MCP 会话。
+
+        调用方：Plan / Generator / Healer 的 runtime helper 在每条收尾路径上调用，
+        无论阶段成功、异常退出还是产物校验失败，都会尝试关闭该会话。
+        目的：避免 Playwright MCP 子进程（Chromium）在阶段结束后驻留，释放端口、
+        浏览器上下文和内存；提示词也要求模型主动关闭，这里是兜底机制，任一路径都能释放。
+        """
+
+        node_name = f"{self.agent_type}_node"
+        resolved_trace = trace_context or build_trace_context(
+            None,
+            node_name=node_name,
+            event_name="playwright_mcp_close",
+        )
+        try:
+            closed = await self._mcp_manager.close_session(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                workspace_dir=workspace_dir,
+            )
+        except Exception:  # noqa: BLE001
+            # 关闭失败不应影响阶段已经确认的最终结果；只记录日志方便线上排查。
+            logger.exception(
+                "%s event=playwright_mcp_close_failed trace=%s workspace_dir=%s reason=%s",
+                log_title("关闭", "MCP关闭", node_name=node_name),
+                resolved_trace,
+                workspace_dir,
+                reason,
+            )
+            return
+
+        logger.info(
+            "%s event=playwright_mcp_close trace=%s workspace_dir=%s closed=%s reason=%s",
+            log_title("关闭", "MCP关闭", node_name=node_name),
+            resolved_trace,
+            workspace_dir,
+            closed,
+            reason,
+        )
 
     def _compose_system_prompt(
         self,

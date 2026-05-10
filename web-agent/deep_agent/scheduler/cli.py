@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from deep_agent.core.config import get_settings
+from deep_agent.core.config import get_settings, load_project_env_file
 from deep_agent.core.runtime_logging import configure_logging_from_env
 from deep_agent.scheduler.service import SchedulerService
 
@@ -27,6 +27,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 async def _run() -> None:
     """启动调度服务。"""
 
+    load_project_env_file()
     configure_logging_from_env()
     argument_parser = build_argument_parser()
     args = argument_parser.parse_args()

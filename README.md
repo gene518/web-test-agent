@@ -48,11 +48,14 @@ web-test-agent/  # 仓库根目录。
 │   │   ├── agent/  # Master、Plan、Generator、Healer、Scheduler 等智能体实现。
 │   │   │   ├── state.py  # `WorkflowState`，统一承载消息、意图、参数、阶段链和产物。
 │   │   │   ├── base_agent.py  # `BaseAgent` 与 `BaseSpecialistAgent`，定义节点执行契约和 Specialist 公共骨架。
+│   │   │   ├── artifacts.py  # 阶段产物、工作区快照、阶段摘要等公共导出。
 │   │   │   ├── specialist_helpers/  # Specialist 公共辅助能力。
 │   │   │   │   ├── types.py  # `SpecialistRuntimeConfig` 与 `SpecialistExecutionContext`。
 │   │   │   │   ├── workspace.py  # `SpecialistWorkspaceMixin`，处理项目目录和文件权限。
 │   │   │   │   ├── display.py  # `SpecialistDisplayMixin`，处理阶段展示消息和总结。
-│   │   │   │   └── logging.py  # `SpecialistLoggingMixin`，处理事件日志和异常截断。
+│   │   │   │   ├── logging.py  # `SpecialistLoggingMixin`，处理事件日志和异常截断。
+│   │   │   │   ├── input_resolution.py  # Specialist 输入归一化与 workspace 边界校验（通用入口）。
+│   │   │   │   └── browser_close.py  # 统一识别 Playwright 浏览器关闭后的预期异常。
 │   │   │   ├── master/  # Master 子图与共享服务。
 │   │   │   │   ├── master_graph.py  # `build_master_graph()`，构建 Master 子图。
 │   │   │   │   ├── master_agent.py  # `MasterAgent`，负责意图识别、补参、问答和最终总结。
@@ -62,21 +65,26 @@ web-test-agent/  # 仓库根目录。
 │   │   │   │       ├── intent_judge_node.py  # `IntentJudgeNode`，负责首次路由和阶段推进。
 │   │   │   │       ├── resolve_stage_files_node.py  # `ResolveStageFilesNode`，继承历史产物并解析阶段文件。
 │   │   │   │       ├── complete_params_node.py  # `CompleteParamsNode`，缺参中断与恢复。
-│   │   │   │       ├── general_test_node.py  # `GeneralTestNode`，处理普通测试问答。
+│   │   │   │       ├── general_test_node.py  # `GeneralTestNode`,处理普通测试问答。
 │   │   │   │       └── finalize_turn_node.py  # `FinalizeTurnNode`，合并当前轮摘要并输出最终结论。
 │   │   │   ├── plan/
-│   │   │   │   └── plan_agent.py  # `PlanAgent`，探索页面并保存 Markdown 测试计划。
+│   │   │   │   ├── plan_agent.py  # `PlanAgent`，阶段入口，只承担配置、参数校验、workspace、prompt、权限。
+│   │   │   │   └── runtime.py  # `PlanRuntimeHelper`，承担事件流监听、`planner_save_plan` 状态机和产物抽取。
 │   │   │   ├── generator/
-│   │   │   │   ├── generator_agent.py  # `GeneratorAgent`，读取测试计划并生成 Playwright 脚本。
-│   │   │   │   └── runtime.py  # `GeneratorRuntimeHelper`，跟踪写入工具事件和生成结果。
+│   │   │   │   ├── generator_agent.py  # `GeneratorAgent`，阶段入口，只承担配置、参数校验、workspace、prompt、权限。
+│   │   │   │   └── runtime.py  # `GeneratorRuntimeHelper`，承担事件流监听、写文件状态机和脚本落盘校验。
 │   │   │   ├── healer/
-│   │   │   │   └── healer_agent.py  # `HealerAgent`，运行失败脚本、定位问题、修复并复测。
+│   │   │   │   ├── healer_agent.py  # `HealerAgent`，阶段入口，只承担配置、参数校验、workspace、prompt、权限。
+│   │   │   │   └── runtime.py  # `HealerRuntimeHelper`，承担事件流监听、验证范围采集和调试产物抽取。
 │   │   │   └── scheduler/
 │   │   │       └── scheduler_agent.py  # `SchedulerAgent`，把自然语言定时需求转成调度配置更新。
 │   │   ├── config/  # 静态配置和文件过滤规则。
 │   │   │   └── specialist_file_filter.py  # Specialist 文件查询范围和过滤规则。
 │   │   ├── core/  # 基础设施、配置解析和显示消息逻辑。
 │   │   │   ├── config.py  # `AppSettings` 与 `get_settings()`，集中管理环境变量和运行配置。
+│   │   │   ├── autotest_project_directory.py  # 自动化工程目录解析与内置 demo 模板复制。
+│   │   │   ├── cancellation.py  # LangGraph 用户取消信号识别。
+│   │   │   ├── local_runtime_cleanup.py  # 本地 in-memory runtime 启动清理。
 │   │   │   ├── runtime_logging.py  # 统一日志格式、状态摘要和敏感信息截断。
 │   │   │   └── display_message/  # 用户可见消息提取、去重和汇总逻辑。
 │   │   ├── scheduler/  # 独立定时执行服务。
@@ -86,10 +94,13 @@ web-test-agent/  # 仓库根目录。
 │   │   │   ├── service.py  # `PendingScheduledRun`、`ScheduledRunResult`、`PlaywrightTaskRunner`、`SchedulerService`。
 │   │   │   └── store.py  # 调度配置文件读写与项目路径解析。
 │   │   ├── tools/  # MCP 与 Playwright 工具接入。
-│   │   │   ├── mcp_manager.py  # `MCPServerProvider`、`_CachedToolsSession`、`MCPToolsManager`。
+│   │   │   ├── mcp_manager.py  # `MCPServerProvider`、`_CachedToolsSession`、`MCPToolsManager`（通用编排，无业务特例）。
 │   │   │   ├── tool_error_handling.py  # `GenericMCPToolErrorPolicy`，统一工具错误包装。
+│   │   │   ├── tool_invocation.py  # 工具输出判错、直接调用底层实现等通用辅助。
 │   │   │   └── playwright/
-│   │   │       ├── mcp_provider.py  # `PlaywrightTestMCPProvider`，准备 Playwright MCP 连接参数。
+│   │   │       ├── mcp_provider.py  # `PlaywrightTestMCPProvider`，连接参数与 `post_process_tool` 钩子。
+│   │   │       ├── planner_save_plan_wrapper.py  # `planner_save_plan` 阶段专属规则包装（路径校验、缺父目录重建）。
+│   │   │       ├── allowlists.py  # Plan / Generator / Healer 各自允许调用的工具白名单。
 │   │   │       └── tool_error_policy.py  # `PlaywrightMCPToolErrorPolicy`，区分可重试和不可重试错误。
 │   │   └── assets/  # 内置 demo 模板与资源文件。
 │   └── tests/  # 后端自动化测试与调试脚本。
@@ -100,9 +111,11 @@ web-test-agent/  # 仓库根目录。
 
 - 入口与状态：`AppSettings` 负责统一环境变量和运行配置，`WorkflowState` 负责统一 LangGraph 全局状态，`build_web_autotest_agent_workflow()` 负责组装整个服务端主图。
 - Master 路由层：`MasterAgent`、`IntentClassification`、`IntentJudgeNode`、`ResolveStageFilesNode`、`CompleteParamsNode` 和 `FinalizeTurnNode` 共同完成意图识别、缺参补全、阶段切换和最终回复汇总。
-- Specialist 执行层：`BaseAgent` 定义统一执行接口，`BaseSpecialistAgent` 负责 Plan、Generator、Healer 三类阶段的公共执行骨架；`SpecialistRuntimeConfig`、`SpecialistExecutionContext` 和三个 `Mixin` 负责运行时配置、目录权限、消息展示和日志处理。
+- Specialist 执行层：`BaseAgent` 定义统一执行接口，`BaseSpecialistAgent` 负责 Plan、Generator、Healer 三类阶段的公共执行骨架；`SpecialistRuntimeConfig`、`SpecialistExecutionContext` 和三个 `Mixin`（workspace、display、logging）负责运行时配置、目录权限、消息展示和日志处理。
+- Specialist 分层约定：`*_agent.py` 只承担"阶段配置 + 参数校验 + workspace 解析 + prompt + 写权限"这类静态职责；事件流监听、工具状态机、产物抽取等运行期逻辑放在同目录下的 `runtime.py`（`PlanRuntimeHelper` / `GeneratorRuntimeHelper` / `HealerRuntimeHelper`）里，分层方式与 Master 的 `master_agent.py + master_graph.py + nodes/*.py` 保持一致。
+- 通用输入与异常识别：Specialist 规范化的输入解析、workspace 边界校验、浏览器关闭预期异常识别等能力统一放在 `agent/specialist_helpers/` 下的 `input_resolution.py` 与 `browser_close.py`，不再在各阶段重复实现。
 - 阶段智能体：`PlanAgent` 负责生成测试计划，`GeneratorAgent` 负责生成脚本，`HealerAgent` 负责修复失败脚本，`SchedulerAgent` 负责把自然语言定时需求转换为配置更新。
-- 工具与调度层：`MCPToolsManager` 管理 MCP 会话、工具白名单和错误包装；`SchedulerService`、`PlaywrightTaskRunner`、`PendingScheduledRun`、`ScheduledRunResult` 负责定时任务的扫描、排队和执行；`CronExpression` 与 `CronField` 负责 Cron 解析与命中判断。
+- 工具与调度层：`MCPToolsManager` 只做通用编排（会话复用、白名单解析、错误处理器补齐），`MCPServerProvider.post_process_tool` 钩子承担各 server 的业务规则，例如 Playwright 的 `planner_save_plan` 路径校验与缺父目录自动重建（见 `tools/playwright/planner_save_plan_wrapper.py`）；`SchedulerService`、`PlaywrightTaskRunner`、`PendingScheduledRun`、`ScheduledRunResult` 负责定时任务的扫描、排队和执行；`CronExpression` 与 `CronField` 负责 Cron 解析与命中判断。
 
 ## 3. 运行架构图
 
@@ -159,7 +172,10 @@ flowchart TD
 
 - 新增或修改说明性备注、代码注释和 docstring 必须使用中文；技术名、类名、方法名、配置键、文件路径可以保留原文，但解释文字不得写成英文句子。
 - 类与方法的备注必须说明三个重点：当前类或方法的作用是什么、主要由谁调用或消费、最终要达成什么目的。
-- 文件命名不能只描述“它是什么”，还必须说明“它是谁的什么”；例如使用 `master_graph.py`、`web_autotest_agent_workflow.py` 这类带归属和职责边界的命名，避免 `graph.py`、`workflow.py` 这类缺少区分度的文件名。
+- 文件命名不能只描述"它是什么"，还必须说明"它是谁的什么"；例如使用 `master_graph.py`、`web_autotest_agent_workflow.py` 这类带归属和职责边界的命名，避免 `graph.py`、`workflow.py` 这类缺少区分度的文件名。
+- Specialist 分层约定：`*_agent.py` 只保留阶段配置、参数校验、workspace 解析、prompt 构建和写权限；事件流监听、工具状态机、产物抽取等运行期逻辑必须放在同目录的 `runtime.py`（对应 `PlanRuntimeHelper` / `GeneratorRuntimeHelper` / `HealerRuntimeHelper`）里，保持与 Master 子图相同的分层方式。
+- MCP 工具业务规则：`MCPToolsManager` 只做通用编排，工具级规则（例如 Playwright 的 `planner_save_plan` 路径校验、缺父目录自动重建）必须通过 `MCPServerProvider.post_process_tool` 钩子在对应 provider 目录下实现，不允许写进 `mcp_manager.py`。
+- Specialist 通用输入归一化、workspace 边界校验、浏览器关闭预期异常识别等能力必须复用 `agent/specialist_helpers/` 下的 `input_resolution.py` 与 `browser_close.py`，不允许在各 Specialist 中复制实现。
 - 新增类、节点、Agent、工具、配置字段时，必须同步更新根目录 README、PRD 或开发规范中受影响的部分。
 - Pydantic 字段必须写清楚 `description`，说明字段含义、使用场景和影响范围。
 - 关键路径必须保留日志，至少覆盖配置加载、图构建、节点入参、节点出参、条件路由、MCP 连接、工具事件和阶段完成状态。

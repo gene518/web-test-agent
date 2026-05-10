@@ -1,8 +1,9 @@
 """Healer 阶段专项智能体。
 
-Healer 阶段的目标，是围绕已有失败脚本做调试与修复。这里把运行前的目录解析、
-脚本文件校验、修复提示词和写权限边界都收敛到一处，让后续执行可以直接复用
-BaseSpecialistAgent 的通用 Deep Agent 骨架。
+Healer 阶段的目标，是围绕已有失败脚本做调试与修复。Agent 类只承担"目录解析、
+脚本文件校验、修复提示词、写权限"这类静态职责；事件流监听、验证范围采集、产物抽取
+等运行期逻辑全部委托给 `HealerRuntimeHelper`，和 Master 子图节点一致的分层策略，
+便于后续测试替换与读图。
 """
 
 from __future__ import annotations
@@ -13,35 +14,23 @@ from typing import Any
 from deepagents.middleware import FilesystemPermission
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import (
-    extract_healer_artifact_from_snapshot_and_runs,
-    snapshot_workspace_manifest_async,
-)
 from deep_agent.agent.base_agent import (
     BaseSpecialistAgent,
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
 )
-from deep_agent.core.display_message import (
-    VisibleTranscriptCollector,
-    build_runtime_message_result,
-    emit_display_message_delta,
+from deep_agent.agent.healer.runtime import HealerRuntimeHelper
+from deep_agent.agent.specialist_helpers import (
+    bundled_demo_template_dir,
+    normalize_runtime_text,
+    normalize_string_list,
+    resolve_workspace_scoped_files,
 )
-from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.config.specialist_file_filter import HEALER_QUERY_FILTER_CONFIG
 from deep_agent.agent.healer.prompts.healer import HEALER_SYSTEM_PROMPT
 from deep_agent.agent.healer.prompts.healer_conventions import MOBILE_UI_CONVENTIONS_PROMPT
 from deep_agent.agent.state import WorkflowState
-from deep_agent.core.runtime_logging import (
-    log_debug_event,
-    log_title,
-    with_trace_context,
-)
-from deep_agent.core.autotest_project_directory import (
-    DEFAULT_AUTOTEST_DEMO_PROJECT_NAME,
-    normalize_runtime_text,
-    resolve_autotest_project_dir,
-)
+from deep_agent.core.autotest_project_directory import resolve_autotest_project_dir
 from deep_agent.tools.playwright import HEALER_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS
 
 
@@ -81,7 +70,7 @@ class HealerAgent(BaseSpecialistAgent):
         project_name = self._normalized_project_name(extracted_params.get("project_name"))
         return resolve_autotest_project_dir(
             automation_root=self._settings.resolved_default_automation_project_root,
-            bundled_template_dir=self._bundled_demo_template_dir(),
+            bundled_template_dir=bundled_demo_template_dir(),
             project_name=project_name,
             raw_project_dir=extracted_params.get("project_dir"),
             missing_project_name_error="Healer 模式缺少合法的 `project_name`，无法按 Generator 规则推导自动化工程目录。",
@@ -134,111 +123,24 @@ class HealerAgent(BaseSpecialistAgent):
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """使用事件流执行 Healer，确保最终结果能沿流式链路抛出。"""
+        """将事件流运行委托给 `HealerRuntimeHelper`，保持 Agent 类职责单一。"""
 
-        existing_messages = state.get("messages", [])
-        collector = VisibleTranscriptCollector()
-        workspace_dir = execution_context.workspace_dir
-        extracted_params = state.get("extracted_params", {})
-        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
-            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        return await HealerRuntimeHelper(agent=self, settings=self._settings).run(
+            specialist_agent=specialist_agent,
+            state=state,
+            execution_context=execution_context,
+            config=config,
         )
-        input_scripts = self._normalized_test_scripts(extracted_params.get("test_scripts"))
-        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
-        validation_runs: list[str] = []
-        stage_artifact: dict[str, Any] | None = None
-
-        try:
-            # TODO(重点流程): Healer 使用事件流执行，是为了在调试过程中持续监听运行事件，
-            # 确认脚本确实被执行、修复并完成验证，而不是只看模型最后一句总结。
-            async for event in specialist_agent.astream_events(
-                {"messages": existing_messages},
-                config=with_trace_context(
-                    config,
-                    execution_context.trace_context,
-                    recursion_limit=self._settings.specialist_recursion_limit,
-                ),
-                version="v2",
-            ):
-                self.log_stream_event(event, execution_context.trace_context)
-                emit_display_message_delta(collector.consume_event(event))
-                # TODO(重点流程): 这里采集 `test_run` 的验证范围；后续阶段产物会据此标记
-                # 当前轮真正调试过、回归过的脚本集合。
-                if event.get("name") == "test_run" and event.get("event") == "on_tool_start":
-                    payload = event.get("data", {}).get("input")
-                    if isinstance(payload, dict):
-                        validation_runs.extend(self._normalized_test_scripts(payload.get("locations")))
-        except Exception as exc:  # noqa: BLE001
-            if is_langgraph_user_cancellation(exc):
-                raise
-            if collector.final_output is not None and self._is_expected_browser_close_error(exc):
-                self.log_browser_close_expected(execution_context.trace_context, exc)
-                if workspace_dir is not None:
-                    # TODO(重点流程): 即便浏览器以预期方式关闭，这里仍要抽取一次调试产物，
-                    # 把本轮修复后的脚本变化和验证运行结果固化下来。
-                    stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
-                        before_manifest=before_manifest,
-                        after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
-                        workspace_dir=workspace_dir,
-                        project_name=project_name,
-                        input_files=input_scripts,
-                        validation_runs=validation_runs or input_scripts,
-                    )
-                result = build_runtime_message_result(
-                    collector=collector,
-                    existing_messages=existing_messages,
-                    fallback_message="脚本调试阶段已完成，浏览器已按预期关闭。",
-                )
-                result["artifact"] = stage_artifact
-                return result
-            return self._build_runtime_exception_result(
-                collector=collector,
-                existing_messages=existing_messages,
-                exc=exc,
-            )
-
-        log_debug_event(
-            self.log_get_logger(),
-            self._settings,
-            log_title("执行", "事件流"),
-            "healer_final_output",
-            self.log_event_trace_context(execution_context.trace_context, "healer_final_output"),
-            final_output=collector.final_output,
-            visible_messages=collector.messages,
-        )
-
-        if workspace_dir is not None:
-            # TODO(重点流程): 正常结束时，这里统一汇总调试产物，明确哪些脚本被修改、
-            # 哪些脚本被重新执行验证，作为“调试通过/收尾”的最终依据。
-            stage_artifact = extract_healer_artifact_from_snapshot_and_runs(
-                before_manifest=before_manifest,
-                after_manifest=await snapshot_workspace_manifest_async(workspace_dir),
-                workspace_dir=workspace_dir,
-                project_name=project_name,
-                input_files=input_scripts,
-                validation_runs=validation_runs or input_scripts,
-            )
-
-        result = build_runtime_message_result(
-            collector=collector,
-            existing_messages=existing_messages,
-            fallback_message="脚本调试阶段已完成。",
-        )
-        result["artifact"] = stage_artifact
-        return result
 
     def _bundled_demo_template_dir(self) -> Path:
         """返回仓库内置的 demo 模板目录。"""
 
-        template_dir = Path(__file__).resolve().parents[2] / "assets" / DEFAULT_AUTOTEST_DEMO_PROJECT_NAME
-        if not template_dir.is_dir():
-            raise RuntimeError(f"内置 demo 模板目录不存在：`{template_dir}`。")
-        return template_dir
+        return bundled_demo_template_dir()
 
     def _normalized_project_name(self, project_name: Any) -> str | None:
         """把工程名归一化为可判空的字符串。"""
 
-        return self._normalized_runtime_text(project_name)
+        return normalize_runtime_text(project_name)
 
     def _normalized_runtime_text(self, value: Any) -> str | None:
         """把运行时文本参数归一化为可判空字符串。"""
@@ -248,84 +150,22 @@ class HealerAgent(BaseSpecialistAgent):
     def _normalized_test_scripts(self, value: Any) -> list[str]:
         """把待调试脚本输入参数归一化为去重后的字符串列表。"""
 
-        if isinstance(value, (list, tuple)):
-            candidate_values = value
-        elif value is None:
-            candidate_values = []
-        else:
-            candidate_values = [value]
-
-        normalized_files: list[str] = []
-        seen: set[str] = set()
-        for item in candidate_values:
-            normalized_item = self._normalized_runtime_text(item)
-            if not normalized_item or normalized_item in seen:
-                continue
-            seen.add(normalized_item)
-            normalized_files.append(normalized_item)
-        return normalized_files
+        return normalize_string_list(value)
 
     def _normalized_test_plan_files(self, value: Any) -> list[str]:
         """把关联测试计划输入参数归一化为去重后的字符串列表。"""
 
-        if isinstance(value, (list, tuple)):
-            candidate_values = value
-        elif value is None:
-            candidate_values = []
-        else:
-            candidate_values = [value]
-
-        normalized_files: list[str] = []
-        seen: set[str] = set()
-        for item in candidate_values:
-            normalized_item = self._normalized_runtime_text(item)
-            if not normalized_item or normalized_item in seen:
-                continue
-            seen.add(normalized_item)
-            normalized_files.append(normalized_item)
-        return normalized_files
+        return normalize_string_list(value)
 
     def _resolve_test_script_files(self, *, workspace_dir: Path, raw_test_scripts: Any) -> list[Path]:
         """把待调试脚本文件或目录解析成项目目录下的绝对路径，并展开成脚本文件列表。"""
 
-        normalized_test_scripts = self._normalized_test_scripts(raw_test_scripts)
-        if not normalized_test_scripts:
-            raise RuntimeError("Healer 模式缺少合法的 `test_scripts`，无法继续调试脚本。")
-
-        resolved_paths: list[Path] = []
-        for raw_file in normalized_test_scripts:
-            candidate_path = Path(raw_file).expanduser()
-            if not candidate_path.is_absolute():
-                candidate_path = workspace_dir / candidate_path
-
-            resolved_path = candidate_path.resolve()
-            try:
-                resolved_path.relative_to(workspace_dir)
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"Healer 模式待调试脚本 `{resolved_path}` 不在项目目录 `{workspace_dir}` 下，无法继续。"
-                ) from exc
-
-            if resolved_path.is_file():
-                resolved_paths.append(resolved_path)
-                continue
-
-            if resolved_path.is_dir():
-                resolved_paths.extend(self._expand_test_script_directory(resolved_path))
-                continue
-
-            raise RuntimeError(f"Healer 模式待调试脚本路径 `{resolved_path}` 不存在，无法继续。")
-
-        deduplicated_paths: list[Path] = []
-        seen: set[str] = set()
-        for path in resolved_paths:
-            normalized_key = str(path)
-            if normalized_key in seen:
-                continue
-            seen.add(normalized_key)
-            deduplicated_paths.append(path)
-
-        return deduplicated_paths
+        return resolve_workspace_scoped_files(
+            workspace_dir=workspace_dir,
+            raw_values=raw_test_scripts,
+            kind_label="Healer 模式待调试脚本",
+            directory_expander=self._expand_test_script_directory,
+        )
 
     def _expand_test_script_directory(self, directory: Path) -> list[Path]:
         """把待调试脚本目录展开成 `.spec.ts` 文件列表。"""
@@ -335,17 +175,3 @@ class HealerAgent(BaseSpecialistAgent):
             return matches
 
         raise RuntimeError(f"Healer 模式待调试脚本目录 `{directory}` 下未找到可用的 `.spec.ts` 文件，无法继续。")
-
-    def _is_expected_browser_close_error(self, exc: Exception) -> bool:
-        """判断异常是否为关闭浏览器后的预期错误。"""
-
-        text = str(exc).lower()
-        expected_fragments = (
-            "target page, context or browser has been closed",
-            "browsercontext.newpage",
-            "browser has been closed",
-            "remoteprotocolerror",
-            "peer closed connection without sending complete message body",
-            "incomplete chunked read",
-        )
-        return any(fragment in text for fragment in expected_fragments)

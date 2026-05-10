@@ -1,8 +1,9 @@
 """Plan 阶段专项智能体。
 
 Plan 阶段的职责不是直接产出脚本，而是先把目标页面探索清楚，并把结果沉淀成后续
-Generator 可以消费的测试计划。因此这里会比其他 Specialist 更强调页面初始化、事件流观测
-和 `planner_save_plan` 的强约束收尾。
+Generator 可以消费的测试计划。Agent 类只承担"阶段配置 + 参数校验 + workspace 解析 +
+运行时上下文 prompt + 文件写权限"这类静态职责；事件流监听、`planner_save_plan`
+成功判定和产物抽取等运行期逻辑全部委托给 `PlanRuntimeHelper`，分层与 Master 子图保持一致。
 """
 
 from __future__ import annotations
@@ -13,25 +14,22 @@ from typing import Any
 from deepagents.middleware import FilesystemPermission
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import (
-    diff_workspace_manifest,
-    extract_plan_artifact_from_planner_payload,
-    extract_plan_artifact_from_saved_markdown,
-    snapshot_workspace_manifest_async,
+from deep_agent.agent.base_agent import (
+    BaseSpecialistAgent,
+    SpecialistExecutionContext,
+    SpecialistRuntimeConfig,
 )
-from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.core.display_message import (
-    VisibleTranscriptCollector,
-    build_runtime_message_result,
-    emit_display_message_delta,
+from deep_agent.agent.plan.runtime import PlanRuntimeHelper
+from deep_agent.agent.specialist_helpers import (
+    bundled_demo_template_dir,
+    normalize_runtime_text,
+    normalize_string_list,
 )
-from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.config.specialist_file_filter import PLAN_QUERY_FILTER_CONFIG
 from deep_agent.agent.plan.prompts.plan_conventions import MOBILE_PLAN_CONVENTIONS_PROMPT
-from deep_agent.core.autotest_project_directory import DEFAULT_AUTOTEST_DEMO_PROJECT_NAME, normalize_runtime_text, resolve_autotest_project_dir
-from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
-from deep_agent.agent.state import WorkflowState
 from deep_agent.agent.plan.prompts.plan import PLAN_SYSTEM_PROMPT
+from deep_agent.agent.state import WorkflowState
+from deep_agent.core.autotest_project_directory import resolve_autotest_project_dir
 from deep_agent.tools.playwright import PLAN_ALLOWED_PLAYWRIGHT_TEST_MCP_TOOL_IDS
 
 
@@ -78,15 +76,15 @@ class PlanAgent(BaseSpecialistAgent):
     def _resolve_workspace_dir(self, state: WorkflowState) -> Path:
         """解析并创建 Plan 使用的自动化项目目录。
 
-        Plan 比其他 Specialist 更需要“确定的可写目录”，因为它会把测试计划文件直接落到项目中。
-        当前策略固定为“自动化根目录 / 工程名字”，不再按时间戳生成新目录。
+        Plan 比其他 Specialist 更需要"确定的可写目录"，因为它会把测试计划文件直接落到项目中。
+        当前策略固定为"自动化根目录 / 工程名字"，不再按时间戳生成新目录。
         """
 
         extracted_params = state.get("extracted_params", {})
         project_name = self._normalized_project_name(extracted_params.get("project_name"))
         return resolve_autotest_project_dir(
             automation_root=self._settings.resolved_default_automation_project_root,
-            bundled_template_dir=self._bundled_demo_template_dir(),
+            bundled_template_dir=bundled_demo_template_dir(),
             project_name=project_name,
             raw_project_dir=extracted_params.get("project_dir"),
             missing_project_name_error="Plan 模式缺少合法的 `project_name`，无法解析自动化工程目录。",
@@ -95,7 +93,7 @@ class PlanAgent(BaseSpecialistAgent):
     def _build_runtime_context_prompt(self, *, state: WorkflowState, workspace_dir: Path | None) -> str:
         """构建 Plan 模式专用的运行时上下文提示词。
 
-        相比基类的通用上下文，Plan 这里会额外把“必须先初始化页面、必须保存计划、保存后才能收尾”
+        相比基类的通用上下文，Plan 这里会额外把"必须先初始化页面、必须保存计划、保存后才能收尾"
         这类流程约束写进去，目的是防止模型只做分析不真正产出计划文件。
         """
 
@@ -106,7 +104,7 @@ class PlanAgent(BaseSpecialistAgent):
         existing_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
 
         # 这里既放本次请求的动态参数，也放 Plan 阶段的执行约束，
-        # 目的是让模型在一个上下文里同时理解“要做什么”和“必须怎么做完”。
+        # 目的是让模型在一个上下文里同时理解"要做什么"和"必须怎么做完"。
         prompt_sections = [
             "## 本次运行上下文",
             f"- project_name: `{project_name}`",
@@ -134,20 +132,22 @@ class PlanAgent(BaseSpecialistAgent):
     def _bundled_demo_template_dir(self) -> Path:
         """返回仓库内置的 demo 模板目录。"""
 
-        template_dir = Path(__file__).resolve().parents[2] / "assets" / DEFAULT_AUTOTEST_DEMO_PROJECT_NAME
-        if not template_dir.is_dir():
-            raise RuntimeError(f"内置 demo 模板目录不存在：`{template_dir}`。")
-        return template_dir
+        return bundled_demo_template_dir()
 
     def _normalized_project_name(self, project_name: Any) -> str | None:
         """把工程名归一化为可判空的字符串。"""
 
-        return self._normalized_runtime_text(project_name)
+        return normalize_runtime_text(project_name)
 
     def _normalized_runtime_text(self, value: Any) -> str | None:
         """把运行时文本参数归一化为可判空字符串。"""
 
         return normalize_runtime_text(value)
+
+    def _normalized_test_plan_files(self, value: Any) -> list[str]:
+        """把测试计划输入参数归一化为去重后的字符串列表。"""
+
+        return normalize_string_list(value)
 
     async def _run_deep_agent(
         self,
@@ -156,315 +156,15 @@ class PlanAgent(BaseSpecialistAgent):
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """使用事件流执行 Plan，并强制校验 `planner_save_plan`。
+        """将事件流运行委托给 `PlanRuntimeHelper`。
 
-        Plan 之所以不用基类默认的 `ainvoke`，是因为它必须在执行过程中持续观测工具事件，
-        确认计划文件真的保存成功，而不是只看模型最终吐出的一条自然语言消息。
+        这样 Plan Agent 自身只保留"阶段配置 + 校验 + workspace + prompt + 权限"静态职责，
+        对齐 Master 子图中"Agent 只做配置与入口、节点执行细节独立承载"的分层方式。
         """
 
-        existing_messages = state.get("messages", [])
-        # 这里单独维护 `planner_save_succeeded / planner_save_error`，目的是把“是否真正落盘成功”
-        # 从自然语言回复中剥离出来，改为基于工具事件做硬判断。
-        collector = VisibleTranscriptCollector()
-        planner_save_succeeded = False
-        planner_save_error: str | None = None
-        planner_save_payload: dict[str, Any] | None = None
-        stage_artifact: dict[str, Any] | None = None
-        pending_workspace_write_paths: list[str] = []
-        successful_workspace_write_paths: set[str] = set()
-        extracted_params = state.get("extracted_params", {})
-        workspace_dir = execution_context.workspace_dir
-        project_name = self._normalized_project_name(extracted_params.get("project_name")) or (
-            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        return await PlanRuntimeHelper(agent=self, settings=self._settings).run(
+            specialist_agent=specialist_agent,
+            state=state,
+            execution_context=execution_context,
+            config=config,
         )
-        input_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
-        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
-
-        try:
-            # TODO(重点流程): Plan 使用事件流执行，是为了在模型推理过程中同步监听关键工具调用结果。
-            async for event in specialist_agent.astream_events(
-                {"messages": existing_messages},
-                config=with_trace_context(
-                    config,
-                    execution_context.trace_context,
-                    recursion_limit=self._settings.specialist_recursion_limit,
-                ),
-                version="v2",
-            ):
-                self.log_stream_event(event, execution_context.trace_context)
-                emit_display_message_delta(collector.consume_event(event))
-                self._collect_workspace_write_start(
-                    event=event,
-                    workspace_dir=workspace_dir,
-                    pending_write_paths=pending_workspace_write_paths,
-                )
-                # TODO(重点流程): 这里开始监听 `planner_save_plan`，它是“写用例并真正落盘”
-                # 的唯一硬完成信号，不能只看模型自然语言里说自己已经完成。
-                if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
-                    payload = event.get("data", {}).get("input")
-                    if isinstance(payload, dict):
-                        planner_save_payload = payload
-                planner_save_succeeded, planner_save_error, stage_artifact = self._update_planner_save_state(
-                    planner_save_succeeded,
-                    planner_save_error,
-                    stage_artifact,
-                    planner_save_payload,
-                    execution_context.workspace_dir,
-                    project_name,
-                    input_plan_files,
-                    event,
-                )
-                self._collect_workspace_write_result(
-                    event=event,
-                    pending_write_paths=pending_workspace_write_paths,
-                    successful_write_paths=successful_workspace_write_paths,
-                )
-                self.log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
-                if planner_save_succeeded:
-                    # TODO(重点流程): 一旦确认测试计划已保存成功，就立刻结束本阶段，
-                    # 避免后续无关输出覆盖“写用例已完成”的稳定结果。
-                    result = build_runtime_message_result(
-                        collector=collector,
-                        existing_messages=existing_messages,
-                        fallback_message="测试计划已保存。",
-                    )
-                    result["artifact"] = stage_artifact
-                    return result
-        except Exception as exc:  # noqa: BLE001
-            if is_langgraph_user_cancellation(exc):
-                raise
-            if self._is_expected_browser_close_error(exc):
-                fallback_artifact = stage_artifact
-                fallback_error = planner_save_error
-                if fallback_artifact is None and workspace_dir is not None:
-                    try:
-                        fallback_artifact = await self._build_fallback_plan_artifact(
-                            workspace_dir=workspace_dir,
-                            project_name=project_name,
-                            input_plan_files=input_plan_files,
-                            successful_workspace_write_paths=successful_workspace_write_paths,
-                            before_manifest=before_manifest,
-                        )
-                    except Exception as artifact_exc:  # noqa: BLE001
-                        fallback_error = self.log_truncate(str(artifact_exc))
-                if planner_save_succeeded or fallback_artifact is not None:
-                    # TODO(重点流程): 浏览器关闭后的预期异常不应打断“写用例成功”；
-                    # 只要计划文件已经落盘，就把它当作正常收尾。
-                    self.log_browser_close_expected(execution_context.trace_context, exc)
-                    result = build_runtime_message_result(
-                        collector=collector,
-                        existing_messages=existing_messages,
-                        fallback_message="测试计划已保存，浏览器已按预期关闭。",
-                    )
-                    result["artifact"] = fallback_artifact
-                    return result
-                if fallback_error:
-                    exc = RuntimeError(f"{exc} 最近一次文件落盘校验失败：{fallback_error}")
-            return self._build_runtime_exception_result(
-                collector=collector,
-                existing_messages=existing_messages,
-                exc=exc,
-            )
-
-        log_debug_event(self.log_get_logger(), self._settings, log_title("执行", "事件流"), "plan_final_output", self.log_event_trace_context(execution_context.trace_context, "plan_final_output"), planner_save_succeeded=planner_save_succeeded, planner_save_error=planner_save_error, final_output=collector.final_output, visible_messages=collector.messages)
-
-        if not planner_save_succeeded:
-            if workspace_dir is not None:
-                try:
-                    stage_artifact = await self._build_fallback_plan_artifact(
-                        workspace_dir=workspace_dir,
-                        project_name=project_name,
-                        input_plan_files=input_plan_files,
-                        successful_workspace_write_paths=successful_workspace_write_paths,
-                        before_manifest=before_manifest,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
-                    return self._build_runtime_exception_result(
-                        collector=collector,
-                        existing_messages=existing_messages,
-                        exc=RuntimeError(
-                            "Plan Agent 未成功通过 `planner_save_plan` 或最终文件落盘保存有效测试计划。"
-                            f"{error_suffix} 文件落盘校验失败：{self.log_truncate(str(exc))}"
-                        ),
-                    )
-            else:
-                error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
-                return self._build_runtime_exception_result(
-                    collector=collector,
-                    existing_messages=existing_messages,
-                    exc=RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"),
-                )
-
-        result = build_runtime_message_result(
-            collector=collector,
-            existing_messages=existing_messages,
-            fallback_message="测试计划已保存。",
-        )
-        result["artifact"] = stage_artifact
-        return result
-
-    def _update_planner_save_state(
-        self,
-        planner_save_succeeded: bool,
-        planner_save_error: str | None,
-        current_artifact: dict[str, Any] | None,
-        planner_save_payload: dict[str, Any] | None,
-        workspace_dir: Path | None,
-        project_name: str,
-        input_plan_files: list[str],
-        event: dict[str, Any],
-    ) -> tuple[bool, str | None, dict[str, Any] | None]:
-        """根据工具事件更新 `planner_save_plan` 的成功状态。
-
-        这个状态机存在的目的，是把 Plan 的完成标准从“模型口头说完成了”收紧成
-        “保存计划工具实际成功执行了”。
-        """
-
-        if event.get("name") != "planner_save_plan":
-            return planner_save_succeeded, planner_save_error, current_artifact
-
-        # 这里只关注 `planner_save_plan`，其他工具无论成功失败都不改变最终完成判定。
-        if event.get("event") == "on_tool_error":
-            return False, self.log_truncate(event.get("data", {}).get("error")), current_artifact
-
-        if event.get("event") != "on_tool_end":
-            return planner_save_succeeded, planner_save_error, current_artifact
-
-        output = event.get("data", {}).get("output")
-        if self._tool_output_is_error(output):
-            return False, self.log_truncate(output), current_artifact
-
-        if planner_save_payload is None:
-            return False, "`planner_save_plan` 未捕获到输入 payload，无法提取计划产物。", current_artifact
-        if workspace_dir is None:
-            return False, "Plan 阶段缺少工作目录，无法验证保存产物。", current_artifact
-
-        try:
-            artifact = extract_plan_artifact_from_planner_payload(
-                payload=planner_save_payload,
-                project_dir=workspace_dir,
-                project_name=project_name,
-                input_files=input_plan_files,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return False, self.log_truncate(str(exc)), current_artifact
-
-        return True, None, artifact
-
-    def log_planner_save_state(
-        self,
-        event: dict[str, Any],
-        planner_save_succeeded: bool,
-        planner_save_error: str | None,
-        trace_context: dict[str, Any],
-    ) -> None:
-        """记录 `planner_save_plan` 的成功/失败状态，方便按 session grep。"""
-
-        if event.get("name") != "planner_save_plan" or event.get("event") not in {"on_tool_end", "on_tool_error"}:
-            return
-
-        status = "success" if planner_save_succeeded else "error"
-        self.log_tool_state(
-            trace_context=trace_context,
-            event_name="planner_save_plan",
-            status=status,
-            error=planner_save_error,
-        )
-
-    async def _build_fallback_plan_artifact(
-        self,
-        *,
-        workspace_dir: Path,
-        project_name: str,
-        input_plan_files: list[str],
-        successful_workspace_write_paths: set[str],
-        before_manifest: dict[str, Any],
-    ) -> dict[str, Any]:
-        """在未观测到 `planner_save_plan` 成功时，用最终落盘的 Markdown 回填 Plan 产物。"""
-
-        after_manifest = await snapshot_workspace_manifest_async(workspace_dir)
-        diff = diff_workspace_manifest(before_manifest, after_manifest)
-        candidate_plan_files = self._candidate_plan_files_from_workspace(
-            workspace_dir=workspace_dir,
-            touched_paths=[
-                *diff["added"],
-                *diff["modified"],
-                *sorted(successful_workspace_write_paths),
-            ],
-        )
-        if not candidate_plan_files:
-            raise RuntimeError("节点结束时未识别到新建或更新的规范测试计划 Markdown。")
-        if len(candidate_plan_files) > 1:
-            candidate_text = "、".join(f"`{path}`" for path in candidate_plan_files)
-            raise RuntimeError(f"节点结束时识别到多个候选测试计划，无法唯一确定：{candidate_text}")
-
-        return extract_plan_artifact_from_saved_markdown(
-            plan_file=candidate_plan_files[0],
-            project_dir=workspace_dir,
-            project_name=project_name,
-            input_files=input_plan_files,
-        )
-
-    def _candidate_plan_files_from_workspace(
-        self,
-        *,
-        workspace_dir: Path,
-        touched_paths: list[str],
-    ) -> list[str]:
-        """从本轮新增或更新的文件中筛选规范测试计划 Markdown。"""
-
-        candidate_files: list[str] = []
-        seen: set[str] = set()
-        for touched_path in touched_paths:
-            normalized_path = self._normalize_workspace_relative_path(workspace_dir, touched_path)
-            if not normalized_path or normalized_path in seen:
-                continue
-            path = Path(normalized_path)
-            if len(path.parts) != 3 or path.parts[0] != "test_case":
-                continue
-            if not path.parts[1].startswith("aaaplanning_") or not path.name.startswith("aaa_") or path.suffix != ".md":
-                continue
-            if not (workspace_dir / normalized_path).is_file():
-                continue
-            seen.add(normalized_path)
-            candidate_files.append(normalized_path)
-        return candidate_files
-
-    def _is_expected_browser_close_error(self, exc: Exception) -> bool:
-        """判断异常是否为关闭浏览器后的预期错误。
-
-        Plan 在保存完成后会主动触发浏览器关闭，因此这里要识别“收尾成功后抛出的已关闭异常”，
-        避免把正确收尾误判成执行失败。
-        """
-
-        text = str(exc).lower()
-        expected_fragments = (
-            "target page, context or browser has been closed",
-            "browsercontext.newpage",
-            "browser has been closed",
-            "remoteprotocolerror",
-            "peer closed connection without sending complete message body",
-            "incomplete chunked read",
-        )
-        return any(fragment in text for fragment in expected_fragments)
-
-    def _normalized_test_plan_files(self, value: Any) -> list[str]:
-        """把测试计划输入参数归一化为去重后的字符串列表。"""
-
-        if isinstance(value, (list, tuple)):
-            candidate_values = value
-        elif value is None:
-            candidate_values = []
-        else:
-            candidate_values = [value]
-
-        normalized_files: list[str] = []
-        seen: set[str] = set()
-        for item in candidate_values:
-            normalized_item = self._normalized_runtime_text(item)
-            if not normalized_item or normalized_item in seen:
-                continue
-            seen.add(normalized_item)
-            normalized_files.append(normalized_item)
-        return normalized_files

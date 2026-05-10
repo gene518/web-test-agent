@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
 
+from langchain_core.tools import BaseTool
+
 from deep_agent.core.config import AppSettings
 from deep_agent.core.runtime_logging import get_logger, log_title
+from deep_agent.tools.playwright.planner_save_plan_wrapper import wrap_planner_save_plan_tool
 from deep_agent.tools.playwright.tool_error_policy import PLAYWRIGHT_MCP_TOOL_ERROR_POLICY
 
 
@@ -105,6 +108,26 @@ class PlaywrightTestMCPProvider:
             "无法连接到 MCP server `playwright-test`。请确认本机可以执行 "
             "`npx playwright run-test-mcp-server`，并且项目目录可执行 npm install。"
             f" workspace_dir={workspace_dir}.{suffix}"
+        )
+
+    def post_process_tool(
+        self,
+        tool: BaseTool,
+        *,
+        workspace_dir: str | None,
+    ) -> BaseTool:
+        """供 `MCPToolsManager` 在工具转换完成后调用的扩展点。
+
+        目的：把 `planner_save_plan` 的业务规则（路径校验、缺父目录自动重建、
+        最终错误归一化）从 `MCPToolsManager` 的通用流程里剥出来，集中放到
+        Playwright provider 自己的领域内。其他工具原样返回。
+        """
+
+        workspace_path = Path(workspace_dir) if workspace_dir else None
+        return wrap_planner_save_plan_tool(
+            tool,
+            workspace_dir=workspace_path,
+            tool_error_policy=self.tool_error_policy,
         )
 
     def _read_package_json(self, package_json: Path) -> dict[str, object]:

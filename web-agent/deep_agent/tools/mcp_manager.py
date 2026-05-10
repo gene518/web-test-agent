@@ -1,23 +1,21 @@
 """统一管理所有 MCP server 的持久会话和工具缓存。
 
-这个模块的核心目的，是把“如何连接 MCP、如何按 workspace 复用会话、如何把工具定义转换成
-LangChain Tool”这些底层细节收口，避免上层 Agent 自己管理连接生命周期和缓存一致性。
+这个模块的核心目的，是把"如何连接 MCP、如何按 workspace 复用会话、如何把工具定义转换成
+LangChain Tool"这些底层细节收口，避免上层 Agent 自己管理连接生命周期和缓存一致性。
+本模块只负责通用编排；工具级别的业务规则（例如 Playwright 的 `planner_save_plan` 路径
+校验和缺父目录重试）由具体 provider 的 `post_process_tool` 钩子承担。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
-from uuid import uuid4
 
-from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, StructuredTool
-from langchain_core.tools.base import ToolException
+from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 from pydantic import ValidationError
@@ -35,25 +33,12 @@ from deep_agent.tools.tool_error_handling import (
 
 logger = get_logger(__name__)
 
-_PLAYWRIGHT_TEST_SERVER_NAME = "playwright-test"
-_PLANNER_SAVE_PLAN_TOOL_NAME = "planner_save_plan"
-_PLANNING_DIR_PREFIX = "aaaplanning_"
-_PLAN_FILE_PREFIX = "aaa_"
-_PARENT_DIR_MISSING_ERROR_MARKERS = (
-    "enoent",
-    "resource_not_found",
-    "no such file or directory",
-    "parent directory",
-    "directory does not exist",
-    "cannot find path",
-)
-
 
 class MCPServerProvider(Protocol):
     """描述单个 MCP server 的专属接入规则。
 
     把 server 差异抽成 provider 协议的目的，是让 `MCPToolsManager` 只负责统一编排，
-    而把“路径归一化、连接参数构造、错误包装”交给各个 server 自己定义。
+    而把"路径归一化、连接参数构造、错误包装、工具级业务规则"交给各个 server 自己定义。
     """
 
     server_name: str
@@ -76,6 +61,14 @@ class MCPServerProvider(Protocol):
         workspace_dir: str | None,
     ) -> RuntimeError:
         """构建当前 server 的连接失败异常。"""
+
+    def post_process_tool(
+        self,
+        tool: BaseTool,
+        *,
+        workspace_dir: str | None,
+    ) -> BaseTool:
+        """对转换后的 LangChain Tool 做 provider 专属的二次包装，可选实现。"""
 
 
 @dataclass(slots=True)
@@ -161,6 +154,47 @@ class MCPToolsManager:
         logger.info("%s 所有 MCP 会话已关闭。",
             log_title("关闭", "MCP关闭"),)
 
+    async def close_session(
+        self,
+        server_name: str,
+        workspace_dir: str | Path | None = None,
+    ) -> bool:
+        """关闭指定 server + workspace 的 MCP 会话并释放相关子进程。
+
+        调用方：Plan / Generator / Healer 的 runtime helper 在每次阶段结束（含预期关闭、
+        失败、异常）时调用，用于在不影响其他 workspace 的情况下精准释放当前会话。
+        目的：避免 Playwright MCP 子进程（Chromium）在阶段结束后继续驻留，减少端口占用、
+        会话串扰和本地资源泄漏。
+
+        Returns:
+            bool: `True` 表示命中并成功关闭；`False` 表示缓存中本就不存在对应会话。
+        """
+
+        try:
+            provider = self._get_provider(server_name)
+        except RuntimeError:
+            return False
+
+        normalized_workspace = await asyncio.to_thread(provider.normalize_workspace_dir, workspace_dir)
+        cache_key = self._make_cache_key(server_name, normalized_workspace)
+
+        async with self._lock:
+            cached_session = self._sessions.pop(cache_key, None)
+
+        if cached_session is None:
+            return False
+
+        try:
+            await cached_session.stack.aclose()
+        except Exception:  # noqa: BLE001
+            # 会话已经半关闭或底层 transport 出错时继续走掉即可，不再把异常向上抛；
+            # 资源清理本身属于"尽力而为"，不应反过来让调用方的正常返回受影响。
+            logger.exception("%s 关闭 MCP 会话时出现异常 server=%s workspace_dir=%s",
+                log_title("关闭", "MCP关闭"), server_name, normalized_workspace,)
+        logger.info("%s MCP 会话已关闭 server=%s, workspace_dir=%s",
+            log_title("关闭", "MCP关闭"), server_name, normalized_workspace,)
+        return True
+
     async def _ensure_session(
         self,
         provider: MCPServerProvider,
@@ -191,7 +225,7 @@ class MCPToolsManager:
             try:
                 logger.info("%s 开始建立 MCP 会话 server=%s, workspace_dir=%s",
                     log_title("工具", "MCP连接"), server_name, workspace_dir,)
-                # TODO(重点流程): 这里正式创建 MCP 客户端，后续所有工具发现和调用都依赖这条连接。
+                # 主链路：这里正式创建 MCP 客户端，后续所有工具发现和调用都依赖这条连接。
                 client = MultiServerMCPClient(
                     {server_name: provider.build_connection_config(self._settings, workspace_dir)}
                 )
@@ -236,8 +270,8 @@ class MCPToolsManager:
     ) -> list[BaseTool]:
         """按精确工具标识返回当前 Agent 可见的 MCP 工具。
 
-        这里之所以单独做一层 allowlist 过滤，是为了把“server 全量暴露了什么工具”和
-        “当前 Agent 实际允许看到什么工具”这两个概念分开，降低越权调用风险。
+        这里之所以单独做一层 allowlist 过滤，是为了把"server 全量暴露了什么工具"和
+        "当前 Agent 实际允许看到什么工具"这两个概念分开，降低越权调用风险。
         """
 
         if allowed_tool_ids is None:
@@ -267,7 +301,7 @@ class MCPToolsManager:
         for tool_name in requested_tool_names:
             tool = cached_session.loaded_tools_by_name.get(tool_name)
             if tool is None:
-                # TODO(重点流程): 这里把 MCP 原始工具定义转换成 LangChain Tool，
+                # 主链路：这里把 MCP 原始工具定义转换成 LangChain Tool，
                 # 这样上层 Agent 才能直接把它们交给 Deep Agent 使用。
                 tool = convert_mcp_tool_to_langchain_tool(
                     cached_session.session,
@@ -276,230 +310,32 @@ class MCPToolsManager:
                     tool_name_prefix=False,
                 )
                 self._patch_tool_error_handlers(tool, provider=cached_session.provider)
-                tool = self._wrap_planner_save_plan_tool(
+                tool = self._apply_provider_post_process(
                     tool,
                     provider=cached_session.provider,
-                    workspace_dir=self._make_workspace_path(cached_session),
+                    workspace_dir=cached_session.workspace_dir,
                 )
+                # provider 的 post_process 可能包成新的 StructuredTool，
+                # 这里对最终对外暴露的 tool 再做一次错误处理器补齐，保证统一。
                 self._patch_tool_error_handlers(tool, provider=cached_session.provider)
                 cached_session.loaded_tools_by_name[tool_name] = tool
             allowed_tools.append(tool)
 
         return allowed_tools
 
-    def _wrap_planner_save_plan_tool(
+    def _apply_provider_post_process(
         self,
         tool: BaseTool,
         *,
         provider: MCPServerProvider,
-        workspace_dir: Path | None,
+        workspace_dir: str | None,
     ) -> BaseTool:
-        """为 planner_save_plan 增加规范路径校验和缺目录后重试。"""
+        """调用 provider 的 `post_process_tool` 钩子；provider 未实现时原样返回。"""
 
-        if provider.server_name != _PLAYWRIGHT_TEST_SERVER_NAME or getattr(tool, "name", None) != _PLANNER_SAVE_PLAN_TOOL_NAME:
+        post_process = getattr(provider, "post_process_tool", None)
+        if post_process is None:
             return tool
-        tool_error_policy = self._resolve_tool_error_policy(provider)
-
-        async def guarded_planner_save_plan(**payload: Any) -> Any:
-            relative_file = self._validate_planner_save_plan_file_name(payload)
-            first_output = await self._invoke_planner_save_plan_tool(tool, payload, tool_error_policy)
-            final_output = first_output
-            if self._is_parent_dir_missing_tool_output(first_output) and workspace_dir is not None:
-                plan_dir = workspace_dir / relative_file.parent
-                await asyncio.to_thread(plan_dir.mkdir, parents=True, exist_ok=True)
-                logger.info(
-                    "%s planner_save_plan 首次保存缺少父目录，已创建后原参重试 workspace_dir=%s fileName=%s",
-                    log_title("工具", "Planner保存"),
-                    workspace_dir,
-                    relative_file.as_posix(),
-                )
-                final_output = await self._invoke_planner_save_plan_tool(tool, payload, tool_error_policy)
-
-            self._raise_if_tool_error_output(final_output)
-            return self._tool_output_content(final_output)
-
-        wrapped_tool = StructuredTool.from_function(
-            coroutine=guarded_planner_save_plan,
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            return_direct=tool.return_direct,
-            response_format="content",
-        )
-        wrapped_tool.callbacks = tool.callbacks
-        wrapped_tool.tags = tool.tags
-        wrapped_tool.metadata = tool.metadata
-        wrapped_tool.verbose = tool.verbose
-        return wrapped_tool
-
-    async def _invoke_planner_save_plan_tool(
-        self,
-        tool: BaseTool,
-        payload: dict[str, Any],
-        tool_error_policy: MCPToolErrorPolicy,
-    ) -> Any:
-        """调用底层 planner_save_plan，保留第一次失败结果供反应式处理。
-
-        这里不直接走 `tool.ainvoke`，因为底层 MCP 适配器里有一类工具会声明
-        `response_format='content_and_artifact'`，但真实返回只给 content list。
-        直接执行 BaseTool 包装会在格式校验阶段抛 `ValueError`，因此这里改为
-        调用底层原始协程/实现，再由外层包装工具统一产出最终 ToolMessage。
-        """
-
-        try:
-            raw_output = await self._invoke_tool_raw_result(tool, payload)
-            if isinstance(raw_output, tuple):
-                try:
-                    content, _artifact = raw_output
-                except ValueError:
-                    return raw_output
-                return content
-            return raw_output
-        except ToolException as exc:
-            if self._is_parent_dir_missing_tool_output(exc):
-                return self._wrap_tool_exception(
-                    exc,
-                    tool_name=tool.name,
-                    tool_error_policy=tool_error_policy,
-                )
-            raise
-
-    async def _invoke_tool_raw_result(self, tool: BaseTool, payload: dict[str, Any]) -> Any:
-        """直接执行工具原始实现，避免再次触发 BaseTool 的输出格式校验与事件包装。"""
-
-        coroutine = getattr(tool, "coroutine", None)
-        if callable(coroutine):
-            return await coroutine(**payload)
-
-        arun_impl = getattr(tool, "_arun", None)
-        if arun_impl is not None and getattr(arun_impl, "__func__", None) is not BaseTool._arun:
-            return await arun_impl(**payload)
-
-        run_impl = getattr(tool, "_run", None)
-        if run_impl is not None and getattr(run_impl, "__func__", None) is not BaseTool._run:
-            return await asyncio.to_thread(run_impl, **payload)
-
-        tool_call = {
-            "type": "tool_call",
-            "name": tool.name,
-            "args": payload,
-            "id": f"planner-save-plan-{uuid4()}",
-        }
-        return await tool.ainvoke(tool_call)
-
-    def _validate_planner_save_plan_file_name(self, payload: dict[str, Any]) -> Path:
-        """校验 planner_save_plan.fileName 是否使用 aaaplanning 规范路径。"""
-
-        raw_file_name = payload.get("fileName")
-        if not isinstance(raw_file_name, str) or not raw_file_name.strip():
-            raise ToolException(
-                "`planner_save_plan.fileName` 不能为空，必须保存到 "
-                "`test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`。"
-            )
-
-        relative_file = Path(raw_file_name.strip())
-        expected_path = self._expected_planner_save_plan_path(payload, relative_file)
-        if (
-            relative_file.is_absolute()
-            or ".." in relative_file.parts
-            or len(relative_file.parts) != 3
-            or relative_file.parts[0] != "test_case"
-            or not relative_file.parts[1].startswith(_PLANNING_DIR_PREFIX)
-        ):
-            raise self._planner_save_path_error(raw_file_name, expected_path)
-
-        plan_identifier = relative_file.parts[1].removeprefix(_PLANNING_DIR_PREFIX)
-        expected_file_name = f"{_PLAN_FILE_PREFIX}{plan_identifier}.md"
-        if not plan_identifier or relative_file.name != expected_file_name:
-            raise self._planner_save_path_error(raw_file_name, expected_path)
-        return relative_file
-
-    def _planner_save_path_error(self, received_path: str, expected_path: str | None) -> ToolException:
-        expected_suffix = f" 请改用 `{expected_path}`。" if expected_path else ""
-        return ToolException(
-            "`planner_save_plan.fileName` 必须保存到 "
-            "`test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`，"
-            f"当前收到：`{received_path}`。{expected_suffix}"
-        )
-
-    def _expected_planner_save_plan_path(self, payload: dict[str, Any], relative_file: Path) -> str | None:
-        plan_identifier = self._infer_planner_save_plan_identifier(payload, relative_file)
-        if not plan_identifier:
-            return None
-        return f"test_case/{_PLANNING_DIR_PREFIX}{plan_identifier}/{_PLAN_FILE_PREFIX}{plan_identifier}.md"
-
-    def _infer_planner_save_plan_identifier(self, payload: dict[str, Any], relative_file: Path) -> str | None:
-        raw_name = payload.get("name")
-        if isinstance(raw_name, str):
-            plan_identifier = raw_name.strip()
-            if plan_identifier and "/" not in plan_identifier and "\\" not in plan_identifier:
-                return plan_identifier
-
-        file_name = relative_file.name
-        if file_name.startswith(_PLAN_FILE_PREFIX) and file_name.endswith(".md"):
-            plan_identifier = file_name[len(_PLAN_FILE_PREFIX) : -len(".md")]
-            if plan_identifier:
-                return plan_identifier
-        return None
-
-    def _is_parent_dir_missing_tool_output(self, output: Any) -> bool:
-        text = self._tool_output_text(output).lower()
-        return any(marker in text for marker in _PARENT_DIR_MISSING_ERROR_MARKERS)
-
-    def _raise_if_tool_error_output(self, output: Any) -> None:
-        """把底层工具的错误 ToolMessage 重新交给外层工具错误处理。"""
-
-        if self._is_tool_error_output(output):
-            raise ToolException(self._tool_output_text(output))
-
-    def _is_tool_error_output(self, output: Any) -> bool:
-        status = getattr(output, "status", None)
-        if status == "error":
-            return True
-        if isinstance(output, dict):
-            if output.get("status") == "error":
-                return True
-            if output.get("ok") is False or output.get("type") == "tool_error":
-                return True
-
-        content = getattr(output, "content", output)
-        if isinstance(content, str):
-            try:
-                payload = json.loads(content)
-            except json.JSONDecodeError:
-                return False
-            return isinstance(payload, dict) and (
-                payload.get("ok") is False or payload.get("type") == "tool_error"
-            )
-        return False
-
-    def _tool_output_content(self, output: Any) -> Any:
-        if isinstance(output, ToolMessage):
-            return output.content
-        if isinstance(output, dict) and "content" in output:
-            return output["content"]
-        return output
-
-    def _tool_output_text(self, output: Any) -> str:
-        content = getattr(output, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            try:
-                return json.dumps(content, ensure_ascii=False, default=str)
-            except TypeError:
-                return str(content)
-        if isinstance(output, str):
-            return output
-        try:
-            return json.dumps(output, ensure_ascii=False, default=str)
-        except TypeError:
-            return str(output)
-
-    def _make_workspace_path(self, cached_session: _CachedToolsSession) -> Path | None:
-        if cached_session.workspace_dir is None:
-            return None
-        return Path(cached_session.workspace_dir)
+        return post_process(tool, workspace_dir=workspace_dir)
 
     def _patch_tool_error_handlers(self, tool: BaseTool, *, provider: MCPServerProvider) -> None:
         """为 MCP 工具统一补齐结构化错误包装。

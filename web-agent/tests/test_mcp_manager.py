@@ -642,3 +642,60 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
         run_subprocess.assert_called_once()
         _, kwargs = run_subprocess.call_args
         self.assertNotIn("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", kwargs["env"])
+
+    async def test_close_session_releases_only_matching_workspace(self) -> None:
+        """精准关闭：关闭一个 workspace 的会话时，另一个 workspace 的会话应保持存活。
+
+        这一行为是 Plan/Generator/Healer runtime 在 finally 里兜底关闭 Playwright MCP
+        的前提——只有按 (server, workspace) 精准关闭，才能在多项目并发场景下不互相影响。
+        """
+
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        project_a = (self.root_path / "close-a").resolve()
+        project_b = (self.root_path / "close-b").resolve()
+        project_a.mkdir(parents=True, exist_ok=True)
+        project_b.mkdir(parents=True, exist_ok=True)
+
+        list_tools = AsyncMock(
+            side_effect=[
+                [SimpleNamespace(name="browser_navigate")],
+                [SimpleNamespace(name="browser_navigate")],
+            ]
+        )
+
+        with (
+            patch("deep_agent.tools.mcp_manager.MultiServerMCPClient", FakeClient),
+            patch.object(MCPToolsManager, "_list_mcp_tools", list_tools),
+            patch("deep_agent.tools.mcp_manager.convert_mcp_tool_to_langchain_tool", return_value="tool"),
+            patch.object(MCPToolsManager, "_patch_tool_error_handlers"),
+        ):
+            await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_a,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/browser_navigate",),
+            )
+            await manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                project_b,
+                (f"{PLAYWRIGHT_TEST_MCP_SERVER_NAME}/browser_navigate",),
+            )
+
+            self.assertEqual(len(manager._sessions), 2)
+
+            closed = await manager.close_session(PLAYWRIGHT_TEST_MCP_SERVER_NAME, project_a)
+            self.assertTrue(closed)
+            remaining_keys = {cache_key[1] for cache_key in manager._sessions.keys()}
+            self.assertEqual(remaining_keys, {str(project_b)})
+
+            # 再次关闭同一个 workspace 时应返回 False，表示缓存里本就没有对应会话。
+            self.assertFalse(await manager.close_session(PLAYWRIGHT_TEST_MCP_SERVER_NAME, project_a))
+
+        await manager.close()
+
+    async def test_close_session_returns_false_for_unknown_server(self) -> None:
+        """未注册 provider 时 `close_session` 直接返回 False，不抛异常。"""
+
+        settings = self._build_settings()
+        manager = MCPToolsManager(settings, providers=(PLAYWRIGHT_TEST_MCP_PROVIDER,))
+        self.assertFalse(await manager.close_session("unknown-mcp", self.root_path))

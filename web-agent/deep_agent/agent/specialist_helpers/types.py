@@ -1,4 +1,9 @@
-"""Shared specialist runtime data structures."""
+"""Specialist 共享的运行时数据结构。
+
+本模块只承担"类型定义"职责：描述 Plan / Generator / Healer 在单次执行过程中会反复
+使用的上下文与静态配置。调用方是 `BaseSpecialistAgent` 与其子类；把这些结构抽出来是
+为了让运行期流程和业务字段解耦，后续新增配置字段只改这里即可。
+"""
 
 from __future__ import annotations
 

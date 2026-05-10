@@ -1,4 +1,9 @@
-"""Display and result-shaping helpers for specialist agents."""
+"""Specialist 展示与结果整形辅助。
+
+本模块把 Plan / Generator / Healer 的"非主流程展示层逻辑"集中到一起：阶段开始消息、
+阶段摘要、运行时异常兜底输出等都放在这里，让 Specialist 主体只关注执行链路本身。
+调用方是 `BaseSpecialistAgent` 通过 mixin 继承。
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,11 @@ from deep_agent.core.runtime_logging import debug_max_chars
 
 
 class SpecialistDisplayMixin:
-    """Non-core display/result helpers shared by Plan, Generator, and Healer."""
+    """把 Plan / Generator / Healer 的"展示与结果整形"逻辑收敛到一个 mixin。
+
+    调用方是 `BaseSpecialistAgent`。它通过 mixin 继承获得阶段开始消息、阶段摘要、
+    运行时异常兜底输出等能力，主执行链路里只需要关心"事件流 + 产物抽取"。
+    """
 
     agent_type: str
     display_name: str
@@ -143,10 +152,18 @@ class SpecialistDisplayMixin:
         return None
 
     def _workflow_managed_pipeline(self, state: WorkflowState) -> bool:
-        """判断当前阶段是否由统一工作流 finalizer 管理用户回复。"""
+        """判断当前阶段是否由统一工作流 finalizer 管理用户回复。
+
+        判定规则：只有当本轮请求包含 ≥2 个阶段时（例如 `plan -> generator`），
+        才由 `finalize_turn_node` 统一输出一条合并汇总；单阶段请求视为独立阶段，
+        Specialist 自己把 `stage_summary` 作为用户可见消息发出，避免 finalize 节点
+        把同一份内容再原样复述一次，造成 UI 上出现两条重复的总结。
+        """
 
         requested_pipeline = state.get("requested_pipeline")
-        return isinstance(requested_pipeline, list) and bool(requested_pipeline)
+        if not isinstance(requested_pipeline, list):
+            return False
+        return len(requested_pipeline) >= 2
 
     def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
         """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""

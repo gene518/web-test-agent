@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Mode = "start"
 )
 
@@ -129,8 +129,14 @@ function Import-ProjectEnvFile {
 
     $Key = $Match.Groups[1].Value.Trim()
     $Value = $Match.Groups[2].Value.Trim()
-    if (($Value.StartsWith('"') -and $Value.EndsWith('"')) -or ($Value.StartsWith("'") -and $Value.EndsWith("'"))) {
-      $Value = $Value.Substring(1, $Value.Length - 2)
+    if ($Value.Length -ge 2) {
+      $DoubleQuote = [string][char]34
+      $SingleQuote = [string][char]39
+      $StartsAndEndsWithDoubleQuote = $Value.StartsWith($DoubleQuote) -and $Value.EndsWith($DoubleQuote)
+      $StartsAndEndsWithSingleQuote = $Value.StartsWith($SingleQuote) -and $Value.EndsWith($SingleQuote)
+      if ($StartsAndEndsWithDoubleQuote -or $StartsAndEndsWithSingleQuote) {
+        $Value = $Value.Substring(1, $Value.Length - 2)
+      }
     }
 
     [Environment]::SetEnvironmentVariable($Key, $Value, "Process")
@@ -369,7 +375,8 @@ function Wait-ForPort {
 
 function Quote-PowerShellSingle {
   param([string]$Value)
-  return "'" + ($Value -replace "'", "''") + "'"
+  $SingleQuote = [string][char]39
+  return $SingleQuote + $Value.Replace($SingleQuote, $SingleQuote + $SingleQuote) + $SingleQuote
 }
 
 function Start-HiddenPowerShellProcess {

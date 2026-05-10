@@ -1,38 +1,96 @@
+# ============================================================
+# Web AutoTest Agent 仓库忽略规则
+# 维护提示：
+# 1. 运行时产物、缓存、日志、密钥文件统一在这里排除。
+# 2. 新增本地调试/构建工具前，请先确认是否需要在这里追加对应忽略项。
+# ============================================================
+
+# --- 操作系统级噪声 -----------------------------------------
 .DS_Store
+**/.DS_Store
+Thumbs.db
+
+# --- Python 缓存与构建产物 ---------------------------------
 __pycache__/
+**/__pycache__/
 *.pyc
-*.tsbuildinfo
-venv/
-node_modules/
-.idea/
-.vscode/
+*.pyo
+*.pyd
 *.egg-info/
-.langgraph_api/
-.playwright-cli/
-.playwright-mcp/
-.pytest_cache/
-.uv-cache/
+**/*.egg-info/
 build/
 dist/
-*.log
+.pytest_cache/
+**/.pytest_cache/
+.uv-cache/
+.coverage
+.coverage.*
+.mypy_cache/
+.ruff_cache/
 
-/web-agent/runtime/
+# --- 虚拟环境 -----------------------------------------------
+venv/
+.venv/
+**/.venv/
+
+# --- IDE / 编辑器 -------------------------------------------
+.idea/
+.vscode/
+
+# --- 日志 ---------------------------------------------------
+*.log
+start/backend.log
+start/frontend.log
+
+# --- LangGraph 本地运行时数据 ------------------------------
+.langgraph_api/
+**/.langgraph_api/
+*.pckl
+
+# --- Playwright 运行产物 ------------------------------------
+.playwright-cli/
+.playwright-mcp/
+test-results/
+playwright-report/
+
+# --- Node / Next.js ----------------------------------------
+node_modules/
+**/node_modules/
+*.tsbuildinfo
+**/*.tsbuildinfo
 /web-agent-ui/dist/
 /web-portal/dist/
 /web-portal/.next/
+
+# --- 环境变量（仅保留 .env.example 进仓库） ----------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 /web-portal/.env
 /web-portal/.env.local
 /web-portal/.env.development.local
 /web-portal/.env.test.local
 /web-portal/.env.production.local
 /web-agent/.env
-/web-agent/.pytest_cache/
-/web-agent/.venv/
+
+# --- 项目运行期产物 ----------------------------------------
+/web-agent/runtime/
 /web-agent/project_conversation.md
 /web-agent/README.md
-/web-agent/.langgraph_api/
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
+
+# --- 冗余的旧 vite 构建输出（保留到历史兼容） --------------
 /web-portal/vite.config.d.ts
 /web-portal/vite.config.js
+
+# --- 启动脚本缓存 ------------------------------------------
 /start/script/.cache/
+
+# --- macOS / iCloud 冲突副本（文件名形如 `name 2.pckl`） ---
+* 2
+* 2.*
+* 3
+* 3.*

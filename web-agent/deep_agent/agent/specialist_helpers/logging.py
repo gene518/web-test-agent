@@ -1,4 +1,9 @@
-"""Specialist runtime logging helpers."""
+"""Specialist 运行时日志辅助。
+
+本模块把 Plan / Generator / Healer 共用的日志模板（事件流打点、关键工具状态切换、
+浏览器关闭兜底记录等）收敛到一处，避免每个 Specialist 自己维护一套格式。
+调用方是 `BaseSpecialistAgent` 通过 mixin 继承。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,12 @@ from deep_agent.core.runtime_logging import (
 
 
 class SpecialistLoggingMixin:
-    """Log-only helpers kept out of specialist control flow."""
+    """把 Specialist 在事件流中要打的日志集中到一个 mixin。
+
+    调用方是 `BaseSpecialistAgent`。让 Plan / Generator / Healer 在事件循环里只负责
+    调用 `log_stream_event`、`log_tool_state`、`log_browser_close_expected` 等已对齐
+    的日志入口，不再各自拼接 `log_title` 和 `trace_context`。
+    """
 
     agent_type: str
     _settings: Any

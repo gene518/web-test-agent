@@ -107,6 +107,45 @@ class IntentModelTestCase(unittest.TestCase):
             },
         )
 
+    def test_optional_scheduler_booleans_treat_empty_strings_as_missing(self) -> None:
+        classification = IntentClassification(
+            intent_type="scheduler",
+            schedule_headed="",
+            schedule_enabled="  ",
+        )
+
+        self.assertIsNone(classification.schedule_headed)
+        self.assertIsNone(classification.schedule_enabled)
+        self.assertEqual(build_extracted_params(classification), {})
+
+    def test_optional_scheduler_booleans_keep_valid_boolean_strings(self) -> None:
+        classification = IntentClassification(
+            intent_type="scheduler",
+            schedule_headed="false",
+            schedule_enabled="true",
+        )
+
+        self.assertIs(classification.schedule_headed, False)
+        self.assertIs(classification.schedule_enabled, True)
+        self.assertEqual(
+            build_extracted_params(classification),
+            {
+                "schedule_headed": False,
+                "schedule_enabled": True,
+            },
+        )
+
+    def test_optional_scheduler_booleans_treat_null_like_strings_as_missing(self) -> None:
+        classification = IntentClassification(
+            intent_type="scheduler",
+            schedule_headed="undefined",
+            schedule_enabled="null",
+        )
+
+        self.assertIsNone(classification.schedule_headed)
+        self.assertIsNone(classification.schedule_enabled)
+        self.assertEqual(build_extracted_params(classification), {})
+
     def test_null_like_placeholders_are_treated_as_missing(self) -> None:
         classification = IntentClassification(
             intent_type="plan",
@@ -147,6 +186,24 @@ class IntentModelTestCase(unittest.TestCase):
                 "project_name": "demo-project",
                 "test_plan_files": ["test_case/demo/aaa_demo.md"],
                 "test_cases": ["case-a"],
+            },
+        )
+
+    def test_non_scheduler_requests_ignore_empty_scheduler_boolean_fields(self) -> None:
+        classification = IntentClassification(
+            intent_type="plan",
+            project_name="demo-project",
+            url="https://example.com",
+            schedule_headed="",
+            schedule_enabled="undefined",
+        )
+
+        self.assertEqual(compute_missing_params(classification), [])
+        self.assertEqual(
+            build_extracted_params(classification),
+            {
+                "project_name": "demo-project",
+                "url": "https://example.com",
             },
         )
 

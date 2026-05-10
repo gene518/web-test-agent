@@ -3,6 +3,5 @@
   "dependencies": ["."],
   "graphs": {
     "web-autotest-agent": "./deep_agent/app.py:agent_graph"
-  },
-  "env": ".env"
+  }
 }

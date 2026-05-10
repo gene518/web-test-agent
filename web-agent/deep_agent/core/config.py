@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -18,6 +19,75 @@ from deep_agent.core.runtime_logging import (
 
 
 logger = get_logger(__name__)
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_ENV_FILE = _PROJECT_ROOT / ".env"
+
+
+def load_project_env_file(env_file: str | Path | None = None) -> None:
+    """用 UTF-8 把项目 `.env` 注入当前进程环境变量。
+
+    LangGraph CLI 在 Windows 上读取 `langgraph.json -> env` 时会走 `python-dotenv`
+    的默认编码分支；系统为中文代码页时，`.env` 中的中文注释会直接触发 GBK
+    解码失败。这里统一在应用入口自行按 UTF-8 加载，避免再依赖外部工具的默认编码。
+    """
+
+    resolved_env_file = _resolve_env_file_path(env_file)
+    if not resolved_env_file.exists():
+        return
+
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        env_values = _read_fallback_dotenv_values(resolved_env_file)
+    else:
+        env_values = dotenv_values(resolved_env_file, encoding="utf-8")
+
+    for key, value in env_values.items():
+        if not key or value is None or key in os.environ:
+            continue
+        os.environ[key] = value
+
+
+def _resolve_env_file_path(env_file: str | Path | None) -> Path:
+    """把相对 `.env` 路径统一解析到项目根目录。"""
+
+    if env_file is None:
+        return _DEFAULT_ENV_FILE
+
+    candidate = Path(env_file)
+    if candidate.is_absolute():
+        return candidate
+    return (_PROJECT_ROOT / candidate).resolve()
+
+
+def _read_fallback_dotenv_values(env_file: Path) -> dict[str, str]:
+    """在缺少 `python-dotenv` 时回退到最小可用的 UTF-8 `.env` 解析。"""
+
+    env_values: dict[str, str] = {}
+    for raw_line in env_file.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+
+        key, separator, raw_value = line.partition("=")
+        if not separator:
+            continue
+
+        normalized_key = key.strip()
+        if not normalized_key or any(character.isspace() for character in normalized_key):
+            continue
+
+        normalized_value = raw_value.strip()
+        if (
+            len(normalized_value) >= 2
+            and normalized_value[0] == normalized_value[-1]
+            and normalized_value[0] in {'"', "'"}
+        ):
+            normalized_value = normalized_value[1:-1]
+        env_values[normalized_key] = normalized_value
+    return env_values
 
 
 class AppSettings(BaseSettings):
@@ -30,7 +100,7 @@ class AppSettings(BaseSettings):
 
     # `SettingsConfigDict` 告诉 Pydantic 去哪里找 `.env` 文件，以及如何解析环境变量。
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_DEFAULT_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -257,12 +327,15 @@ def get_settings() -> AppSettings:
         None.
     """
 
+    # 先把 `.env` 里的配置按 UTF-8 注入进程环境，保证后续直接读取 `os.getenv`
+    # 的启动逻辑在 Windows 上也不会被默认代码页影响。
+    load_project_env_file()
     # 先用环境变量中的日志等级初始化日志系统，目的是让“配置解析本身”的过程也能被观测到。
     configure_logging_from_env()
     # 这里虽然没有传入任何函数参数，但 `AppSettings()` 继承了 `BaseSettings`，
     # 会自动从当前进程环境变量和 `.env` 文件中读取配置值。
     # 再配合 `lru_cache`，整个进程里只会解析一次配置，后续调用直接复用结果。
-    # TODO(重点流程): 这里完成全局配置对象创建，后续 Agent、MCP 和日志系统都会复用它。
+    # 主链路：这里完成全局配置对象创建，后续 Agent、MCP 和日志系统都会复用它。
     settings = AppSettings()
     configure_logging(settings.log_level)
     logger.info("%s 应用配置加载成功 settings=%s",

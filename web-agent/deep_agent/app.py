@@ -4,7 +4,7 @@
 先准备日志和配置，再构建图对象，最后暴露给 LangGraph CLI 直接加载。
 """
 
-from deep_agent.core.config import get_settings
+from deep_agent.core.config import get_settings, load_project_env_file
 from deep_agent.core.runtime_logging import (
     configure_logging_from_env,
     get_logger,
@@ -13,6 +13,8 @@ from deep_agent.core.runtime_logging import (
 from deep_agent.core.local_runtime_cleanup import cancel_stale_inmemory_runs_on_start
 from deep_agent.web_autotest_agent_workflow import build_web_autotest_agent_workflow
 
+# 先把 `.env` 按 UTF-8 注入进程环境，避免 Windows 默认代码页把中文注释读坏。
+load_project_env_file()
 configure_logging_from_env()
 logger = get_logger(__name__)
 

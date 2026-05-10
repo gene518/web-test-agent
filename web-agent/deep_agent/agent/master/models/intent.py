@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from deep_agent.agent.artifacts import normalize_requested_pipeline
 
 
@@ -57,6 +57,19 @@ class IntentClassification(BaseModel):
     )
     missing_params: list[str] = Field(default_factory=list, description="模型推断出的缺失参数，仅用于调试。")
     reasoning: str = Field(default="", description="本次分类的理由说明。")
+
+    @field_validator("schedule_headed", "schedule_enabled", mode="before")
+    @classmethod
+    def normalize_optional_bool_fields(cls, value: Any) -> Any:
+        """把可选布尔字段里的空值占位统一归一化为 None。"""
+
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized_value = _normalized_optional_text(value)
+            if normalized_value is None:
+                return None
+        return value
 
 
 def build_extracted_params(result: IntentClassification) -> dict[str, Any]:

@@ -43,7 +43,7 @@ class CompleteParamsNode:
         resume_messages: list[HumanMessage] = []
 
         while missing_params:
-            # TODO(重点流程): 这里正式进入 interrupt 补参回合；Master 会逐个追问缺失字段，
+            # 主链路：这里正式进入 interrupt 补参回合；Master 会逐个追问缺失字段，
             # 直到当前 Specialist 进入执行所需的关键参数补齐为止。
             missing_param = missing_params[0]
             payload = self._master_agent.build_missing_param_interrupt_payload(
@@ -65,7 +65,7 @@ class CompleteParamsNode:
             extracted_params = self._master_agent.merge_extracted_params(extracted_params, new_params)
             missing_params = compute_missing_params_for_intent(agent_type, extracted_params)
 
-        # TODO(重点流程): 这里说明当前阶段参数已经补齐，接下来会从 Master 回到对应的
+        # 主链路：这里说明当前阶段参数已经补齐，接下来会从 Master 回到对应的
         # Specialist，继续写用例、写脚本、调试修复或执行定时任务修改。
         result: WorkflowState = {
             "agent_type": agent_type,

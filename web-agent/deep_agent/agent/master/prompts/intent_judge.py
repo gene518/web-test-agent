@@ -52,6 +52,7 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户明确提供了一个或多个待调试脚本文件或目录路径，提取到 `test_scripts`。
 - 如果用户明确提供了定时任务 ID、任务名、调度任务名，提取到 `schedule_task_id`。
 - 如果用户明确提供了新的 Cron 表达式，提取到 `schedule_cron`。
+- `schedule_headed` 和 `schedule_enabled` 只允许在 `scheduler` 请求里填写；其他请求一律返回 `null`。
 - 如果用户明确要求“改成有头/无头”，提取到 `schedule_headed`。
 - 如果用户明确要求“启用/禁用”某个定时任务，提取到 `schedule_enabled`。
 - 如果用户明确提供了新的脚本文件或目录列表，提取到 `schedule_locations`。
@@ -67,5 +68,6 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 对于 `scheduler`，必须提取 `schedule_task_id`，并且至少提取 `project_name` 或 `project_dir` 之一；它只允许修改已经存在的定时任务，不允许臆造新任务。
 - 如果用户只描述“把任务改成每天 9 点”这类自然语言时间，但没有给出明确的 Cron 表达式，可以直接把它换算成五段 Cron，例如 `0 9 * * *`。
 - 如果用户同时说“无头执行/有头执行”和“启用/禁用”，要分别提取到 `schedule_headed` 和 `schedule_enabled`，不要混在 `reasoning` 里。
+- 如果用户没有明确提到 `schedule_headed` 或 `schedule_enabled`，必须返回真正的 `null`，绝不能返回空字符串 `""`。
 - 例如：用户说“编写 https://www.baidu.com/ 这个地址的测试用例”，你只能提取 `url`，不能补全“搜索功能”“首页布局”等功能点；如果工程名字没提供，就把 `project_name` 记为缺失。
 """

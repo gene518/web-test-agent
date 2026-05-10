@@ -36,6 +36,7 @@ class FakeMCPManager:
         self.server_names: list[str] = []
         self.workspace_dirs: list[Path | None] = []
         self.allowed_tool_ids: list[tuple[str, ...] | None] = []
+        self.closed_sessions: list[tuple[str, Path | None]] = []
 
     async def get_tools(self, server_name, workspace_dir=None, allowed_tool_ids=None):  # noqa: ANN001
         self.server_names.append(server_name)
@@ -52,6 +53,12 @@ class FakeMCPManager:
             if tool is not None:
                 filtered_tools.append(tool)
         return filtered_tools
+
+    async def close_session(self, server_name, workspace_dir=None):  # noqa: ANN001
+        """记录 Specialist runtime 收尾时触发的 MCP 关闭调用，便于断言兜底逻辑。"""
+
+        self.closed_sessions.append((server_name, workspace_dir))
+        return True
 
 
 class TemplateBackedPlanAgent(PlanAgent):
@@ -908,7 +915,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             raw_result={"messages": [AIMessage(content="runtime-finished", id="msg-runtime")]},
         )
 
-        self.assertEqual(result["messages"], [])
+        # 单阶段（`requested_pipeline=["plan"]`）回流后不再走 `finalize_turn_node`，
+        # Specialist 自己把 stage_summary 作为用户可见消息发出，因此 messages 非空。
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("Plan 阶段", result["messages"][0].content)
         self.assertEqual(
             [message.content for message in result["display_messages"][:-1]],
             ["用户原话", "runtime-finished"],
@@ -1007,7 +1017,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"], [])
+        # 单阶段（`requested_pipeline=["generator"]`）回流后不再走 `finalize_turn_node`；
+        # Specialist 把 stage_summary 作为用户可见消息发出，避免 UI 出现两条重复总结。
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("Generator 阶段", result["messages"][0].content)
         self.assertEqual(result["display_messages"][0].id, "human-generator")
         self.assertIn("Generator 阶段开始", result["display_messages"][1].content)
         self.assertIn("正在调用工具 `generator_write_test`", result["display_messages"][2].content)
@@ -1585,7 +1598,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(result["messages"], [])
+        # 单阶段（`requested_pipeline=["healer"]`）回流后不再走 `finalize_turn_node`；
+        # Healer 自己把 stage_summary 作为用户可见消息发出，避免 UI 出现两条重复总结。
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertIn("Healer 阶段", result["messages"][0].content)
         self.assertEqual(result["display_messages"][0].id, "human-healer")
         self.assertIn("Healer 阶段开始", result["display_messages"][1].content)
         self.assertIn("正在调用工具 `test_run`", result["display_messages"][2].content)

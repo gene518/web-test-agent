@@ -1,4 +1,10 @@
-"""Workspace permission and file-write tracking helpers for specialists."""
+"""Specialist 工作目录权限与写文件追踪辅助。
+
+本模块统一处理三件事：把工作目录解析成 Deep Agent 可以消费的 `FilesystemPermission`；
+按查询过滤配置生成禁止查询的路径清单；在事件流中跟踪 `write_file` / `edit_file` 的
+开始与结束，为阶段产物抽取提供稳定的"成功写入路径集合"。调用方是 `BaseSpecialistAgent`
+通过 mixin 继承。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +17,14 @@ from deep_agent.config.specialist_file_filter import SpecialistFileFilter
 
 
 class SpecialistWorkspaceMixin:
-    """Workspace boundary helpers kept out of the specialist main flow."""
+    """把 Specialist 的 workspace 边界与写文件追踪抽到 mixin 里。
+
+    调用方是 `BaseSpecialistAgent`。通过 mixin 继承后，子类就能直接使用：
+    - `_build_workspace_permissions`：按查询过滤配置生成 Deep Agent 文件权限。
+    - `_collect_workspace_write_start` / `_collect_workspace_write_result`：在事件流里
+      追踪内置文件工具的写入结果。
+    - `_normalize_workspace_relative_path`：把任意路径归一化到当前 workspace 相对路径。
+    """
 
     agent_type: str
 

@@ -1,4 +1,10 @@
-"""Generator runtime helper logic outside the main agent flow."""
+"""Generator 阶段运行期辅助逻辑。
+
+本模块把 Generator Agent 在 Deep Agent 执行过程里要维护的运行期状态
+（`generator_write_test` 状态机、workspace 写文件跟踪、浏览器关闭 fallback、脚本落盘
+校验）从 `GeneratorAgent` 类中抽出来。Agent 类只保留"阶段配置 + 参数校验 + prompt +
+权限"这类静态职责；事件流循环由 `GeneratorRuntimeHelper.run(...)` 承担。
+"""
 
 from __future__ import annotations
 
@@ -8,15 +14,56 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
+
 from deep_agent.agent.artifacts import (
     diff_workspace_manifest,
+    extract_expected_generator_test_scripts_from_plan_files,
     extract_generator_artifact_from_writes_and_snapshot,
     snapshot_workspace_manifest_async,
 )
+from deep_agent.agent.specialist_helpers import SpecialistExecutionContext
+from deep_agent.agent.specialist_helpers.browser_close import (
+    is_expected_browser_close_error,
+)
+from deep_agent.agent.state import WorkflowState
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
+from deep_agent.core.config import AppSettings
+from deep_agent.core.display_message import (
+    VisibleTranscriptCollector,
+    build_runtime_message_result,
+    emit_display_message_delta,
+)
+from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
 
 
 class GeneratorRuntimeHelper:
-    """Tracks generator writes and verifies final workspace artifacts."""
+    """Generator 阶段的运行期助手。
+
+    同时承担两类职责：
+    - `run(...)`：消费 Agent 提供的 Deep Agent 实例，按事件流完成脚本生成与产物校验。
+    - `update_generator_write_state` / `build_stage_artifact` / `is_expected_browser_close_error`
+      等纯函数：独立于事件循环，方便单元测试单独验证。
+
+    构造时可以选择两种方式：
+    - `GeneratorRuntimeHelper(normalize_files=..., log_truncate=..., tool_output_is_error=...)`:
+      纯粹用回调注入的模式，兼容旧测试。
+    - `GeneratorRuntimeHelper.from_agent(agent=..., settings=...)`:
+      由 Agent 复用其 mixin 能力，适合在 Agent `_run_deep_agent` 中直接调用 `run(...)`。
+    """
+
+    @classmethod
+    def from_agent(cls, *, agent: Any, settings: AppSettings) -> "GeneratorRuntimeHelper":
+        """基于 Agent 的 mixin 能力构造 helper，省去手动注入回调。"""
+
+        helper = cls(
+            normalize_files=agent._normalized_test_plan_files,
+            log_truncate=agent.log_truncate,
+            tool_output_is_error=agent._tool_output_is_error,
+        )
+        helper._agent = agent
+        helper._settings = settings
+        return helper
 
     def __init__(
         self,
@@ -28,6 +75,208 @@ class GeneratorRuntimeHelper:
         self._normalize_files = normalize_files
         self._log_truncate = log_truncate
         self._tool_output_is_error = tool_output_is_error
+        # 下面两个字段只在 `from_agent` 构造的 `run(...)` 路径下使用；
+        # 纯函数式用法（旧测试注入回调）不会访问，因此允许为 None。
+        self._agent: Any | None = None
+        self._settings: AppSettings | None = None
+
+    async def run(
+        self,
+        *,
+        specialist_agent: Any,
+        state: WorkflowState,
+        execution_context: SpecialistExecutionContext,
+        config: RunnableConfig | None = None,
+    ) -> WorkflowState:
+        """使用事件流执行 Generator，并确保期望脚本全部落盘。
+
+        主体事件循环放在 `_run_event_loop` 里；外层 `run(...)` 在 `finally` 中兜底
+        关闭当前 Playwright MCP 会话，避免 Chromium 子进程残留，
+        与 Plan / Healer runtime 的收尾策略保持一致。
+        """
+
+        if self._agent is None or self._settings is None:
+            raise RuntimeError(
+                "GeneratorRuntimeHelper.run 只能在 `from_agent(...)` 构造的实例上调用。"
+            )
+
+        agent = self._agent
+        workspace_dir = execution_context.workspace_dir
+        try:
+            return await self._run_event_loop(
+                specialist_agent=specialist_agent,
+                state=state,
+                execution_context=execution_context,
+                config=config,
+            )
+        finally:
+            await agent._close_playwright_mcp_session(
+                workspace_dir=workspace_dir,
+                trace_context=execution_context.trace_context,
+                reason="generator_runtime_finalize",
+            )
+
+    async def _run_event_loop(
+        self,
+        *,
+        specialist_agent: Any,
+        state: WorkflowState,
+        execution_context: SpecialistExecutionContext,
+        config: RunnableConfig | None = None,
+    ) -> WorkflowState:
+        """真正的事件流循环，关闭由外层 `run(...)` 的 finally 兜底。"""
+
+        agent = self._agent
+        settings = self._settings
+        existing_messages = state.get("messages", [])
+        collector = VisibleTranscriptCollector()
+        generator_write_succeeded = False
+        generator_write_error: str | None = None
+        pending_write_payloads: list[dict[str, str]] = []
+        successful_write_payloads: list[dict[str, str]] = []
+        pending_workspace_write_paths: list[str] = []
+        successful_workspace_write_paths: set[str] = set()
+        workspace_dir = execution_context.workspace_dir
+        extracted_params = state.get("extracted_params", {})
+        project_name = agent._normalized_project_name(extracted_params.get("project_name")) or (
+            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        )
+        input_plan_files = agent._normalized_test_plan_files(extracted_params.get("test_plan_files"))
+        expected_test_scripts: list[str] = []
+        if workspace_dir is not None:
+            _, _, expected_test_scripts = agent._resolve_generation_targets(
+                workspace_dir=workspace_dir,
+                extracted_params=extracted_params,
+            )
+        before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
+        stage_artifact: dict[str, Any] | None = None
+
+        try:
+            # Generator 使用事件流执行，是为了边生成边监听关键写文件事件，
+            # 确认"写脚本"不是口头完成，而是目标脚本真正写到了工程目录。
+            async for event in specialist_agent.astream_events(
+                {"messages": existing_messages},
+                config=with_trace_context(
+                    config,
+                    execution_context.trace_context,
+                    recursion_limit=settings.specialist_recursion_limit,
+                ),
+                version="v2",
+            ):
+                agent.log_stream_event(event, execution_context.trace_context)
+                emit_display_message_delta(collector.consume_event(event))
+                agent._collect_workspace_write_start(
+                    event=event,
+                    workspace_dir=workspace_dir,
+                    pending_write_paths=pending_workspace_write_paths,
+                )
+                # 监听 `generator_write_test`：它是当前阶段最直接的写脚本信号，
+                # 后续还会结合工作区快照校验预期脚本是否全部落盘。
+                if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
+                    payload = event.get("data", {}).get("input")
+                    if isinstance(payload, dict):
+                        file_name = agent._normalized_runtime_text(payload.get("fileName"))
+                        code = payload.get("code")
+                        if file_name and isinstance(code, str):
+                            pending_write_payloads.append({"fileName": file_name, "code": code})
+                generator_write_succeeded, generator_write_error = self.update_generator_write_state(
+                    generator_write_succeeded,
+                    generator_write_error,
+                    pending_write_payloads,
+                    successful_write_payloads,
+                    event,
+                )
+                agent._collect_workspace_write_result(
+                    event=event,
+                    pending_write_paths=pending_workspace_write_paths,
+                    successful_write_paths=successful_workspace_write_paths,
+                )
+                self.log_generator_write_state(
+                    agent=agent,
+                    event=event,
+                    generator_write_succeeded=generator_write_succeeded,
+                    generator_write_error=generator_write_error,
+                    trace_context=execution_context.trace_context,
+                )
+        except Exception as exc:  # noqa: BLE001
+            if is_langgraph_user_cancellation(exc):
+                raise
+            if self.is_expected_browser_close_error(exc):
+                agent.log_browser_close_expected(execution_context.trace_context, exc)
+                if workspace_dir is not None:
+                    try:
+                        stage_artifact = await self.build_stage_artifact(
+                            successful_write_payloads=successful_write_payloads,
+                            successful_workspace_write_paths=successful_workspace_write_paths,
+                            before_manifest=before_manifest,
+                            workspace_dir=workspace_dir,
+                            project_name=project_name,
+                            input_files=input_plan_files,
+                            expected_test_scripts=expected_test_scripts,
+                        )
+                    except Exception as artifact_exc:  # noqa: BLE001
+                        return agent._build_runtime_exception_result(
+                            collector=collector,
+                            existing_messages=existing_messages,
+                            exc=artifact_exc,
+                        )
+                # 浏览器关闭后的预期异常不应中断"写脚本成功"；
+                # 只要目标脚本已经生成并通过落盘校验，就按正常完成返回。
+                result = build_runtime_message_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    fallback_message="测试脚本已生成，浏览器已按预期关闭。",
+                )
+                result["artifact"] = stage_artifact
+                return result
+            return agent._build_runtime_exception_result(
+                collector=collector,
+                existing_messages=existing_messages,
+                exc=exc,
+            )
+
+        log_debug_event(
+            agent.log_get_logger(),
+            settings,
+            log_title("执行", "事件流"),
+            "generator_final_output",
+            agent.log_event_trace_context(execution_context.trace_context, "generator_final_output"),
+            generator_write_succeeded=generator_write_succeeded,
+            generator_write_error=generator_write_error,
+            final_output=collector.final_output,
+            visible_messages=collector.messages,
+        )
+
+        if workspace_dir is not None:
+            try:
+                # 最终校验预期脚本是否全部落盘；
+                # 只有 `expected_test_scripts` 对应文件完整写入后，本阶段才算真正完成。
+                stage_artifact = await self.build_stage_artifact(
+                    successful_write_payloads=successful_write_payloads,
+                    successful_workspace_write_paths=successful_workspace_write_paths,
+                    before_manifest=before_manifest,
+                    workspace_dir=workspace_dir,
+                    project_name=project_name,
+                    input_files=input_plan_files,
+                    expected_test_scripts=expected_test_scripts,
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
+                return agent._build_runtime_exception_result(
+                    collector=collector,
+                    existing_messages=existing_messages,
+                    exc=RuntimeError(
+                        f"Generator Agent 未成功生成有效脚本。{error_suffix} 文件落盘校验失败：{agent.log_truncate(str(exc))}"
+                    ),
+                )
+
+        result = build_runtime_message_result(
+            collector=collector,
+            existing_messages=existing_messages,
+            fallback_message="测试脚本生成阶段已完成。",
+        )
+        result["artifact"] = stage_artifact
+        return result
 
     def update_generator_write_state(
         self,
@@ -148,16 +397,7 @@ class GeneratorRuntimeHelper:
     def is_expected_browser_close_error(exc: Exception) -> bool:
         """判断异常是否为关闭浏览器后的预期错误。"""
 
-        text = str(exc).lower()
-        expected_fragments = (
-            "target page, context or browser has been closed",
-            "browsercontext.newpage",
-            "browser has been closed",
-            "remoteprotocolerror",
-            "peer closed connection without sending complete message body",
-            "incomplete chunked read",
-        )
-        return any(fragment in text for fragment in expected_fragments)
+        return is_expected_browser_close_error(exc)
 
     def _finalize_generated_plan_files(
         self,
