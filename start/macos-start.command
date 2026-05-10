@@ -2,13 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 START_DIR="$PROJECT_ROOT/start"
 BACKEND_DIR="$PROJECT_ROOT/web-agent"
 FRONTEND_DIR="$PROJECT_ROOT/web-portal"
 BACKEND_ENV_FILE="$BACKEND_DIR/.env"
 START_SCRIPT_PATH="$SCRIPT_DIR/macos-start.command"
-CACHE_DIR="$SCRIPT_DIR/.cache"
+# 平台相关的持久化状态目录：遵循 macOS 约定放在 ~/Library/Application Support，
+# 不再污染项目 start/ 目录。
+APP_STATE_DIR="${APP_STATE_DIR:-$HOME/Library/Application Support/WebAutoTestAgent}"
 BACKEND_LOG_FILE="$START_DIR/backend.log"
 
 BACKEND_HOST="127.0.0.1"
@@ -29,12 +31,12 @@ BACKEND_PID=""
 FRONTEND_PID=""
 CLEANED_UP=0
 STARTUP_STEP_INDEX=0
-STARTUP_TOTAL_STEPS=9
+STARTUP_TOTAL_STEPS=11
 STOP_STEP_INDEX=0
 STOP_TOTAL_STEPS=4
 PYTHON_BIN=""
 
-mkdir -p "$CACHE_DIR"
+mkdir -p "$APP_STATE_DIR"
 
 log() {
   printf "%s\n" "$*"
@@ -124,7 +126,69 @@ append_path_if_exists() {
   fi
 }
 
-ensure_uv() {
+check_git() {
+  # 仅检查 Git 是否存在，不做自动安装。Git 是拉取仓库和部分工具脚本的基础依赖。
+  if command -v git >/dev/null 2>&1; then
+    setup_log "Git 已就绪：$(command -v git) ($(git --version 2>/dev/null))"
+    return
+  fi
+
+  fail "未找到 Git。请先安装 Git 后再运行本脚本。推荐方式：通过 Homebrew 安装 \`brew install git\`，或访问 https://git-scm.com/download/mac 下载安装包。"
+}
+
+check_node() {
+  # 仅检查 Node.js 是否存在且版本满足要求。项目需要 Node.js 22 LTS 或更高版本。
+  if ! command -v node >/dev/null 2>&1; then
+    fail "未找到 Node.js。请先安装 Node.js 22 LTS 或更高版本后重试。推荐方式：通过 Homebrew 安装 \`brew install node@22\`，或访问 https://nodejs.org/ 下载安装包。"
+  fi
+
+  local node_version_raw
+  node_version_raw="$(node --version 2>/dev/null | sed 's/^v//')"
+  local node_major
+  node_major="${node_version_raw%%.*}"
+
+  if ! [[ "$node_major" =~ ^[0-9]+$ ]]; then
+    fail "无法解析 Node.js 版本号：$node_version_raw。请确认已正确安装 Node.js 22 LTS 或更高版本。"
+  fi
+
+  if [ "$node_major" -lt 22 ]; then
+    fail "检测到 Node.js 版本为 $node_version_raw，项目需要 Node.js 22 LTS 或更高版本。请升级后重试。"
+  fi
+
+  setup_log "Node.js 已就绪：$(command -v node) (v$node_version_raw)"
+}
+
+check_python() {
+  # 仅检查 Python 是否存在且版本满足要求。项目需要 Python 3.11 或更高版本。
+  local python_cmd=""
+  if command -v python3 >/dev/null 2>&1; then
+    python_cmd="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_cmd="python"
+  else
+    fail "未找到 Python。请先安装 Python 3.11 或更高版本后重试。推荐方式：通过 Homebrew 安装 \`brew install python@3.11\`，或访问 https://www.python.org/downloads/ 下载安装包。"
+  fi
+
+  local python_version_raw
+  python_version_raw="$("$python_cmd" --version 2>&1 | awk '{print $2}')"
+  local python_major python_minor
+  python_major="${python_version_raw%%.*}"
+  python_minor="${python_version_raw#*.}"
+  python_minor="${python_minor%%.*}"
+
+  if ! [[ "$python_major" =~ ^[0-9]+$ ]] || ! [[ "$python_minor" =~ ^[0-9]+$ ]]; then
+    fail "无法解析 Python 版本号：$python_version_raw。请确认已正确安装 Python 3.11 或更高版本。"
+  fi
+
+  if [ "$python_major" -lt 3 ] || { [ "$python_major" -eq 3 ] && [ "$python_minor" -lt 11 ]; }; then
+    fail "检测到 Python 版本为 $python_version_raw，项目需要 Python 3.11 或更高版本。请升级后重试。"
+  fi
+
+  setup_log "Python 已就绪：$(command -v $python_cmd) ($python_version_raw)"
+}
+
+check_uv() {
+  # 仅检查 uv 是否存在，不做自动安装。uv 用于管理后端 Python 依赖。
   append_path_if_exists "$HOME/.local/bin"
   append_path_if_exists "$HOME/.cargo/bin"
 
@@ -133,44 +197,18 @@ ensure_uv() {
     return
   fi
 
-  if ! command -v curl >/dev/null 2>&1; then
-    fail "未找到 uv，也未找到 curl，无法自动安装 uv。请先安装 uv 后重试。"
-  fi
-
-  setup_log "未找到 uv，开始自动安装 uv..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh || fail "uv 安装失败。"
-  append_path_if_exists "$HOME/.local/bin"
-  append_path_if_exists "$HOME/.cargo/bin"
-
-  command -v uv >/dev/null 2>&1 || fail "uv 安装后仍不可用，请重开终端或检查 PATH。"
-  setup_log "uv 安装完成：$(command -v uv)"
+  fail "未找到 uv。请先安装 uv 后重试。推荐方式：通过 Homebrew 安装 \`brew install uv\`，或执行 \`curl -LsSf https://astral.sh/uv/install.sh | sh\`，或访问 https://docs.astral.sh/uv/getting-started/installation/ 查看更多方式。"
 }
 
-ensure_pnpm() {
-  if ! command -v node >/dev/null 2>&1; then
-    fail "未找到 Node.js。请先安装 Node.js 22 LTS 或更高版本后重试。"
-  fi
-
+check_pnpm() {
+  # 仅检查 pnpm 是否存在，不做自动安装。pnpm 用于管理前端依赖，期望版本 10.5.1。
   if command -v pnpm >/dev/null 2>&1; then
     PNPM_CMD=(pnpm)
-    setup_log "pnpm 已就绪：$(command -v pnpm)"
+    setup_log "pnpm 已就绪：$(command -v pnpm) ($(pnpm --version 2>/dev/null))"
     return
   fi
 
-  if command -v corepack >/dev/null 2>&1; then
-    setup_log "未找到 pnpm，使用 corepack 准备 pnpm@10.5.1..."
-    run_logged_command corepack enable || true
-    run_logged_command corepack prepare pnpm@10.5.1 --activate || fail "corepack 准备 pnpm 失败。"
-  elif command -v npm >/dev/null 2>&1; then
-    setup_log "未找到 pnpm/corepack，使用 npm 全局安装 pnpm@10.5.1..."
-    run_logged_command npm install -g pnpm@10.5.1 || fail "pnpm 安装失败。"
-  else
-    fail "未找到 pnpm、corepack 或 npm，无法准备前端依赖。"
-  fi
-
-  command -v pnpm >/dev/null 2>&1 || fail "pnpm 准备后仍不可用，请检查 Node.js 安装。"
-  PNPM_CMD=(pnpm)
-  setup_log "pnpm 准备完成：$(command -v pnpm)"
+  fail "未找到 pnpm。请先安装 pnpm@10.5.1 后重试。推荐方式：启用 Corepack \`corepack enable && corepack prepare pnpm@10.5.1 --activate\`，或使用 npm 全局安装 \`npm install -g pnpm@10.5.1\`。"
 }
 
 sync_backend_dependencies() {
@@ -197,7 +235,7 @@ sync_frontend_dependencies() {
 }
 
 install_playwright_browsers() {
-  local marker_file="$CACHE_DIR/playwright-chromium-installed"
+  local marker_file="$APP_STATE_DIR/playwright-chromium-installed"
   if [ "${START_INSTALL_PLAYWRIGHT_BROWSERS:-true}" != "true" ]; then
     setup_log "已跳过 Playwright 浏览器安装。"
     return
@@ -597,7 +635,11 @@ start_backend() {
   setup_log "启动后端：http://$BACKEND_HOST:$BACKEND_PORT"
   (
     cd "$BACKEND_DIR"
-    langgraph_args=(dev --host "$BACKEND_HOST" --port "$BACKEND_PORT" --no-browser)
+    # `--allow-blocking`：MCP stdio 会话建立时底层 anyio 会调 `os.access` 等同步 IO，
+    # LangGraph dev 的 BlockingCallDetector 会把这类调用判为非法并中断连接。业务侧
+    # 已经把自家同步 IO 包到 asyncio.to_thread，但第三方 MCP 客户端内部仍有同步
+    # 预检，这里统一在 dev 入口放行 blocking，避免误杀。
+    langgraph_args=(dev --host "$BACKEND_HOST" --port "$BACKEND_PORT" --no-browser --allow-blocking)
     if [ "$NO_RELOAD" = "1" ]; then
       langgraph_args+=(--no-reload)
     fi
@@ -634,13 +676,25 @@ start_main() {
   load_backend_env_file
   finish_step "检查项目配置"
 
-  start_step "检查/准备 uv"
-  ensure_uv
-  finish_step "检查/准备 uv"
+  start_step "检查 Git"
+  check_git
+  finish_step "检查 Git"
 
-  start_step "检查/准备 pnpm"
-  ensure_pnpm
-  finish_step "检查/准备 pnpm"
+  start_step "检查 Node.js"
+  check_node
+  finish_step "检查 Node.js"
+
+  start_step "检查 Python"
+  check_python
+  finish_step "检查 Python"
+
+  start_step "检查 uv"
+  check_uv
+  finish_step "检查 uv"
+
+  start_step "检查 pnpm"
+  check_pnpm
+  finish_step "检查 pnpm"
 
   start_step "同步后端依赖"
   sync_backend_dependencies

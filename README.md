@@ -31,12 +31,10 @@ web-test-agent/  # 仓库根目录。
 ├── .github/  # GitHub 自动化配置。
 │   └── workflows/
 │       └── ci.yml  # 持续集成流程。
-├── start/  # 启动根目录，统一入口和平台脚本都放在这里。
+├── start/  # 启动根目录，平台脚本直接放在这里。
 │   ├── README.md
-│   ├── start.sh  # 官方统一入口，支持 `start` / `end` 参数并自动识别环境。
-│   └── script/
-│       ├── macos-start.command
-│       └── windows-start.ps1
+│   ├── macos-start.command  # macOS 启动脚本，支持 start / end / logs 参数。
+│   └── windows-start.bat    # Windows 启动入口（单文件 polyglot 实现），支持 start / end / logs 参数。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。
@@ -185,12 +183,27 @@ flowchart TD
 
 ### 5.1 依赖环境
 
-- Python：后端要求 `Python >= 3.11`。
-- Node.js：前端和 Playwright 相关能力要求 `Node.js 22 LTS` 或更高版本。
+启动脚本不会自动下载或安装系统级工具，请在首次运行前自行准备以下环境：
+
+- Git：版本 2.x 及以上。
+  - macOS：`brew install git`，或访问 https://git-scm.com/download/mac
+  - Windows：访问 https://git-scm.com/download/win，或 `winget install -e --id Git.Git`
+- Node.js：要求 22 LTS 或更高版本。前端和 Playwright 相关能力都依赖它。
+  - macOS：`brew install node@22`，或访问 https://nodejs.org/
+  - Windows：访问 https://nodejs.org/，或 `winget install -e --id OpenJS.NodeJS.LTS`
+- Python：要求 3.11 或更高版本。后端依赖通过 `uv` 调用。
+  - macOS：`brew install python@3.11`，或访问 https://www.python.org/downloads/
+  - Windows：访问 https://www.python.org/downloads/，或 `winget install -e --id Python.Python.3.11`（安装时务必勾选 “Add Python to PATH”）
 - 包管理与工具：
   - 后端依赖通过 `uv` 管理。
-  - 前端依赖通过 `pnpm@10.5.1` 管理；系统里没有 `pnpm` 时，可通过 `corepack` 自动准备。
-  - Playwright 浏览器依赖使用 `npx playwright install chromium` 安装。
+    - macOS：`brew install uv`，或 `curl -LsSf https://astral.sh/uv/install.sh | sh`
+    - Windows：`powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"`，或 `winget install -e --id astral-sh.uv`
+    - 更多方式见 https://docs.astral.sh/uv/getting-started/installation/
+  - 前端依赖通过 `pnpm@10.5.1` 管理；推荐通过 Corepack 锁定版本：`corepack enable; corepack prepare pnpm@10.5.1 --activate`。
+  - Playwright 浏览器依赖使用 `npx playwright install chromium` 安装，脚本会在首次启动时自动执行。
+
+启动脚本会在每次运行前依次检查上述工具是否存在以及版本是否达标；如果有缺失或版本过低，脚本会输出明确的修复建议并直接退出，不会尝试自动安装。
+
 - 模型服务配置：项目运行前需要准备 `web-agent/.env`，至少确认以下配置：
   - `OPENAI_API_KEY`
   - `OPENAI_BASE_URL`
@@ -207,10 +220,9 @@ cp web-agent/.env.example web-agent/.env
 
 ### 5.2 推荐启动方式
 
-推荐优先使用 `start/` 目录下的统一入口 `start/start.sh`。首次启动时，脚本会自动处理以下内容：
+推荐直接运行 `start/` 目录下对应平台的脚本。首次启动时，脚本会自动处理以下内容：
 
-- 检查并准备 `uv`
-- 检查并准备 `pnpm@10.5.1`
+- 检查 Git、Node.js、Python、uv、pnpm 是否存在且版本满足要求（不做自动安装，仅做检查与友好提示；如有缺失请按 5.1 节自行安装后重试）
 - 同步后端依赖和前端依赖
 - 安装 Playwright Chromium 浏览器
 - 按阶段输出启动进度，并把依赖安装过程直接打印到当前终端
@@ -236,19 +248,21 @@ cp web-agent/.env.example web-agent/.env
 
 3. 按操作系统启动项目：
 
-   - macOS：运行 `bash start/start.sh start`。
-   - Windows：在 Git Bash、MSYS Bash 或类似 Bash 环境里运行 `bash start/start.sh start`；脚本会自动转发到 `powershell.exe -File start/script/windows-start.ps1 start`。
+   - macOS：在终端里运行 `bash start/macos-start.command start`，也可直接在 Finder 里双击 `start/macos-start.command`。
+   - Windows：在资源管理器里双击 `start\windows-start.bat`，或在命令行里运行 `start\windows-start.bat start`。
 
 4. 启动成功后，默认会打开前端页面；默认地址通常为 `http://127.0.0.1:3000/?chatHistoryOpen=true`。后端默认监听 `http://127.0.0.1:2024`。
 
 5. 如果需要排查启动问题：
    - 依赖安装和启动准备信息直接查看当前启动窗口输出。
    - 后端服务日志查看 `start/backend.log`。
-   - 如果需要在新的终端窗口里持续查看后端日志，运行 `bash start/start.sh logs`。
+   - 如果需要在新的终端窗口里持续查看后端日志：
+     - macOS：`bash start/macos-start.command logs`
+     - Windows：`start\windows-start.bat logs`
 
 6. 如果需要在启动窗口之外手动关闭服务，可以使用：
-   - macOS：`bash start/start.sh end`
-   - Windows：在 Git Bash、MSYS Bash 或类似 Bash 环境里运行 `bash start/start.sh end`
+   - macOS：`bash start/macos-start.command end`
+   - Windows：`start\windows-start.bat end`
 
 ### 5.3 开发联调启动方式
 
@@ -276,17 +290,27 @@ cp web-agent/.env.example web-agent/.env
    npx playwright install chromium
    ```
 
-4. 回到仓库根目录，启动统一脚本：
+4. 回到仓库根目录，启动对应平台脚本：
 
-   ```bash
-   bash start/start.sh start
-   ```
+   - macOS：
+     ```bash
+     bash start/macos-start.command start
+     ```
+   - Windows（在命令行或资源管理器中双击均可）：
+     ```bat
+     start\windows-start.bat start
+     ```
 
 5. 如需持续查看后端日志：
 
-   ```bash
-   bash start/start.sh logs
-   ```
+   - macOS：
+     ```bash
+     bash start/macos-start.command logs
+     ```
+   - Windows：
+     ```bat
+     start\windows-start.bat logs
+     ```
 
 ### 5.4 常用启动参数
 
