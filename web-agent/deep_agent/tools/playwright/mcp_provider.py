@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
@@ -22,6 +24,47 @@ PLAYWRIGHT_TEST_MCP_SERVER_NAME = "playwright-test"
 PLAYWRIGHT_TEST_PACKAGE_NAME = "@playwright/test"
 
 logger = get_logger(__name__)
+
+
+def _resolve_node_executable(name: str) -> str:
+    """
+    把 Node.js 生态的可执行文件名（如 `npm`、`npx`）解析成绝对路径。
+
+    作用：在 Windows 上这些命令实际是 `npm.cmd`、`npx.cmd` 这样的批处理脚本，
+    Python 的 `subprocess.run` 默认使用 `CreateProcess` 直接执行，不会像 shell
+    一样按 `PATHEXT` 查找 `.cmd`/`.bat`，因此裸写 `"npm"` 会抛 `FileNotFoundError`。
+    这里用 `shutil.which` 做跨平台查找（Windows 上它会遍历 `PATHEXT`），
+    找到真实路径后再交给 subprocess，避免依赖 `shell=True` 引入注入风险。
+
+    主要消费方：`PlaywrightTestMCPProvider._run_npm`、`build_connection_config`，
+    目的是让 Windows 上也能稳定拉起 npm/npx。
+
+    缓存：结果按 name 缓存在 `_NODE_EXECUTABLE_CACHE`，避免每次建立 MCP 会话都要
+    遍历 PATH。遍历 PATH 属于同步 IO，在 LangGraph dev 的 ASGI 事件循环里可能触发
+    `BlockingCallDetector`；缓存可以把真正的 IO 限制在进程生命周期里的首次调用。
+    首次解析如果发生在事件循环线程，调用方仍然应该用 `asyncio.to_thread` 包裹。
+    """
+
+    cached = _NODE_EXECUTABLE_CACHE.get(name)
+    if cached is not None:
+        return cached
+
+    resolved = shutil.which(name)
+    if resolved is None and sys.platform.startswith("win"):
+        # 兜底：Windows 上再尝试一次常见扩展名，兼容 PATH 中只登记命令名未登记扩展名的环境。
+        for ext in (".cmd", ".exe", ".bat"):
+            resolved = shutil.which(name + ext)
+            if resolved:
+                break
+
+    # 未找到时仍然把原名存进缓存并返回，由调用方在 FileNotFoundError 时给出友好提示。
+    final_value = resolved if resolved else name
+    _NODE_EXECUTABLE_CACHE[name] = final_value
+    return final_value
+
+
+# 模块级缓存：存放已解析的 Node 可执行文件绝对路径，见 `_resolve_node_executable` docstring。
+_NODE_EXECUTABLE_CACHE: dict[str, str] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +91,7 @@ class PlaywrightTestMCPProvider:
 
         return {
             "transport": "stdio",
-            "command": "npx",
+            "command": _resolve_node_executable("npx"),
             "args": list(settings.playwright_mcp_args),
             "env": settings.playwright_mcp_env,
             "cwd": workspace_dir,
@@ -158,9 +201,15 @@ class PlaywrightTestMCPProvider:
         if settings.playwright_skip_browser_download:
             env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] = "1"
 
+        if not command:
+            raise RuntimeError("执行 npm 命令失败：命令参数为空。")
+
+        # 把首元素（通常是 `npm`）解析成绝对路径，兼容 Windows 上 `npm.cmd` 的场景。
+        resolved_command = (_resolve_node_executable(command[0]), *command[1:])
+
         try:
             subprocess.run(
-                command,
+                resolved_command,
                 cwd=workspace_path,
                 env=env,
                 check=True,

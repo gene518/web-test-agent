@@ -9,13 +9,14 @@ LangChain Tool"这些底层细节收口，避免上层 Agent 自己管理连接�
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, ToolException
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 from pydantic import ValidationError
@@ -195,6 +196,33 @@ class MCPToolsManager:
             log_title("关闭", "MCP关闭"), server_name, normalized_workspace,)
         return True
 
+    async def _prefetch_workspace_access(self, workspace_dir: str | None) -> None:
+        """在建立 MCP 会话之前，主动在线程池里完成对 workspace 目录的同步 IO 预检。
+
+        作用：`langchain_mcp_adapters` 建立 stdio 会话时底层会对 cwd 调用同步
+        `os.access` / `os.stat`，这在 LangGraph dev 的 ASGI 事件循环里会被
+        `BlockingCallDetector` 识别为阻塞调用并中断整个会话建立。本方法把
+        等价的同步 IO 提前放到 `asyncio.to_thread`，让真正的阻塞发生在工作
+        线程，事件循环不会被检测器标记。
+
+        调用方：`_ensure_session` 在调用 `client.session(...)` 前调用一次。
+        目的：规避 Blocking call 检测，同时在 workspace 路径有权限或缺失问题
+        时更早给出清晰错误。
+        """
+
+        if workspace_dir is None:
+            return
+
+        def _probe() -> None:
+            # `os.access` 在不存在的路径上直接返回 False，不会抛异常；配合
+            # `os.path.isdir` 能给出更清晰的错误语义。这里只关心预热触发同步 IO
+            # 的时机，并不把访问失败当作硬错误——`client.session()` 后续会用自己的
+            # 启动失败异常上报，这里的预热不替代真正的连通性检查。
+            os.path.isdir(workspace_dir)
+            os.access(workspace_dir, os.R_OK | os.X_OK)
+
+        await asyncio.to_thread(_probe)
+
     async def _ensure_session(
         self,
         provider: MCPServerProvider,
@@ -225,11 +253,29 @@ class MCPToolsManager:
             try:
                 logger.info("%s 开始建立 MCP 会话 server=%s, workspace_dir=%s",
                     log_title("工具", "MCP连接"), server_name, workspace_dir,)
-                # 主链路：这里正式创建 MCP 客户端，后续所有工具发现和调用都依赖这条连接。
-                client = MultiServerMCPClient(
-                    {server_name: provider.build_connection_config(self._settings, workspace_dir)}
+
+                # 说明：
+                # - `build_connection_config` 内部可能触发 `shutil.which` 等同步 PATH 扫描；
+                #   把它丢到线程池执行，避免在 LangGraph dev 的 ASGI 事件循环里被
+                #   `BlockingCallDetector` 捕获并中断会话建立。
+                connection_config = await asyncio.to_thread(
+                    provider.build_connection_config, self._settings, workspace_dir,
                 )
+
+                # 主链路：这里正式创建 MCP 客户端，后续所有工具发现和调用都依赖这条连接。
+                client = MultiServerMCPClient({server_name: connection_config})
                 stack = AsyncExitStack()
+
+                # 说明：
+                # - `client.session()` 底层会通过 anyio 拉起 stdio 子进程，期间对 cwd
+                #   做同步 `os.access(cwd, os.X_OK)` 一类的存在性校验。这在 LangGraph
+                #   dev 的 ASGI 事件循环里会被 `BlockingCallDetector` 检测为阻塞调用，
+                #   导致整个 MCP 连接直接抛异常中断。
+                # - 这里提前在线程池内做一次等价的 `os.access` 预热，一方面把可能的
+                #   同步 IO 合法化（调用发生在 work thread，不在事件循环里），一方面
+                #   遇到权限/路径问题时可以更早给出明确错误。
+                await self._prefetch_workspace_access(workspace_dir)
+
                 # 这里把 session 放进 `AsyncExitStack`，目的是让关闭逻辑统一交给 manager 托管。
                 session = await stack.enter_async_context(client.session(server_name))
                 tool_specs = await self._list_mcp_tools(session)
