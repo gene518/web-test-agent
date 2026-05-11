@@ -23,7 +23,13 @@ from deep_agent.agent.specialist_helpers.input_resolution import (
 )
 from deep_agent.agent.specialist_helpers.logging import SpecialistLoggingMixin
 from deep_agent.agent.specialist_helpers.types import SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.agent.specialist_helpers.workspace import SpecialistWorkspaceMixin
+from deep_agent.agent.specialist_helpers.workspace import (
+    SpecialistWorkspaceMixin,
+    display_workspace_child_path_for_agent_prompt,
+    display_workspace_for_agent_prompt,
+    is_windows_platform,
+    virtual_workspace_root_path,
+)
 
 
 __all__ = [
@@ -34,8 +40,12 @@ __all__ = [
     "SpecialistRuntimeConfig",
     "SpecialistWorkspaceMixin",
     "bundled_demo_template_dir",
+    "display_workspace_child_path_for_agent_prompt",
+    "display_workspace_for_agent_prompt",
     "is_expected_browser_close_error",
+    "is_windows_platform",
     "normalize_runtime_text",
     "normalize_string_list",
     "resolve_workspace_scoped_files",
+    "virtual_workspace_root_path",
 ]

@@ -22,6 +22,7 @@ from deep_agent.agent.base_agent import (
 from deep_agent.agent.plan.runtime import PlanRuntimeHelper
 from deep_agent.agent.specialist_helpers import (
     bundled_demo_template_dir,
+    display_workspace_for_agent_prompt,
     normalize_runtime_text,
     normalize_string_list,
 )
@@ -105,11 +106,14 @@ class PlanAgent(BaseSpecialistAgent):
 
         # 这里既放本次请求的动态参数，也放 Plan 阶段的执行约束，
         # 目的是让模型在一个上下文里同时理解"要做什么"和"必须怎么做完"。
+        # Windows 下 `project_dir` 显示为虚拟路径 `/`，配合
+        # `FilesystemBackend(virtual_mode=True)`；mac/Linux 仍显示真实绝对路径。
+        display_project_dir = display_workspace_for_agent_prompt(workspace_dir) if workspace_dir else ""
         prompt_sections = [
             "## 本次运行上下文",
             f"- project_name: `{project_name}`",
             f"- url: `{url}`",
-            f"- project_dir: `{workspace_dir}`",
+            f"- project_dir: `{display_project_dir}`",
             f"- automation_root_dir: `{self._settings.resolved_default_automation_project_root.resolve()}`",
             f"- feature_points: {self._format_prompt_value(feature_points)}",
             f"- existing_test_plan_files: {self._format_prompt_value(existing_plan_files)}",

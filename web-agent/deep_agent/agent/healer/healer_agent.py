@@ -22,6 +22,8 @@ from deep_agent.agent.base_agent import (
 from deep_agent.agent.healer.runtime import HealerRuntimeHelper
 from deep_agent.agent.specialist_helpers import (
     bundled_demo_template_dir,
+    display_workspace_child_path_for_agent_prompt,
+    display_workspace_for_agent_prompt,
     normalize_runtime_text,
     normalize_string_list,
     resolve_workspace_scoped_files,
@@ -91,13 +93,21 @@ class HealerAgent(BaseSpecialistAgent):
         relative_test_scripts = [path.relative_to(workspace_dir).as_posix() for path in resolved_test_scripts]
         related_test_plan_files = self._normalized_test_plan_files(extracted_params.get("test_plan_files"))
 
+        # Windows 下 workspace 路径按虚拟路径 `/` 展示给 LLM，避免触发 deepagents
+        # 对 Windows 绝对路径的 `validate_path` 拒绝；mac/Linux 保持原真实路径。
+        display_project_dir = display_workspace_for_agent_prompt(workspace_dir)
+        display_resolved_scripts = [
+            display_workspace_child_path_for_agent_prompt(workspace_dir, path)
+            for path in resolved_test_scripts
+        ]
+
         prompt_sections = [
             "## 本次运行上下文",
             f"- project_name: `{project_name}`",
-            f"- project_dir: `{workspace_dir}`",
+            f"- project_dir: `{display_project_dir}`",
             f"- automation_root_dir: `{self._settings.resolved_default_automation_project_root.resolve()}`",
             f"- test_scripts: {self._format_prompt_value(relative_test_scripts)}",
-            f"- resolved_test_scripts: {self._format_prompt_value([str(path) for path in resolved_test_scripts])}",
+            f"- resolved_test_scripts: {self._format_prompt_value(display_resolved_scripts)}",
             f"- related_test_plan_files: {self._format_prompt_value(related_test_plan_files)}",
             "## 完成条件",
             f"- 本次共收到 {len(resolved_test_scripts)} 个待调试脚本；请优先按 `test_scripts` 给出的顺序逐个运行、定位和修复。",

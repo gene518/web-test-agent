@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -156,7 +157,13 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
         permissions = create_agent_mock.call_args.kwargs["permissions"]
         write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
-        self.assertEqual(write_allow_rules[0].paths, [str(project_dir.resolve()), f"{project_dir.resolve()}/**"])
+        # 期望路径按平台区分：Windows 走 `FilesystemBackend(virtual_mode=True)` + 虚拟路径命名空间 `/`，
+        # mac/Linux 仍使用 workspace 真实绝对路径；断言同时覆盖两种分支，避免只在某一个平台通过。
+        if sys.platform.startswith("win"):
+            expected_write_allow_paths = ["/", "/**"]
+        else:
+            expected_write_allow_paths = [str(project_dir.resolve()), f"{project_dir.resolve()}/**"]
+        self.assertEqual(write_allow_rules[0].paths, expected_write_allow_paths)
         # 阶段结束后必须兜底关闭当前 workspace 的 Playwright MCP 会话，
         # 避免 Chromium 子进程驻留。
         self.assertEqual(

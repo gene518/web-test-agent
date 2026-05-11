@@ -8,12 +8,78 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 from deepagents.middleware import FilesystemPermission
 
 from deep_agent.config.specialist_file_filter import SpecialistFileFilter
+
+
+def is_windows_platform() -> bool:
+    """判断当前运行环境是否为 Windows。
+
+    作用：Specialist 的 workspace 权限、Deep Agent 的 FilesystemBackend 模式以及
+    Agent Prompt 中的 `project_dir` 显示方式，都需要按 Windows / 非 Windows 做不同
+    处理。集中在一个函数里判定，方便后续统一调整（例如用环境变量强制开关虚拟路径）。
+
+    调用方：`SpecialistWorkspaceMixin`、`BaseSpecialistAgent` 及三个 Specialist 的
+    `_build_runtime_context_prompt`。
+    """
+
+    return sys.platform.startswith("win")
+
+
+def virtual_workspace_root_path() -> str:
+    """返回 Windows 虚拟路径模式下 workspace 的根路径字符串。
+
+    作用：和 `FilesystemBackend(virtual_mode=True)` 配对使用。Windows 上把 workspace
+    在 deepagents 视角里统一锚定为 `/`，由 backend 负责映射回真实 workspace；
+    非 Windows 平台不应调用本函数，而是继续使用 `workspace_dir.resolve().as_posix()`。
+    """
+
+    return "/"
+
+
+def display_workspace_for_agent_prompt(workspace_dir: Path) -> str:
+    """返回 Agent Prompt 中用于显示给 LLM 的 workspace 路径。
+
+    作用：
+    - Windows 上 `FilesystemBackend` 走 `virtual_mode=True`，LLM 看到的 workspace
+      必须是虚拟路径 `/`，避免 LLM 调用内置 `write_file` 时传真实 `C:/...` 路径
+      被 backend 再次锚定到 `root_dir/C:/...` 这样的奇怪位置。
+    - 非 Windows（mac / Linux）保留原有行为，直接显示真实绝对路径，行为不变。
+
+    调用方：Plan / Generator / Healer 的 `_build_runtime_context_prompt`。
+    """
+
+    if is_windows_platform():
+        return virtual_workspace_root_path()
+    return str(workspace_dir)
+
+
+def display_workspace_child_path_for_agent_prompt(
+    workspace_dir: Path,
+    child_path: Path,
+) -> str:
+    """返回 Agent Prompt 中用于显示给 LLM 的 workspace 子路径。
+
+    作用：把 workspace 下的真实绝对路径（例如 `C:/Users/jin/webautotest/bb/test_case/a.md`）
+    转换成 LLM 正确理解的形式：
+    - Windows：虚拟路径 `/test_case/a.md`，和 `FilesystemBackend(virtual_mode=True)` 的
+      命名空间保持一致，确保 LLM 后续调用 `read_file` / `edit_file` 时不会触发
+      `validate_path` 对 Windows 绝对路径的拒绝。
+    - 非 Windows：保持原行为，直接返回真实绝对路径字符串。
+
+    调用方：Generator / Healer 在 prompt 里展开 `resolved_test_plan_files` /
+    `resolved_test_scripts` 等真实绝对路径列表时使用。
+    """
+
+    if is_windows_platform():
+        relative = child_path.resolve().relative_to(workspace_dir.resolve()).as_posix()
+        return f"/{relative}" if relative not in {".", ""} else "/"
+    return str(child_path)
 
 
 class SpecialistWorkspaceMixin:
@@ -34,9 +100,22 @@ class SpecialistWorkspaceMixin:
         *,
         allow_workspace_writes: bool,
     ) -> list[FilesystemPermission]:
-        """根据当前 Specialist 配置构建 workspace 级别的文件权限。"""
+        """根据当前 Specialist 配置构建 workspace 级别的文件权限。
 
-        workspace_path = workspace_dir.resolve().as_posix()
+        路径语义按平台区分：
+        - Windows：配合 `FilesystemBackend(virtual_mode=True)` 使用。workspace 在
+          deepagents 视角下锚定为虚拟路径 `/`，所有权限规则都基于 `/` 命名空间。
+          这样既能绕开 `FilesystemPermission.__post_init__` 对 Windows 绝对路径的
+          拒绝，又能享受 backend 的虚拟路径沙箱防护。
+        - 非 Windows：保持原行为，使用 workspace 的真实 POSIX 绝对路径。真实绝对
+          路径天然以 `/` 开头，满足 deepagents 的校验。
+        """
+
+        if is_windows_platform():
+            workspace_path = virtual_workspace_root_path()
+        else:
+            workspace_path = workspace_dir.resolve().as_posix()
+
         permissions: list[FilesystemPermission] = []
         denied_read_paths = self._build_query_filter_read_paths(
             workspace_dir=workspace_dir,
@@ -45,24 +124,48 @@ class SpecialistWorkspaceMixin:
         for denied_path in denied_read_paths:
             permissions.append(FilesystemPermission(operations=["read"], paths=[denied_path], mode="deny"))
 
-        permissions.append(
-            FilesystemPermission(
-                operations=["read"],
-                paths=[workspace_path, f"{workspace_path}/**"],
-                mode="allow",
-            )
-        )
-        permissions.append(FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"))
-
-        if allow_workspace_writes:
+        if workspace_path == "/":
+            # Windows 虚拟路径模式：`/` 本身就是 workspace 根，`/` 和 `/**` 一起覆盖
+            # 根目录与所有子路径；此时不需要再追加一条"拒绝非 workspace 读取"的兜底
+            # 规则，因为 `FilesystemBackend(virtual_mode=True)` 已经在 backend 侧把
+            # 所有物理越界请求挡住了，多加一条 `"/**"` deny 反而会把 allow 也盖掉。
             permissions.append(
                 FilesystemPermission(
-                    operations=["write"],
+                    operations=["read"],
+                    paths=[workspace_path, f"{workspace_path}**"],
+                    mode="allow",
+                )
+            )
+        else:
+            permissions.append(
+                FilesystemPermission(
+                    operations=["read"],
                     paths=[workspace_path, f"{workspace_path}/**"],
                     mode="allow",
                 )
             )
-        permissions.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
+            permissions.append(FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"))
+
+        if allow_workspace_writes:
+            if workspace_path == "/":
+                permissions.append(
+                    FilesystemPermission(
+                        operations=["write"],
+                        paths=[workspace_path, f"{workspace_path}**"],
+                        mode="allow",
+                    )
+                )
+            else:
+                permissions.append(
+                    FilesystemPermission(
+                        operations=["write"],
+                        paths=[workspace_path, f"{workspace_path}/**"],
+                        mode="allow",
+                    )
+                )
+        if workspace_path != "/":
+            # 非 Windows 保持原行为：最后一条兜底，禁止工作目录外的写入。
+            permissions.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
         return permissions
 
     def _build_query_filter_read_paths(
@@ -92,7 +195,12 @@ class SpecialistWorkspaceMixin:
         return deduplicated_paths
 
     def _resolve_workspace_query_glob(self, workspace_dir: Path, pattern: str) -> str:
-        """把相对 workspace 的查询 glob 转成绝对权限路径。"""
+        """把相对 workspace 的查询 glob 转成绝对权限路径。
+
+        路径语义按平台区分：
+        - Windows：workspace 根是虚拟路径 `/`，直接在根下拼接相对 pattern。
+        - 非 Windows：沿用 workspace 真实 POSIX 绝对路径。
+        """
 
         normalized_pattern = pattern.strip().replace("\\", "/")
         if not normalized_pattern:
@@ -101,6 +209,13 @@ class SpecialistWorkspaceMixin:
             return normalized_pattern
 
         normalized_pattern = normalized_pattern[2:] if normalized_pattern.startswith("./") else normalized_pattern
+
+        if is_windows_platform():
+            workspace_path = virtual_workspace_root_path()
+            if normalized_pattern in {".", ""}:
+                return workspace_path
+            return f"{workspace_path}{normalized_pattern}"
+
         workspace_path = workspace_dir.resolve().as_posix()
         if normalized_pattern in {".", ""}:
             return workspace_path

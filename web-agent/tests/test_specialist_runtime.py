@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -480,7 +481,14 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.workspace_dir, expected_dir)
         self.assertEqual(manager.workspace_dirs, [expected_dir])
-        self.assertIn(str(expected_dir / relative_plan_path), context.system_prompt)
+        # Prompt 里的 resolved_test_plan_files 路径显示方式按平台区分：
+        # Windows 上转成虚拟路径 `/test_case/.../aaa_xxx.md`（配合 FilesystemBackend
+        # 的 virtual_mode=True），mac/Linux 保留真实绝对路径。
+        if sys.platform.startswith("win"):
+            expected_plan_file_in_prompt = "/" + relative_plan_path
+        else:
+            expected_plan_file_in_prompt = str(expected_dir / relative_plan_path)
+        self.assertIn(expected_plan_file_in_prompt, context.system_prompt)
 
     async def test_plan_filters_tools_to_whitelist(self) -> None:
         manager = FakeMCPManager(self._build_plan_tools())
@@ -1419,15 +1427,33 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         read_deny_paths = [rule.paths[0] for rule in permissions if rule.operations == ["read"] and rule.mode == "deny"]
         self.assertIsInstance(backend, FilesystemBackend)
         self.assertEqual(backend.cwd, resolved_project_dir)
-        self.assertEqual(read_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
-        self.assertIn(f"{resolved_project_dir}/test-results", read_deny_paths)
-        self.assertIn(f"{resolved_project_dir}/test-results/**", read_deny_paths)
-        self.assertIn(f"{resolved_project_dir}/node_modules", read_deny_paths)
-        self.assertIn(f"{resolved_project_dir}/**/*.trace", read_deny_paths)
+        # 期望的 allow/deny 路径和 backend 模式按平台区分：Windows 走虚拟路径命名空间 `/`
+        # 并启用 `FilesystemBackend(virtual_mode=True)`；mac/Linux 走 workspace 真实绝对路径。
+        if sys.platform.startswith("win"):
+            self.assertTrue(backend.virtual_mode)
+            self.assertEqual(read_allow_rules[0].paths, ["/", "/**"])
+            self.assertIn("/test-results", read_deny_paths)
+            self.assertIn("/test-results/**", read_deny_paths)
+            self.assertIn("/node_modules", read_deny_paths)
+            self.assertIn("/**/*.trace", read_deny_paths)
+        else:
+            self.assertFalse(backend.virtual_mode)
+            self.assertEqual(read_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
+            self.assertIn(f"{resolved_project_dir}/test-results", read_deny_paths)
+            self.assertIn(f"{resolved_project_dir}/test-results/**", read_deny_paths)
+            self.assertIn(f"{resolved_project_dir}/node_modules", read_deny_paths)
+            self.assertIn(f"{resolved_project_dir}/**/*.trace", read_deny_paths)
         write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
-        self.assertEqual(write_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
-        self.assertEqual(permissions[-1].operations, ["write"])
-        self.assertEqual(permissions[-1].mode, "deny")
+        if sys.platform.startswith("win"):
+            self.assertEqual(write_allow_rules[0].paths, ["/", "/**"])
+            # Windows 虚拟路径模式下不再追加兜底的 `/**` deny write 规则
+            # （backend 自己会沙箱化 root_dir 外的写入）。
+            self.assertEqual(permissions[-1].operations, ["write"])
+            self.assertEqual(permissions[-1].mode, "allow")
+        else:
+            self.assertEqual(write_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
+            self.assertEqual(permissions[-1].operations, ["write"])
+            self.assertEqual(permissions[-1].mode, "deny")
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
 
     async def test_healer_execute_uses_streaming_deep_agent_runtime(self) -> None:
@@ -1684,14 +1710,26 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
         self.assertIsInstance(backend, FilesystemBackend)
         self.assertEqual(backend.cwd, resolved_project_dir)
-        self.assertEqual(read_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
-        self.assertIn(f"{resolved_project_dir}/test-results", read_deny_paths)
-        self.assertIn(f"{resolved_project_dir}/node_modules", read_deny_paths)
-        self.assertIn(f"{resolved_project_dir}/**/*.trace", read_deny_paths)
-        self.assertNotIn(f"{resolved_project_dir}/.playwright-mcp", read_deny_paths)
-        self.assertNotIn(f"{resolved_project_dir}/.playwright-mcp/**", read_deny_paths)
-        self.assertEqual(write_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
-        self.assertEqual(permissions[-1].mode, "deny")
+        # 期望的 allow/deny 路径按平台区分：Windows 走虚拟路径命名空间 `/`；mac/Linux 走真实绝对路径。
+        if sys.platform.startswith("win"):
+            self.assertTrue(backend.virtual_mode)
+            self.assertEqual(read_allow_rules[0].paths, ["/", "/**"])
+            self.assertIn("/test-results", read_deny_paths)
+            self.assertIn("/node_modules", read_deny_paths)
+            self.assertIn("/**/*.trace", read_deny_paths)
+            self.assertNotIn("/.playwright-mcp", read_deny_paths)
+            self.assertNotIn("/.playwright-mcp/**", read_deny_paths)
+            self.assertEqual(write_allow_rules[0].paths, ["/", "/**"])
+        else:
+            self.assertFalse(backend.virtual_mode)
+            self.assertEqual(read_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
+            self.assertIn(f"{resolved_project_dir}/test-results", read_deny_paths)
+            self.assertIn(f"{resolved_project_dir}/node_modules", read_deny_paths)
+            self.assertIn(f"{resolved_project_dir}/**/*.trace", read_deny_paths)
+            self.assertNotIn(f"{resolved_project_dir}/.playwright-mcp", read_deny_paths)
+            self.assertNotIn(f"{resolved_project_dir}/.playwright-mcp/**", read_deny_paths)
+            self.assertEqual(write_allow_rules[0].paths, [str(resolved_project_dir), f"{resolved_project_dir}/**"])
+        self.assertEqual(permissions[-1].mode, "deny" if not sys.platform.startswith("win") else "allow")
 
     def test_runtime_allowlists_match_attachment_exactly(self) -> None:
         self.assertEqual(

@@ -51,6 +51,7 @@ from deep_agent.agent.specialist_helpers import (
     SpecialistLoggingMixin,
     SpecialistRuntimeConfig,
     SpecialistWorkspaceMixin,
+    is_windows_platform,
 )
 from deep_agent.tools import MCPToolsManager, get_mcp_tools_manager
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
@@ -277,12 +278,23 @@ class BaseSpecialistAgent(
         )
 
     def _build_deep_agent_backend(self, workspace_dir: Path | None) -> FilesystemBackend | None:
-        """为 Deep Agent 的内置文件工具绑定真实 workspace。"""
+        """为 Deep Agent 的内置文件工具绑定真实 workspace。
+
+        按平台区分 `virtual_mode`：
+        - Windows：启用 `virtual_mode=True`。LLM 在虚拟路径命名空间里写 `/foo.md`，
+          backend 自动映射到 `root_dir/foo.md`。这样才能绕开 deepagents 的
+          `FilesystemPermission.__post_init__` 对 Windows 绝对路径的字符串校验。
+        - mac / Linux：保持原行为 `virtual_mode=False`，真实绝对路径直接落盘，
+          不改变既有运行时表现，避免对 mac 用户引入不必要的回归风险。
+        """
 
         if workspace_dir is None:
             return None
 
-        return FilesystemBackend(root_dir=str(workspace_dir), virtual_mode=False)
+        return FilesystemBackend(
+            root_dir=str(workspace_dir),
+            virtual_mode=is_windows_platform(),
+        )
 
     def _build_deep_agent_permissions(self, workspace_dir: Path | None) -> list[FilesystemPermission] | None:
         """约束 Deep Agent 内置文件工具只读当前项目目录。"""
