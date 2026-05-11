@@ -2,7 +2,7 @@
 
 ## 1. 项目介绍
 
-本项目是一个面向 Web 自动化测试的智能体工程，整体目标是把“理解测试需求、生成测试计划、生成 Playwright 脚本、调试修复失败脚本、定时执行测试”串成可持续使用的闭环。
+本项目是一个面向 Web 自动化测试的智能体工程，整体目标是把"理解测试需求、生成测试计划、生成 Playwright 脚本、调试修复失败脚本、定时执行测试"串成可持续使用的闭环。
 
 从整体看，项目由三层组成：
 
@@ -18,7 +18,74 @@
 - `healer`：运行失败脚本、定位问题、修改脚本并复测。
 - `scheduler`：维护定时任务配置，并可由独立服务按 Cron 扫描执行。
 
-## 2. 目录结构
+## 2. 执行 Demo 示例
+
+下面以一个完整请求走完 Plan、Generator、Healer 三个阶段，演示 Agent 从接到需求到调试通过的闭环。
+
+示例输入：
+
+> 为 www.baidu.com 这个网站生成三条测试用例，必须挑选优先级最高的前三条，然后生成脚本、调试通过，项目名字 xn
+
+对应的三个阶段分别产出「测试计划 Markdown」「Playwright `.spec.ts` 脚本」「调试通过的脚本与测试报告」，整体流程与第 4 节运行架构图中的 Plan、Generator、Healer 一一对应。
+
+### 2.1 Plan 阶段：探索页面并保存测试计划
+
+Master 识别意图后进入 Plan 阶段，Agent 会探索目标站点，挑选优先级最高的前三条用例并落盘为 Markdown 测试计划。
+
+<p align="center">
+  <img src="doc/images/demo/01-plan-start.png" alt="Plan 阶段开始：接到请求、准备探索页面" width="820" /><br />
+  <em>① 接到用户请求，进入 Plan 阶段，确定工程名 `xn` 与目标 URL。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/02-plan-tools.png" alt="Plan 阶段工具调用：浏览器探索与写文件" width="820" /><br />
+  <em>② Plan 阶段按计划调用 Playwright MCP 工具探索页面，并多次 `write_file` 记录候选用例。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/03-plan-done.png" alt="Plan 阶段成功：保存测试计划并列出 3 条用例" width="820" /><br />
+  <em>③ `planner_save_plan` 将测试计划写入 `test_case/aaaplanning_baidu/aaa_baidu.md`，并规划出 3 条待生成的 `.spec.ts` 脚本。</em>
+</p>
+
+### 2.2 Generator 阶段：读取计划并生成 Playwright 脚本
+
+Plan 阶段完成后，阶段链推进到 Generator。Agent 读取上一阶段落盘的测试计划，逐条生成 Playwright 脚本并写入目标工程目录。
+
+<p align="center">
+  <img src="doc/images/demo/04-generator-start.png" alt="Generator 阶段开始：读取测试计划" width="820" /><br />
+  <em>④ Generator 阶段启动，进度 2/3，测试计划输入来自 Plan 阶段的产物。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/05-generator-done.png" alt="Generator 阶段成功：生成 3 个 spec 脚本" width="820" /><br />
+  <em>⑤ 生成 3 个 `.spec.ts` 脚本，并给出进入下一阶段的提示（直接回复"调试脚本通过"即可进入 Healer）。</em>
+</p>
+
+### 2.3 Healer 阶段：运行、修复并复测脚本
+
+最后进入 Healer，Agent 会运行刚生成的脚本，命中失败时定位问题、修改脚本并复测，直到所有脚本全部通过。
+
+<p align="center">
+  <img src="doc/images/demo/06-healer-start.png" alt="Healer 阶段开始：准备运行失败脚本" width="820" /><br />
+  <em>⑥ Healer 阶段启动，进度 3/3，输入为 Generator 阶段生成的 3 个脚本。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/07-healer-done.png" alt="Healer 阶段成功：验证运行目标全部通过" width="820" /><br />
+  <em>⑦ Healer 完成：变更文件落盘，验证运行目标覆盖全部 3 个脚本。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/08-report.png" alt="Playwright 测试报告：3 条用例全部通过" width="820" /><br />
+  <em>⑧ Playwright 测试报告：3 条用例全部通过，总耗时约 19 秒。</em>
+</p>
+
+<p align="center">
+  <img src="doc/images/demo/09-project-tree.png" alt="目标工程目录与脚本内容" width="820" /><br />
+  <em>⑨ 目标工程 `webautotest/xn` 下的 `test_case/baidu/` 目录，生成的 `.spec.ts` 脚本可直接在本地 Playwright 中运行。</em>
+</p>
+
+## 3. 目录结构
 
 说明：本节重点展开服务端目录、核心类和入口函数。`web-portal/` 前端子工程不再逐文件展开；后端本地缓存、运行日志、运行时数据、测试缓存、虚拟环境和构建产物也不在这里说明。
 
@@ -26,15 +93,16 @@
 web-test-agent/  # 仓库根目录。
 ├── README.md  # 当前工程说明文档。
 ├── DEVELOPMENT_GUIDE.md  # 开发规范和协作约束。
-├── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
-├── RD-定时任务实现与调试说明.md  # 定时任务实现与调试补充文档。
+├── doc/  # 说明文档与示例资源。
+│   ├── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
+│   └── images/demo/  # 第 2 节「执行 Demo 示例」使用的截图资源。
 ├── .github/  # GitHub 自动化配置。
 │   └── workflows/
 │       └── ci.yml  # 持续集成流程。
 ├── start/  # 启动根目录，平台脚本直接放在这里。
 │   ├── README.md
 │   ├── macos-start.command  # macOS 启动脚本，支持 start / end / logs 参数。
-│   └── windows-start.bat    # Windows 启动入口（单文件 polyglot 实现），支持 start / end / logs 参数。
+│   └── windows-start.ps1   # Windows 启动入口（PowerShell 实现），支持 start / end / logs 参数。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。
@@ -105,7 +173,7 @@ web-test-agent/  # 仓库根目录。
 └── web-portal/  # 前端聊天界面工程，目录细节见子工程 README。
 ```
 
-### 2.1 服务端核心类与职责
+### 3.1 服务端核心类与职责
 
 - 入口与状态：`AppSettings` 负责统一环境变量和运行配置，`WorkflowState` 负责统一 LangGraph 全局状态，`build_web_autotest_agent_workflow()` 负责组装整个服务端主图。
 - Master 路由层：`MasterAgent`、`IntentClassification`、`IntentJudgeNode`、`ResolveStageFilesNode`、`CompleteParamsNode` 和 `FinalizeTurnNode` 共同完成意图识别、缺参补全、阶段切换和最终回复汇总。
@@ -115,7 +183,7 @@ web-test-agent/  # 仓库根目录。
 - 阶段智能体：`PlanAgent` 负责生成测试计划，`GeneratorAgent` 负责生成脚本，`HealerAgent` 负责修复失败脚本，`SchedulerAgent` 负责把自然语言定时需求转换为配置更新。
 - 工具与调度层：`MCPToolsManager` 只做通用编排（会话复用、白名单解析、错误处理器补齐），`MCPServerProvider.post_process_tool` 钩子承担各 server 的业务规则，例如 Playwright 的 `planner_save_plan` 路径校验与缺父目录自动重建（见 `tools/playwright/planner_save_plan_wrapper.py`）；`SchedulerService`、`PlaywrightTaskRunner`、`PendingScheduledRun`、`ScheduledRunResult` 负责定时任务的扫描、排队和执行；`CronExpression` 与 `CronField` 负责 Cron 解析与命中判断。
 
-## 3. 运行架构图
+## 4. 运行架构图
 
 ```mermaid
 flowchart TD
@@ -165,159 +233,3 @@ flowchart TD
 5. 阶段执行：Plan、Generator、Healer 通过 `BaseSpecialistAgent` 准备工作目录、加载提示词、获取 MCP 工具并执行 Deep Agent。
 6. 产物回流：阶段完成后写入 `artifact_history`、`latest_artifacts` 和 `pending_stage_summaries`，多阶段链路继续回到 Master。
 7. 汇总结束：`FinalizeTurnNode` 将当前轮所有阶段摘要合成用户可见结论，随后进入下一轮等待。
-
-## 4. 开发与备注规范
-
-- 新增或修改说明性备注、代码注释和 docstring 必须使用中文；技术名、类名、方法名、配置键、文件路径可以保留原文，但解释文字不得写成英文句子。
-- 类与方法的备注必须说明三个重点：当前类或方法的作用是什么、主要由谁调用或消费、最终要达成什么目的。
-- 文件命名不能只描述"它是什么"，还必须说明"它是谁的什么"；例如使用 `master_graph.py`、`web_autotest_agent_workflow.py` 这类带归属和职责边界的命名，避免 `graph.py`、`workflow.py` 这类缺少区分度的文件名。
-- Specialist 分层约定：`*_agent.py` 只保留阶段配置、参数校验、workspace 解析、prompt 构建和写权限；事件流监听、工具状态机、产物抽取等运行期逻辑必须放在同目录的 `runtime.py`（对应 `PlanRuntimeHelper` / `GeneratorRuntimeHelper` / `HealerRuntimeHelper`）里，保持与 Master 子图相同的分层方式。
-- MCP 工具业务规则：`MCPToolsManager` 只做通用编排，工具级规则（例如 Playwright 的 `planner_save_plan` 路径校验、缺父目录自动重建）必须通过 `MCPServerProvider.post_process_tool` 钩子在对应 provider 目录下实现，不允许写进 `mcp_manager.py`。
-- Specialist 通用输入归一化、workspace 边界校验、浏览器关闭预期异常识别等能力必须复用 `agent/specialist_helpers/` 下的 `input_resolution.py` 与 `browser_close.py`，不允许在各 Specialist 中复制实现。
-- 新增类、节点、Agent、工具、配置字段时，必须同步更新根目录 README、PRD 或开发规范中受影响的部分。
-- Pydantic 字段必须写清楚 `description`，说明字段含义、使用场景和影响范围。
-- 关键路径必须保留日志，至少覆盖配置加载、图构建、节点入参、节点出参、条件路由、MCP 连接、工具事件和阶段完成状态。
-- 提示词文件默认视为业务资产；除非需求明确涉及提示词行为，不应顺手改动无关提示词。
-
-## 5. 依赖环境与启动步骤
-
-### 5.1 依赖环境
-
-启动脚本不会自动下载或安装系统级工具，请在首次运行前自行准备以下环境：
-
-- Git：版本 2.x 及以上。
-  - macOS：`brew install git`，或访问 https://git-scm.com/download/mac
-  - Windows：访问 https://git-scm.com/download/win，或 `winget install -e --id Git.Git`
-- Node.js：要求 22 LTS 或更高版本。前端和 Playwright 相关能力都依赖它。
-  - macOS：`brew install node@22`，或访问 https://nodejs.org/
-  - Windows：访问 https://nodejs.org/，或 `winget install -e --id OpenJS.NodeJS.LTS`
-- Python：要求 3.11 或更高版本。后端依赖通过 `uv` 调用。
-  - macOS：`brew install python@3.11`，或访问 https://www.python.org/downloads/
-  - Windows：访问 https://www.python.org/downloads/，或 `winget install -e --id Python.Python.3.11`（安装时务必勾选 “Add Python to PATH”）
-- 包管理与工具：
-  - 后端依赖通过 `uv` 管理。
-    - macOS：`brew install uv`，或 `curl -LsSf https://astral.sh/uv/install.sh | sh`
-    - Windows：`powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex"`，或 `winget install -e --id astral-sh.uv`
-    - 更多方式见 https://docs.astral.sh/uv/getting-started/installation/
-  - 前端依赖通过 `pnpm@10.5.1` 管理；推荐通过 Corepack 锁定版本：`corepack enable; corepack prepare pnpm@10.5.1 --activate`。
-  - Playwright 浏览器依赖使用 `npx playwright install chromium` 安装，脚本会在首次启动时自动执行。
-
-启动脚本会在每次运行前依次检查上述工具是否存在以及版本是否达标；如果有缺失或版本过低，脚本会输出明确的修复建议并直接退出，不会尝试自动安装。
-
-- 模型服务配置：项目运行前需要准备 `web-agent/.env`，至少确认以下配置：
-  - `OPENAI_API_KEY`
-  - `OPENAI_BASE_URL`
-  - `MASTER_MODEL`
-  - `SPECIALIST_MODEL`
-  - `DEFAULT_AUTOMATION_PROJECT_ROOT`
-- 配置维护约束：`web-agent/.env` 是唯一配置源；新增配置先落到 `.env`，验证完成后再脱敏同步到 `.env.example`。
-
-推荐先从模板复制环境文件：
-
-```bash
-cp web-agent/.env.example web-agent/.env
-```
-
-### 5.2 推荐启动方式
-
-推荐直接运行 `start/` 目录下对应平台的脚本。首次启动时，脚本会自动处理以下内容：
-
-- 检查 Git、Node.js、Python、uv、pnpm 是否存在且版本满足要求（不做自动安装，仅做检查与友好提示；如有缺失请按 5.1 节自行安装后重试）
-- 同步后端依赖和前端依赖
-- 安装 Playwright Chromium 浏览器
-- 按阶段输出启动进度，并把依赖安装过程直接打印到当前终端
-
-启动步骤如下：
-
-1. 复制环境文件：
-
-   ```bash
-   cp web-agent/.env.example web-agent/.env
-   ```
-
-2. 打开 `web-agent/.env`，按你的模型服务补齐配置，例如：
-
-   ```env
-   OPENAI_API_KEY=
-   OPENAI_BASE_URL=
-   MASTER_MODEL=openai:gpt-4.1
-   SPECIALIST_MODEL=openai:gpt-5.4
-   DEFAULT_AUTOMATION_PROJECT_ROOT=~/webautotest
-   PWTEST_HEADED=true
-   ```
-
-3. 按操作系统启动项目：
-
-   - macOS：在终端里运行 `bash start/macos-start.command start`，也可直接在 Finder 里双击 `start/macos-start.command`。
-   - Windows：在资源管理器里双击 `start\windows-start.bat`，或在命令行里运行 `start\windows-start.bat start`。
-
-4. 启动成功后，默认会打开前端页面；默认地址通常为 `http://127.0.0.1:3000/?chatHistoryOpen=true`。后端默认监听 `http://127.0.0.1:2024`。
-
-5. 如果需要排查启动问题：
-   - 依赖安装和启动准备信息直接查看当前启动窗口输出。
-   - 后端服务日志查看 `start/backend.log`。
-   - 如果需要在新的终端窗口里持续查看后端日志：
-     - macOS：`bash start/macos-start.command logs`
-     - Windows：`start\windows-start.bat logs`
-
-6. 如果需要在启动窗口之外手动关闭服务，可以使用：
-   - macOS：`bash start/macos-start.command end`
-   - Windows：`start\windows-start.bat end`
-
-### 5.3 开发联调启动方式
-
-如果你是开发者，或希望手动控制依赖安装过程，可以先手动准备环境，然后仍通过 `start/` 目录统一启动：
-
-1. 同步后端依赖：
-
-   ```bash
-   uv sync --project web-agent --extra dev
-   ```
-
-2. 安装前端依赖：
-
-   ```bash
-   cd web-portal
-   corepack enable
-   corepack prepare pnpm@10.5.1 --activate
-   pnpm install
-   ```
-
-3. 如需手动安装 Playwright Chromium 浏览器，可执行：
-
-   ```bash
-   cd web-portal
-   npx playwright install chromium
-   ```
-
-4. 回到仓库根目录，启动对应平台脚本：
-
-   - macOS：
-     ```bash
-     bash start/macos-start.command start
-     ```
-   - Windows（在命令行或资源管理器中双击均可）：
-     ```bat
-     start\windows-start.bat start
-     ```
-
-5. 如需持续查看后端日志：
-
-   - macOS：
-     ```bash
-     bash start/macos-start.command logs
-     ```
-   - Windows：
-     ```bat
-     start\windows-start.bat logs
-     ```
-
-### 5.4 常用启动参数
-
-- 以下参数统一写在 `web-agent/.env`，不再维护独立的启动配置文件。
-- `OPEN_BROWSER=0`：启动后不自动打开浏览器。
-- `FRONTEND_OPEN_URL=http://127.0.0.1:3000/?chatHistoryOpen=true`：自定义启动后打开的页面地址。
-- `START_FORCE_SETUP=1`：强制重新同步 Python 与前端依赖。
-- `START_INSTALL_PLAYWRIGHT_BROWSERS=true`：首次启动时自动安装 Playwright Chromium 浏览器。
-- `NO_RELOAD=0`：启动后端时允许 LangGraph 热加载。
-- `SERVER_LOG_LEVEL=ERROR`：覆盖后端服务日志级别。
