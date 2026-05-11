@@ -2,8 +2,7 @@
 
 `start/` 下直接提供两个平台脚本：
 
-- `start/windows-start.bat`：Windows 启动入口，双击运行（内部调用同目录的 `windows-start.ps1`）
-- `start/windows-start.ps1`：Windows 实际启动逻辑（PowerShell 脚本）
+- `start/windows-start.ps1`：Windows 启动脚本（右键 → "使用 PowerShell 运行"）
 - `start/macos-start.command`：macOS 启动脚本
 
 ## 前置依赖
@@ -49,14 +48,14 @@ bash start/macos-start.command logs
 
 ### Windows
 
-推荐直接在资源管理器里双击 `start\windows-start.bat`。脚本会在当前窗口输出所有启动进度与错误信息，结束后按任意键关闭窗口。
+右键 `start\windows-start.ps1`，选择"使用 PowerShell 运行"即可启动。
 
-也可以在命令行里带参数调用：
+也可以在 PowerShell 中带参数调用：
 
-```bat
-start\windows-start.bat
-start\windows-start.bat end
-start\windows-start.bat logs
+```powershell
+.\start\windows-start.ps1
+.\start\windows-start.ps1 -Mode end
+.\start\windows-start.ps1 -Mode logs
 ```
 
 不传参数等同于 `start`。
@@ -90,7 +89,7 @@ start\windows-start.bat logs
 如果你想在新的终端窗口里持续查看后端日志，可执行：
 
 - macOS：`bash start/macos-start.command logs`
-- Windows：`start\windows-start.bat logs`
+- Windows：`.\start\windows-start.ps1 -Mode logs`
 
 ## 配置入口
 
