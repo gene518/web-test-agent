@@ -10,6 +10,7 @@
 # 这样 GitHub "Download ZIP" 也能拿到正确格式。
 *.bat binary
 *.cmd binary
+*.ps1 binary
 
 # Shell 脚本保持 LF
 *.sh text eol=lf

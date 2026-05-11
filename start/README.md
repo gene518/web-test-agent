@@ -1,8 +1,9 @@
 # Web AutoTest Agent 启动脚本说明
 
-`start/` 下直接提供两个平台脚本，不再通过统一 Shell 入口分发：
+`start/` 下直接提供两个平台脚本：
 
-- `start/windows-start.bat`：Windows 启动入口，双击运行（单文件内含 cmd 头 + PowerShell 实现，用户无需关注内部细节）
+- `start/windows-start.bat`：Windows 启动入口，双击运行（内部调用同目录的 `windows-start.ps1`）
+- `start/windows-start.ps1`：Windows 实际启动逻辑（PowerShell 脚本）
 - `start/macos-start.command`：macOS 启动脚本
 
 ## 前置依赖
