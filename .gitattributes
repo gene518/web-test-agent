@@ -5,10 +5,11 @@
 # 默认：自动检测，checkout 时按平台转换
 * text=auto
 
-# Windows 批处理文件必须保持 CRLF，否则 cmd.exe 解析会闪退
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
+# Windows 批处理文件必须保持 CRLF，否则 cmd.exe 解析会闪退。
+# 使用 binary 标记让 Git 不做任何行尾转换，确保仓库里存的就是 CRLF，
+# 这样 GitHub "Download ZIP" 也能拿到正确格式。
+*.bat binary
+*.cmd binary
 
 # Shell 脚本保持 LF
 *.sh text eol=lf
