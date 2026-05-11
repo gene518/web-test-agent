@@ -1,0 +1,15 @@
+# ============================================================
+# 行尾规则
+# ============================================================
+
+# 默认：自动检测，checkout 时按平台转换
+* text=auto
+
+# Windows 批处理文件必须保持 CRLF，否则 cmd.exe 解析会闪退
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell 脚本保持 LF
+*.sh text eol=lf
+*.command text eol=lf
