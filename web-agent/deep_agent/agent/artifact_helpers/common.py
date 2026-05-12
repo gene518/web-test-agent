@@ -1,4 +1,4 @@
-"""Shared artifact types, constants, and low-level validators."""
+"""阶段产物共享类型、常量与底层校验工具。"""
 
 from __future__ import annotations
 

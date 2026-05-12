@@ -1,4 +1,4 @@
-"""Workspace manifest snapshot helpers for agent artifacts."""
+"""工作区文件清单快照辅助，用于阶段产物的变更检测。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Artifact extraction helpers for Plan, Generator, and Healer stages."""
+"""Plan、Generator、Healer 阶段的产物抽取辅助。"""
 
 from __future__ import annotations
 

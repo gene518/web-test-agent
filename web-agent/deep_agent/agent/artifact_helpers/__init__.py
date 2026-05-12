@@ -1,2 +1,2 @@
-"""Internal artifact helper modules."""
+"""阶段产物内部辅助模块。"""
 

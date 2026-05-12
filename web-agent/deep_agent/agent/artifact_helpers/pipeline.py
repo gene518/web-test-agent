@@ -1,4 +1,4 @@
-"""Pipeline state and artifact inheritance helpers."""
+"""阶段链状态与产物继承辅助。"""
 
 from __future__ import annotations
 

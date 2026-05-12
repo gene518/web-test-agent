@@ -1,4 +1,4 @@
-"""User-visible summaries for specialist stage artifacts."""
+"""面向用户的阶段产物摘要生成。"""
 
 from __future__ import annotations
 
