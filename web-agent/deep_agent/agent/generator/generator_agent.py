@@ -14,16 +14,14 @@ from typing import Any
 from deepagents.middleware import FilesystemPermission
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import (
+from deep_agent.helpers.artifacts import (
     extract_expected_generator_test_scripts_from_plan_files,
 )
-from deep_agent.agent.base_agent import (
-    BaseSpecialistAgent,
+from deep_agent.agent.base_agent import BaseSpecialistAgent
+from deep_agent.agent.generator.runtime import GeneratorRuntimeHelper
+from deep_agent.helpers.specialist_helpers import (
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
-)
-from deep_agent.agent.generator.runtime import GeneratorRuntimeHelper
-from deep_agent.agent.specialist_helpers import (
     bundled_demo_template_dir,
     display_workspace_child_path_for_agent_prompt,
     display_workspace_for_agent_prompt,

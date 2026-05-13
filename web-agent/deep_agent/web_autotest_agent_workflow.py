@@ -5,10 +5,10 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
+from deep_agent.agent.finalizer import FinalizeTurnNode
 from deep_agent.agent.generator import GeneratorAgent
 from deep_agent.agent.healer import HealerAgent
 from deep_agent.agent.master import MasterAgent, build_master_graph
-from deep_agent.agent.master.nodes import FinalizeTurnNode
 from deep_agent.agent.plan import PlanAgent
 from deep_agent.agent.scheduler import SchedulerAgent
 from deep_agent.agent.state import WorkflowState

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, field_validator
-from deep_agent.agent.artifacts import normalize_requested_pipeline
+from deep_agent.helpers.artifacts import normalize_requested_pipeline
 
 
 IntentType = Literal["plan", "generator", "healer", "scheduler", "general", "unknown"]

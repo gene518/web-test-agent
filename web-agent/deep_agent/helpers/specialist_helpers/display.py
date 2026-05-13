@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from deep_agent.agent.artifacts import build_stage_summary
+from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.display_message import (
     build_display_summary_message,

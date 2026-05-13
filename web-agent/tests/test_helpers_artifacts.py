@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from deep_agent.agent import artifacts
+from deep_agent.helpers import artifacts
 
 
-def test_artifacts_facade_keeps_public_imports() -> None:
+def test_helpers_artifacts_facade_exports_public_helpers() -> None:
     expected_names = [
         "append_artifact_history",
         "build_final_turn_summary",

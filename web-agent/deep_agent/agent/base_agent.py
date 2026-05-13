@@ -19,7 +19,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from deep_agent.core.config import AppSettings
 from deep_agent.core.cancellation import is_langgraph_user_cancellation
-from deep_agent.agent.artifacts import (
+from deep_agent.helpers.artifacts import (
     append_artifact_history,
     append_stage_summary,
     build_stage_summary,
@@ -45,7 +45,7 @@ from deep_agent.core.runtime_logging import (
     with_trace_context,
 )
 from deep_agent.agent.state import WorkflowState
-from deep_agent.agent.specialist_helpers import (
+from deep_agent.helpers.specialist_helpers import (
     SpecialistDisplayMixin,
     SpecialistExecutionContext,
     SpecialistLoggingMixin,

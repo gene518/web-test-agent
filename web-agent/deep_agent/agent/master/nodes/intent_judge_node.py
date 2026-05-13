@@ -2,7 +2,7 @@
 
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import next_pipeline_stage
+from deep_agent.helpers.artifacts import next_pipeline_stage
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.display_message import extract_missing_display_messages

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import current_stage_from_pipeline, previous_pipeline_stage, resolve_stage_inputs
+from deep_agent.helpers.artifacts import current_stage_from_pipeline, previous_pipeline_stage, resolve_stage_inputs
 from deep_agent.agent.master.models.intent import compute_missing_params_for_intent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.runtime_logging import build_trace_context, format_state_for_log, get_logger, log_title

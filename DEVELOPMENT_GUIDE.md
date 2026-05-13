@@ -37,7 +37,7 @@
 - `Master` 的业务参数抽取必须以模型结构化输出为准；禁止使用正则、关键词扫描或手工拼接去补齐 `project_name`、`url` 等业务参数来掩盖模型抽取问题。抽取不稳定时，应优先优化提示词、补参上下文和模型输入。
 - `ask_params` 之后的补参续聊，必须把上一轮 state 至少包含 `agent_type`、`extracted_params`、`missing_params`、`routing_reason` 传回 `Master` 作为上下文；禁止在代码里手工 merge 上一轮参数，再把结果冒充为本轮模型抽取结果。
 - Specialist（Plan / Generator / Healer）保持「Agent 只做静态配置 + 入口」的分层：`*_agent.py` 只承担参数校验、workspace 解析、运行时上下文 prompt、写权限等静态职责；事件流监听、工具状态机、产物抽取等运行期逻辑统一放到同目录下的 `runtime.py` 里（例如 `PlanRuntimeHelper`、`GeneratorRuntimeHelper`、`HealerRuntimeHelper`）。新增 Specialist 时按这个约定命名，避免 Agent 类继续同时承担"配置 + 运行时循环"两件事。
-- Specialist 的运行期输入规范化、workspace 边界校验、浏览器关闭异常识别等共用能力统一放在 `agent/specialist_helpers/`：使用 `normalize_runtime_text`、`normalize_string_list`、`resolve_workspace_scoped_files`、`bundled_demo_template_dir` 与 `is_expected_browser_close_error`，不要在各 Specialist 中重复实现。
+- Specialist 的运行期输入规范化、workspace 边界校验、浏览器关闭异常识别等共用能力统一放在 `helpers/specialist_helpers/`：使用 `normalize_runtime_text`、`normalize_string_list`、`resolve_workspace_scoped_files`、`bundled_demo_template_dir` 与 `is_expected_browser_close_error`，不要在各 Specialist 中重复实现。
 - MCP 工具的业务规则（例如 Playwright 的 `planner_save_plan` 路径校验和缺父目录重试）统一通过 provider 的 `post_process_tool` 钩子实现，不要写到 `MCPToolsManager` 通用编排层里。新增类似需求时，在对应 provider 目录下新建业务包装模块（例如 `tools/playwright/planner_save_plan_wrapper.py`）。
 
 ## 5. 代码可维护性与日志

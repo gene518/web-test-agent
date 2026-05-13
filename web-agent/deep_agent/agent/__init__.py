@@ -1,11 +1,6 @@
 """Agent 层统一导出。"""
 
-from deep_agent.agent.base_agent import (
-    BaseAgent,
-    BaseSpecialistAgent,
-    SpecialistExecutionContext,
-    SpecialistRuntimeConfig,
-)
+from deep_agent.agent.base_agent import BaseAgent, BaseSpecialistAgent
 from deep_agent.config.specialist_file_filter import SpecialistFileFilter
 from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
@@ -26,7 +21,5 @@ __all__ = [
     "PLAN_RUNTIME_CONFIG",
     "PlanAgent",
     "SchedulerAgent",
-    "SpecialistExecutionContext",
-    "SpecialistRuntimeConfig",
     "WorkflowState",
 ]

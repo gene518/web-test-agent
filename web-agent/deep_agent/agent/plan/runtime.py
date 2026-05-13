@@ -16,14 +16,14 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import (
+from deep_agent.helpers.artifacts import (
     diff_workspace_manifest,
     extract_plan_artifact_from_planner_payload,
     extract_plan_artifact_from_saved_markdown,
     snapshot_workspace_manifest_async,
 )
-from deep_agent.agent.specialist_helpers import SpecialistExecutionContext
-from deep_agent.agent.specialist_helpers.browser_close import (
+from deep_agent.helpers.specialist_helpers import SpecialistExecutionContext
+from deep_agent.helpers.specialist_helpers.browser_close import (
     is_expected_browser_close_error,
 )
 from deep_agent.agent.state import WorkflowState

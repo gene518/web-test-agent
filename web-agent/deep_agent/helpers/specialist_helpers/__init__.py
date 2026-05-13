@@ -1,6 +1,6 @@
 """Specialist 专用的 mixin 与工具函数集合。
 
-本包把 Plan / Generator / Healer 共用的运行期能力收拢到一处：
+本包把 Plan / Generator / Healer 共用的运行期辅助能力收拢到 helpers 层：
 - `SpecialistExecutionContext` / `SpecialistRuntimeConfig` 承载运行时配置。
 - `SpecialistDisplayMixin` / `SpecialistWorkspaceMixin` / `SpecialistLoggingMixin`
   拆分展示、workspace 边界、日志这三块非主流程的能力。
@@ -10,20 +10,20 @@
 避免每个 Specialist 重复实现功能相同、文案略有差别的私有方法。
 """
 
-from deep_agent.agent.specialist_helpers.browser_close import (
+from deep_agent.helpers.specialist_helpers.browser_close import (
     EXPECTED_BROWSER_CLOSE_FRAGMENTS,
     is_expected_browser_close_error,
 )
-from deep_agent.agent.specialist_helpers.display import SpecialistDisplayMixin
-from deep_agent.agent.specialist_helpers.input_resolution import (
+from deep_agent.helpers.specialist_helpers.display import SpecialistDisplayMixin
+from deep_agent.helpers.specialist_helpers.input_resolution import (
     bundled_demo_template_dir,
     normalize_runtime_text,
     normalize_string_list,
     resolve_workspace_scoped_files,
 )
-from deep_agent.agent.specialist_helpers.logging import SpecialistLoggingMixin
-from deep_agent.agent.specialist_helpers.types import SpecialistExecutionContext, SpecialistRuntimeConfig
-from deep_agent.agent.specialist_helpers.workspace import (
+from deep_agent.helpers.specialist_helpers.logging import SpecialistLoggingMixin
+from deep_agent.helpers.specialist_helpers.types import SpecialistExecutionContext, SpecialistRuntimeConfig
+from deep_agent.helpers.specialist_helpers.workspace import (
     SpecialistWorkspaceMixin,
     display_workspace_child_path_for_agent_prompt,
     display_workspace_for_agent_prompt,

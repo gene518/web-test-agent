@@ -12,12 +12,12 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import (
+from deep_agent.helpers.artifacts import (
     extract_healer_artifact_from_snapshot_and_runs,
     snapshot_workspace_manifest_async,
 )
-from deep_agent.agent.specialist_helpers import SpecialistExecutionContext
-from deep_agent.agent.specialist_helpers.browser_close import (
+from deep_agent.helpers.specialist_helpers import SpecialistExecutionContext
+from deep_agent.helpers.specialist_helpers.browser_close import (
     is_expected_browser_close_error,
 )
 from deep_agent.agent.state import WorkflowState

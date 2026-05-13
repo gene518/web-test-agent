@@ -11,12 +11,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.tools import BaseTool
 from langgraph_api.errors import UserInterrupt
 
-from deep_agent.agent.base_agent import BaseSpecialistAgent, SpecialistExecutionContext, SpecialistRuntimeConfig
+from deep_agent.agent.base_agent import BaseSpecialistAgent
 from deep_agent.core.config import AppSettings
 from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.plan import PLAN_RUNTIME_CONFIG, PlanAgent
+from deep_agent.helpers.specialist_helpers import SpecialistExecutionContext, SpecialistRuntimeConfig
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
 
 

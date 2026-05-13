@@ -14,7 +14,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.agent.artifacts import summarize_latest_artifacts
+from deep_agent.helpers.artifacts import summarize_latest_artifacts
 from deep_agent.agent.master.models.intent import (
     IntentClassification,
     build_extracted_params,
