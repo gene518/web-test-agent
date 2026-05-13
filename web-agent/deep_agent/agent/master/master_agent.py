@@ -291,6 +291,7 @@ class MasterAgent:
     def _build_classifier_messages(self, state: WorkflowState) -> list[BaseMessage]:
         """构造意图识别模型输入，始终显式携带 Master 系统提示词。"""
 
+        # 确保所有 system messages 都在最前面，符合新版 OpenAI 模型要求
         model_messages: list[BaseMessage] = [SystemMessage(content=INTENT_JUDGE_SYSTEM_PROMPT)]
         conversation_summary = state.get("conversation_summary")
         if conversation_summary:
@@ -298,6 +299,7 @@ class MasterAgent:
         artifact_context = summarize_latest_artifacts(state.get("latest_artifacts"))
         if artifact_context:
             model_messages.append(SystemMessage(content=artifact_context))
+        # 在所有 system messages 之后添加对话历史
         model_messages.extend(self._messages_for_model(state))
         return model_messages
 
