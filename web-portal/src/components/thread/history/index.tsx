@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { useThreads } from "@/providers/Thread";
 import { Thread, type Message } from "@langchain/langgraph-sdk";
 import { useEffect } from "react";
+import { format, isThisYear, isToday } from "date-fns";
 
 import { getContentString } from "../utils";
 import { useQueryState, parseAsBoolean } from "nuqs";
@@ -119,6 +120,30 @@ function getThreadMetadata(thread: Thread): Record<string, unknown> {
   return isRecord(thread.metadata) ? thread.metadata : {};
 }
 
+function getThreadTimestamp(thread: Thread): Date | null {
+  // 历史列表以 `updated_at` 作为时间排序依据，它代表 thread 最后一次有活动的时间；
+  // 拿不到更新时间时回退到创建时间，保证仍能展示时间信息。
+  const raw = thread.updated_at || thread.created_at;
+  if (!raw) {
+    return null;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatThreadTimestamp(timestamp: Date): string {
+  // 今天 -> HH:mm；本年 -> MM-dd HH:mm；跨年 -> yyyy-MM-dd。
+  // 这样既能让今天的记录时间一眼可见，又避免列表里塞进过长的完整时间戳。
+  if (isToday(timestamp)) {
+    return format(timestamp, "HH:mm");
+  }
+  if (isThisYear(timestamp)) {
+    return format(timestamp, "MM-dd HH:mm");
+  }
+  return format(timestamp, "yyyy-MM-dd");
+}
+
 function getFirstString(values: unknown): string {
   if (!Array.isArray(values)) {
     return "";
@@ -203,6 +228,8 @@ function ThreadList({
     <div className="flex h-full w-full flex-col items-start justify-start gap-2 overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
       {threads.map((t) => {
         const { title, subtitle } = buildThreadTitle(t);
+        const timestamp = getThreadTimestamp(t);
+        const timeLabel = timestamp ? formatThreadTimestamp(timestamp) : "";
         return (
           <div
             key={t.thread_id}
@@ -219,9 +246,21 @@ function ThreadList({
               }}
             >
               <div className="flex w-full flex-col items-start gap-0.5">
-                <p className="w-full truncate text-sm font-medium text-slate-900">
-                  {title}
-                </p>
+                <div className="flex w-full items-start justify-between gap-2">
+                  <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">
+                    {title}
+                  </p>
+                  {timeLabel ? (
+                    <span
+                      className="shrink-0 text-xs text-slate-400 tabular-nums"
+                      title={
+                        timestamp ? timestamp.toLocaleString() : undefined
+                      }
+                    >
+                      {timeLabel}
+                    </span>
+                  ) : null}
+                </div>
                 {subtitle ? (
                   <p className="w-full truncate text-xs text-slate-500">
                     {subtitle}

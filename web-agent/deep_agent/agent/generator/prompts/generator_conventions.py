@@ -52,14 +52,6 @@ GENERATOR_BUSINESS_PROMPT = """\
 
 ## 收尾规则
 
-- 脚本全部落盘后，调用 `browser_run_code` 收尾；不限制具体使用哪种写入工具。
-- `browser_run_code` 必须执行以下函数表达式关闭整个浏览器进程：
-
-```js
-async (page) => { const b = page.context().browser(); await b.close(); }
-```
-
-> `browser_run_code` 需要函数表达式格式，不能传裸代码语句。
-> `browser_close` 只会关闭页面，不会关闭浏览器进程。
-> 关闭后若出现 `Target page, context or browser has been closed` 一类报错，可视为成功收尾。
+- 脚本全部落盘后，调用 `browser_close` 收尾；不限制具体使用哪种写入工具。
+- 关闭后若出现 `Target page, context or browser has been closed` 一类报错，可视为成功收尾。
 """

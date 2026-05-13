@@ -321,7 +321,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     def _build_plan_tools(self) -> list[BaseTool]:
         return [
             DummyTool(name="browser_navigate"),
-            DummyTool(name="browser_run_code"),
+            DummyTool(name="browser_run_code_unsafe"),
             DummyTool(name="planner_setup_page"),
             DummyTool(name="planner_save_plan"),
             DummyTool(name="planner_submit_plan"),
@@ -332,7 +332,6 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         return [
             DummyTool(name="browser_click"),
             DummyTool(name="browser_navigate"),
-            DummyTool(name="browser_run_code"),
             DummyTool(name="browser_snapshot"),
             DummyTool(name="generator_setup_page"),
             DummyTool(name="generator_read_log"),
@@ -501,7 +500,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [tool.name for tool in context.tools],
-            ["browser_navigate", "browser_run_code", "planner_setup_page", "planner_save_plan"],
+            ["browser_navigate", "browser_run_code_unsafe", "planner_setup_page", "planner_save_plan"],
         )
         self.assertEqual(manager.server_names, [PLAYWRIGHT_TEST_MCP_SERVER_NAME])
 
@@ -1745,9 +1744,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 "playwright-test/browser_hover",
                 "playwright-test/browser_navigate",
                 "playwright-test/browser_navigate_back",
+                "playwright-test/browser_network_request",
                 "playwright-test/browser_network_requests",
                 "playwright-test/browser_press_key",
-                "playwright-test/browser_run_code",
+                "playwright-test/browser_run_code_unsafe",
                 "playwright-test/browser_select_option",
                 "playwright-test/browser_snapshot",
                 "playwright-test/browser_take_screenshot",
@@ -1768,7 +1768,6 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 "playwright-test/browser_hover",
                 "playwright-test/browser_navigate",
                 "playwright-test/browser_press_key",
-                "playwright-test/browser_run_code",
                 "playwright-test/browser_select_option",
                 "playwright-test/browser_snapshot",
                 "playwright-test/browser_type",
@@ -1788,6 +1787,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 "playwright-test/browser_console_messages",
                 "playwright-test/browser_evaluate",
                 "playwright-test/browser_generate_locator",
+                "playwright-test/browser_network_request",
                 "playwright-test/browser_network_requests",
                 "playwright-test/browser_snapshot",
                 "playwright-test/test_debug",

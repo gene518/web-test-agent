@@ -29,11 +29,8 @@ import { mergeVisibleMessages } from "@/components/thread/message-utils";
 import {
   clearActiveThreadRun,
   clearExplicitNewThreadRequested,
-  getActiveThreadRunId,
-  hasThreadRunJoined,
   isExplicitNewThreadRequested,
   markActiveThreadRun,
-  markThreadRunJoined,
 } from "@/lib/thread-session";
 
 export type StateType = {
@@ -143,10 +140,6 @@ function pickMostRecentRestorableThread(
     .find(hasRestorableThreadContent);
 }
 
-function isRunStillActive(status: unknown): boolean {
-  return status === "pending" || status === "running";
-}
-
 const StreamSession = ({
   children,
   apiKey,
@@ -166,7 +159,19 @@ const StreamSession = ({
   const displayMessagesFrameRef = useRef<number | null>(null);
   const initialThreadIdRef = useRef(threadId ?? null);
   const locallyCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  // 当前 mount 期间已经发起过 joinStream 的 run 集合。
+  // 这里特意放在内存 ref 而不是 sessionStorage：
+  // 浏览器刷新后 React 重新挂载，ref 会随之清空，重连 effect 才能再次 joinStream
+  // 把还在跑的 run 接回来。如果放在 sessionStorage 里，刷新后这一标记仍然存在，
+  // 会导致前端跳过重连，进而看不到模型最新进度。
+  const joinedRunKeysRef = useRef<Set<string>>(new Set());
   const reconnectingRunKeysRef = useRef<Set<string>>(new Set());
+  // 持续指向最新的 streamValue。重连 effect 通过 ref 拿到它，
+  // 避免把整个 streamValue 写进依赖数组：useStream 每次 render 都会返回新对象，
+  // 这会让 effect 不停重跑、并在 joinStream 内部触发新的 stream 更新，
+  // 形成 notifyListeners → render → effect → joinStream → setState 的循环，
+  // 触发 React 的 "Maximum update depth exceeded"。
+  const streamValueRef = useRef<StreamContextType | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [initialThreadValidated, setInitialThreadValidated] = useState(
     () => !threadId,
@@ -217,6 +222,10 @@ const StreamSession = ({
     threadId: activeThreadId,
     messagesKey: "display_messages",
     fetchStateHistory: true,
+    // 注意：不要开 reconnectOnMount。当前 SDK 版本的 StreamManager.start() 在
+    // joinStream 内部同步调用 setStreamValues → notifyListeners，会在 React
+    // render 批处理期间触发 "Maximum update depth exceeded"。
+    // 我们用自己的 reconnect effect + setTimeout 延迟来规避这个问题。
     onCreated: (run) => {
       markActiveThreadRun(run.thread_id, run.run_id);
     },
@@ -362,40 +371,79 @@ const StreamSession = ({
     setActiveThreadId(threadId ?? null);
   }, [initialThreadValidated, threadId]);
 
+  // 让 ref 始终指向最新的 streamValue，给重连 effect 使用。
+  // 这一行是无副作用的同步赋值，不会触发额外 re-render。
+  streamValueRef.current = streamValue;
+
   useEffect(() => {
-    if (!initialThreadValidated || streamValue.isLoading || !activeThreadId) {
+    if (!initialThreadValidated || !activeThreadId) {
       return;
     }
 
-    const runId = getActiveThreadRunId(activeThreadId);
-    if (!runId || hasThreadRunJoined(activeThreadId, runId)) {
+    const reconnectKey = `reconnect:${activeThreadId}`;
+    if (
+      joinedRunKeysRef.current.has(reconnectKey) ||
+      reconnectingRunKeysRef.current.has(reconnectKey)
+    ) {
       return;
     }
 
-    const reconnectKey = `${activeThreadId}:${runId}`;
-    if (reconnectingRunKeysRef.current.has(reconnectKey)) {
+    const currentStream = streamValueRef.current;
+    if (!currentStream || currentStream.isLoading) {
       return;
     }
+
     reconnectingRunKeysRef.current.add(reconnectKey);
-    markThreadRunJoined(activeThreadId, runId);
 
     let cancelled = false;
     const reconnect = async () => {
       try {
-        const run = await streamValue.client.runs.get(activeThreadId, runId);
-        if (!isRunStillActive(run.status)) {
-          clearActiveThreadRun(activeThreadId, runId);
+        const stream = streamValueRef.current;
+        if (!stream) {
+          return;
+        }
+
+        // 不再依赖 sessionStorage 里的 runId（它可能还没来得及写入）。
+        // 直接查询后端：该 thread 上是否有正在运行或等待中的 run。
+        const [runningRuns, pendingRuns] = await Promise.all([
+          stream.client.runs.list(activeThreadId, {
+            limit: 1,
+            status: "running",
+          }),
+          stream.client.runs.list(activeThreadId, {
+            limit: 1,
+            status: "pending",
+          }),
+        ]);
+
+        const activeRun = runningRuns[0] ?? pendingRuns[0];
+        if (!activeRun) {
+          // 没有活跃 run，无需重连。
           return;
         }
         if (cancelled) {
           return;
         }
-        await streamValue.joinStream(runId, undefined, {
-          streamMode: ["values", "messages-tuple", "custom"],
+
+        joinedRunKeysRef.current.add(reconnectKey);
+
+        // 用 setTimeout 把 joinStream 推到下一个宏任务执行，
+        // 避免 SDK 内部 setStreamValues 在 React render 批处理期间触发循环。
+        await new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            if (cancelled) {
+              resolve();
+              return;
+            }
+            const s = streamValueRef.current ?? stream;
+            s.joinStream(activeRun.run_id, undefined, {
+              streamMode: ["values", "messages-tuple", "custom"],
+            }).then(() => resolve(), reject);
+          }, 0);
         });
       } catch (error) {
-        console.error("恢复执行流失败，已停止本次自动重连。", error);
-        clearActiveThreadRun(activeThreadId, runId);
+        console.error("恢复执行流失败", error);
+        joinedRunKeysRef.current.delete(reconnectKey);
       } finally {
         reconnectingRunKeysRef.current.delete(reconnectKey);
       }
@@ -406,7 +454,7 @@ const StreamSession = ({
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, initialThreadValidated, streamValue]);
+  }, [activeThreadId, initialThreadValidated]);
 
   useEffect(() => {
     checkGraphStatus(apiUrl, apiKey, authScheme).then((ok) => {

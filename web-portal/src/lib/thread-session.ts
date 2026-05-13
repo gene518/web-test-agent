@@ -1,7 +1,6 @@
 const EXPLICIT_NEW_THREAD_KEY = "web-portal:explicit-new-thread";
 const ACTIVE_THREAD_RUN_PREFIX = "web-portal:active-thread-run:";
 const LATEST_ACTIVE_RUN_KEY = "web-portal:latest-active-run";
-const JOINED_THREAD_RUN_PREFIX = "web-portal:joined-thread-run:";
 
 function getSessionStorage(): Storage | undefined {
   if (typeof window === "undefined") {
@@ -25,7 +24,6 @@ export function isExplicitNewThreadRequested(): boolean {
 export function markActiveThreadRun(threadId: string, runId: string) {
   const storage = getSessionStorage();
   storage?.setItem(`${ACTIVE_THREAD_RUN_PREFIX}${threadId}`, runId);
-  storage?.removeItem(`${JOINED_THREAD_RUN_PREFIX}${threadId}:${runId}`);
   storage?.setItem(LATEST_ACTIVE_RUN_KEY, JSON.stringify({ threadId, runId }));
 }
 
@@ -46,9 +44,6 @@ export function clearActiveThreadRun(threadId: string, runId?: string) {
   const currentRunId = storage.getItem(key);
   if (!runId || currentRunId === runId) {
     storage.removeItem(key);
-  }
-  if (runId) {
-    storage.removeItem(`${JOINED_THREAD_RUN_PREFIX}${threadId}:${runId}`);
   }
 
   const latest = getLatestActiveRun();
@@ -87,19 +82,4 @@ export function getLatestActiveRun(): {
 
   getSessionStorage()?.removeItem(LATEST_ACTIVE_RUN_KEY);
   return null;
-}
-
-export function markThreadRunJoined(threadId: string, runId: string) {
-  getSessionStorage()?.setItem(
-    `${JOINED_THREAD_RUN_PREFIX}${threadId}:${runId}`,
-    "1",
-  );
-}
-
-export function hasThreadRunJoined(threadId: string, runId: string): boolean {
-  return (
-    getSessionStorage()?.getItem(
-      `${JOINED_THREAD_RUN_PREFIX}${threadId}:${runId}`,
-    ) === "1"
-  );
 }

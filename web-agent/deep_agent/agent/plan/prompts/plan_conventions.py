@@ -71,11 +71,11 @@ MOBILE_PLAN_CONVENTIONS_PROMPT = """\
 - 以规范路径下的测试计划 Markdown 已实际落盘作为计划完成信号。
 - `planner_save_plan` 参数错误或保存失败时，必须先修正参数再重试。
 - 如果规范路径保存时提示父目录不存在，不要退回 `test_case/aaa_{plan-name}.md`；继续使用同一个 `test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md` 路径重试。
-- 测试计划 Markdown 落盘后，调用 `browser_run_code` 执行以下函数表达式关闭浏览器，然后停止：
+- 测试计划 Markdown 落盘后，调用 `browser_run_code_unsafe` 执行以下函数表达式关闭浏览器，然后停止：
 
 ```js
 async (page) => { const b = page.context().browser(); await b.close(); }
 ```
 
-> `browser_run_code` 需要函数表达式格式；关闭后出现 `Target page, context or browser has been closed` 一类报错可视为成功收尾。
+> `browser_run_code_unsafe` 需要函数表达式格式；关闭后出现 `Target page, context or browser has been closed` 一类报错可视为成功收尾。
 """

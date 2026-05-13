@@ -82,7 +82,7 @@ ensure_backend_env_file() {
     return
   fi
 
-  fail "未找到项目配置文件：$BACKEND_ENV_FILE。请先参考 $BACKEND_DIR/.env.example 创建并填写它。"
+  fail "未找到项目配置文件：${BACKEND_ENV_FILE}。请先参考 ${BACKEND_DIR}/.env.example 创建并填写它。"
 }
 
 warn_if_missing_config() {
@@ -148,11 +148,11 @@ check_node() {
   node_major="${node_version_raw%%.*}"
 
   if ! [[ "$node_major" =~ ^[0-9]+$ ]]; then
-    fail "无法解析 Node.js 版本号：$node_version_raw。请确认已正确安装 Node.js 22 LTS 或更高版本。"
+    fail "无法解析 Node.js 版本号：${node_version_raw}。请确认已正确安装 Node.js 22 LTS 或更高版本。"
   fi
 
   if [ "$node_major" -lt 22 ]; then
-    fail "检测到 Node.js 版本为 $node_version_raw，项目需要 Node.js 22 LTS 或更高版本。请升级后重试。"
+    fail "检测到 Node.js 版本为 ${node_version_raw}，项目需要 Node.js 22 LTS 或更高版本。请升级后重试。"
   fi
 
   setup_log "Node.js 已就绪：$(command -v node) (v$node_version_raw)"
@@ -177,11 +177,11 @@ check_python() {
   python_minor="${python_minor%%.*}"
 
   if ! [[ "$python_major" =~ ^[0-9]+$ ]] || ! [[ "$python_minor" =~ ^[0-9]+$ ]]; then
-    fail "无法解析 Python 版本号：$python_version_raw。请确认已正确安装 Python 3.11 或更高版本。"
+    fail "无法解析 Python 版本号：${python_version_raw}。请确认已正确安装 Python 3.11 或更高版本。"
   fi
 
   if [ "$python_major" -lt 3 ] || { [ "$python_major" -eq 3 ] && [ "$python_minor" -lt 11 ]; }; then
-    fail "检测到 Python 版本为 $python_version_raw，项目需要 Python 3.11 或更高版本。请升级后重试。"
+    fail "检测到 Python 版本为 ${python_version_raw}，项目需要 Python 3.11 或更高版本。请升级后重试。"
   fi
 
   setup_log "Python 已就绪：$(command -v $python_cmd) ($python_version_raw)"
@@ -328,7 +328,7 @@ resolve_port() {
 
   if ! port_is_bindable "$host" "$preferred_port"; then
     resolved_port="$(find_open_port "$host")"
-    setup_log "$name 默认端口 $preferred_port 已被占用，改用 $resolved_port。"
+    setup_log "${name} 默认端口 ${preferred_port} 已被占用，改用 ${resolved_port}。"
   fi
 
   printf -v "$port_var" "%s" "$resolved_port"
@@ -354,10 +354,10 @@ wait_for_port() {
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       if [ -n "$log_file" ] && [ -f "$log_file" ]; then
-        setup_log "$name 未能在 ${STARTUP_WAIT_SECONDS}s 内监听 $host:$port。最近日志："
+        setup_log "${name} 未能在 ${STARTUP_WAIT_SECONDS}s 内监听 ${host}:${port}。最近日志："
         tail -n 40 "$log_file" 2>/dev/null || true
       else
-        setup_log "$name 未能在 ${STARTUP_WAIT_SECONDS}s 内监听 $host:$port，请查看当前终端输出。"
+        setup_log "${name} 未能在 ${STARTUP_WAIT_SECONDS}s 内监听 ${host}:${port}，请查看当前终端输出。"
       fi
       return 1
     fi
@@ -565,7 +565,7 @@ stop_listener() {
   local pids
 
   if ! command -v lsof >/dev/null 2>&1; then
-    log "未找到 lsof，无法按端口清理 $name；仅已尝试停止启动脚本进程。"
+    log "未找到 lsof，无法按端口清理 ${name}；仅已尝试停止启动脚本进程。"
     return
   fi
 
@@ -752,7 +752,7 @@ stop_main() {
   if [ -f "$BACKEND_ENV_FILE" ]; then
     import_project_env_file
   else
-    log "未找到项目配置文件：$BACKEND_ENV_FILE，关闭脚本将使用默认端口。"
+    log "未找到项目配置文件：${BACKEND_ENV_FILE}，关闭脚本将使用默认端口。"
   fi
   finish_stop_step "加载项目配置"
 

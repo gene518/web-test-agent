@@ -128,7 +128,7 @@ class PlanAgent(BaseSpecialistAgent):
             "- 如确需查询工程文件，先用 `ls` 确认相关目录，再只读取必要文件；不要对整个 `project_dir` 做递归搜索。",
             "- 优先通过 `planner_save_plan` 保存测试计划；若改用内置文件工具，最终 Markdown 仍必须落到规范路径。",
             "- 只有当规范路径下的测试计划 Markdown 已实际落盘后，本阶段才算完成。",
-            "- 测试计划落盘后，调用 `browser_run_code` 执行关闭浏览器的函数表达式，然后停止。",
+            "- 测试计划落盘后，调用 `browser_run_code_unsafe` 执行关闭浏览器的函数表达式，然后停止。",
             "- 若关闭浏览器后出现 `Target page, context or browser has been closed` 一类报错，可视为成功收尾。",
         ]
         return "\n".join(prompt_sections)

@@ -103,9 +103,21 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
       ],
     });
 
-    return threads.filter((thread) =>
-      isThreadForCurrentAssistant(thread, expectedMetadata),
-    );
+    // 这里再做一次前端保底排序：
+    // LangGraph server 不同版本对 `sortBy`/`sortOrder` 参数的支持并不一致，
+    // 某些旧版本会直接忽略排序参数，导致历史列表顺序不可控。
+    // 为了保证 UI 稳定按最近活跃倒序展示，统一在前端按 `updated_at` 再排一次。
+    return threads
+      .filter((thread) => isThreadForCurrentAssistant(thread, expectedMetadata))
+      .sort((a, b) => {
+        const aTime = Date.parse(a.updated_at || a.created_at || "");
+        const bTime = Date.parse(b.updated_at || b.created_at || "");
+        // Date.parse 解析失败会得到 NaN，NaN 参与比较结果不稳定，
+        // 这里把无法解析的时间视为最小值，避免破坏整体倒序。
+        const safeA = Number.isNaN(aTime) ? -Infinity : aTime;
+        const safeB = Number.isNaN(bTime) ? -Infinity : bTime;
+        return safeB - safeA;
+      });
   }, [apiUrl, assistantId, authScheme, envAssistantId]);
 
   const value = {
