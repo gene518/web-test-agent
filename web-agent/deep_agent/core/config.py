@@ -196,7 +196,7 @@ class AppSettings(BaseSettings):
     scheduler_config_path: str | None = Field(
         default=None,
         description=(
-            "定时任务配置文件路径；未配置时默认使用 `DEFAULT_AUTOMATION_PROJECT_ROOT/scheduler_tasks.json`。"
+            "定时任务配置文件路径；未配置时默认使用服务端 `web-agent/scheduler_tasks.json`。"
         ),
     )
     scheduler_poll_interval_seconds: int = Field(
@@ -309,11 +309,14 @@ class AppSettings(BaseSettings):
 
     @property
     def resolved_scheduler_config_path(self) -> Path:
-        """返回展开后的定时任务配置文件路径。"""
+        """返回以服务端根目录为基准解析后的定时任务配置文件路径。"""
 
         if self.scheduler_config_path:
-            return Path(self.scheduler_config_path).expanduser()
-        return self.resolved_default_automation_project_root / "scheduler_tasks.json"
+            config_path = Path(self.scheduler_config_path).expanduser()
+            if not config_path.is_absolute():
+                config_path = _PROJECT_ROOT / config_path
+            return config_path.resolve()
+        return _PROJECT_ROOT / "scheduler_tasks.json"
 
 
 @lru_cache(maxsize=1)

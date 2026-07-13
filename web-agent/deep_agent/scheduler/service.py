@@ -83,6 +83,9 @@ class PlaywrightTaskRunner:
         env = os.environ.copy()
         env["PWTEST_HEADED"] = "1" if run_request.headed else "0"
         env["PW_TEST_REPORT_NAME"] = report_name
+        # 定时任务必须在生成报告后自行退出。目标项目即使配置了
+        # `html.open = "always"`，也不能让报告服务器长期占住调度队列。
+        env["PLAYWRIGHT_HTML_OPEN"] = "never"
         env["PW_SCHEDULE_TASK_ID"] = run_request.task_id
         env["PW_SCHEDULE_PROJECT_NAME"] = run_request.project_name
         env["PW_SCHEDULED_FOR"] = run_request.scheduled_minute.isoformat(timespec="minutes")

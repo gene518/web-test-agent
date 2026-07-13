@@ -6,18 +6,18 @@
 
 当前实现分为两条链路：
 
-1. 配置更新链路：用户在前端对话里提出“把某个定时任务改成几点执行、启用/禁用、改成有头/无头、改执行哪些脚本”，Master 识别为 `scheduler` 意图后，调用 `SchedulerAgent` 修改配置文件。
+1. 配置创建/更新链路：用户在前端对话里提供项目路径和执行计划，Master 识别为 `scheduler` 意图后，调用 `SchedulerAgent` 创建或更新该项目的系统托管任务。
 2. 独立执行链路：`web-agent-scheduler` 命令启动一个常驻轮询服务，定期读取 JSON 配置文件，判断哪些任务到点，然后串行执行 `npx playwright test`。
 
-注意：当前 Scheduler Agent 只支持更新已存在的任务，不负责创建新任务，也不负责直接执行测试。新任务需要先写入配置文件，再由调度服务扫描执行。
+注意：Scheduler Agent 会在配置文件、项目条目或系统托管任务不存在时自动创建；任务 ID 根据项目绝对路径稳定生成，不接受用户自定义。Scheduler Agent 不直接执行测试，仍由独立调度服务扫描执行。
 
 ## 2. 总体流程
 
 ```text
 用户对话
   -> Master Intent 判断为 scheduler
-  -> 提取 project_name/project_dir、schedule_task_id、schedule_cron 等参数
-  -> SchedulerAgent.update_existing_task_config()
+  -> 提取 project_name/project_dir、schedule_cron 等参数
+  -> SchedulerAgent.upsert_auto_scheduled_task_config()
   -> 写回 scheduler_tasks.json
 
 独立调度服务
@@ -32,37 +32,33 @@
 
 ## 3. 如何启动调度服务
 
-推荐从仓库根目录运行：
+推荐进入后端目录运行：
 
 ```bash
-uv run --project web-agent web-agent-scheduler
+cd web-agent
+uv run web-agent-scheduler
 ```
 
 指定配置文件：
 
 ```bash
-uv run --project web-agent web-agent-scheduler --config ~/webautotest/scheduler_tasks.json
-```
-
-也可以先进入后端目录：
-
-```bash
-cd web-agent
-uv run web-agent-scheduler --config ~/webautotest/scheduler_tasks.json
+uv run web-agent-scheduler --config ./scheduler_tasks.json
 ```
 
 默认配置文件路径来自环境变量解析：
 
 ```text
-SCHEDULER_CONFIG_PATH 非空时：使用该路径
-SCHEDULER_CONFIG_PATH 为空时：DEFAULT_AUTOMATION_PROJECT_ROOT/scheduler_tasks.json
+SCHEDULER_CONFIG_PATH 非空时：使用该路径；相对路径以服务端 web-agent 根目录为基准
+SCHEDULER_CONFIG_PATH 为空时：使用服务端 web-agent/scheduler_tasks.json
 ```
 
-默认 `DEFAULT_AUTOMATION_PROJECT_ROOT` 是 `~/webautotest`，所以默认配置文件是：
+配置文件属于服务端运行配置，不放在被执行的自动化项目里。默认路径是：
 
 ```text
-~/webautotest/scheduler_tasks.json
+<仓库根目录>/web-agent/scheduler_tasks.json
 ```
+
+独立调度服务启动时只需确定这一个配置文件；每个 `projects[]` 条目里的 `project_dir` 再指向实际要执行的自动化项目。
 
 ## 4. 如何配置定时任务
 
@@ -81,7 +77,7 @@ SCHEDULER_CONFIG_PATH 为空时：DEFAULT_AUTOMATION_PROJECT_ROOT/scheduler_task
       "headed": false,
       "tasks": [
         {
-          "task_id": "daily_smoke",
+          "task_id": "scheduled-demo-0000000000",
           "schedule": "0 9 * * *",
           "locations": [
             "test_case/demo_health_consultation/a_send_text_message.spec.ts"
@@ -103,7 +99,7 @@ SCHEDULER_CONFIG_PATH 为空时：DEFAULT_AUTOMATION_PROJECT_ROOT/scheduler_task
 - `projects[].timezone`：项目时区，例如 `Asia/Shanghai`。为空时使用服务进程本地时区。
 - `projects[].headed`：项目默认浏览器模式，`true` 有头，`false` 无头。
 - `projects[].tasks[]`：项目下的任务列表，`task_id` 在同一项目内必须唯一。
-- `tasks[].task_id`：任务 ID。对话里的 Scheduler Agent 修改任务时靠它定位目标任务。
+- `tasks[].task_id`：系统根据项目绝对路径生成的只读任务 ID，用户无需也不能在对话中指定。
 - `tasks[].schedule`：五段 Cron 表达式。
 - `tasks[].locations`：传给 `npx playwright test` 的脚本或目录列表。为空数组时执行整个项目的 Playwright 测试。
 - `tasks[].enabled`：是否启用任务。
@@ -189,26 +185,21 @@ npx playwright test <locations...>
 - `任务执行失败`：`exit_code != 0`。
 - `任务执行异常`：调度服务调用 runner 时抛异常。
 
-## 8. 对话里如何修改定时任务
+## 8. 对话里如何创建或更新定时任务
 
-对话入口只做配置更新，示例：
+对话入口只需要项目路径和具体执行计划，示例：
 
 ```text
-把 demo 项目的 daily_smoke 改成每天上午 10:15 执行
+/Users/jin/webautotest/demo 把这个项目设置为每天上午 10:15 执行
 ```
 
 ```text
-把 daily_smoke 禁用
-```
-
-```text
-把 demo 的 daily_smoke 改成无头执行，只跑 test_case/demo/a_case.spec.ts
+项目路径=/Users/jin/webautotest/demo，每周一 09:00 执行
 ```
 
 Master 会尽量抽取这些字段：
 
 - `project_name` 或 `project_dir`
-- `schedule_task_id`
 - `schedule_cron`
 - `schedule_headed`
 - `schedule_enabled`
@@ -217,19 +208,19 @@ Master 会尽量抽取这些字段：
 必要参数：
 
 - scheduler 意图至少需要 `project_name` 或 `project_dir`
-- 必须有 `schedule_task_id`
-- 必须至少有一个要更新的字段，例如 Cron、headed、enabled 或 locations
+- 必须有具体执行计划，并换算为 `schedule_cron`
+- 不收集 `schedule_task_id`；即使用户提供也会忽略
 
-如果配置文件里不存在对应项目或任务，会返回错误，不会创建新条目。
+如果配置文件、对应项目或系统托管任务不存在，会自动创建；同一项目再次设置时更新原任务，不会产生重复任务。`locations` 未提供时执行项目内全部 Playwright 测试。
 
 ## 9. 相关文件职责
 
 - [web-agent/deep_agent/scheduler/cli.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/cli.py)：命令行入口，解析 `--config`，创建并启动 `SchedulerService`。
 - [web-agent/deep_agent/scheduler/service.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/service.py)：调度执行核心。负责轮询配置、计算到点任务、串行排队、启动 Playwright、写项目日志。
 - [web-agent/deep_agent/scheduler/models.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/models.py)：配置文件 Pydantic 模型。负责字段默认值、归一化、项目和任务唯一性校验、时区校验。
-- [web-agent/deep_agent/scheduler/store.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/store.py)：配置文件读写和路径解析。负责加载 JSON、保存 JSON、解析项目目录、解析日志路径、更新已有任务。
+- [web-agent/deep_agent/scheduler/store.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/store.py)：配置文件读写和路径解析。负责加载 JSON、保存 JSON、解析项目目录、生成系统任务 ID 并创建/更新托管任务。
 - [web-agent/deep_agent/scheduler/cron.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/scheduler/cron.py)：五段 Cron 解析和命中判断。
-- [web-agent/deep_agent/agent/scheduler/scheduler_agent.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/agent/scheduler/scheduler_agent.py)：对话中的 Scheduler Agent，只负责根据 Master 提取参数更新已有配置。
+- [web-agent/deep_agent/agent/scheduler/scheduler_agent.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/agent/scheduler/scheduler_agent.py)：对话中的 Scheduler Agent，根据 Master 提取的项目路径和执行计划创建或更新配置。
 - [web-agent/deep_agent/agent/master/models/intent.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/agent/master/models/intent.py)：声明 scheduler 意图字段和缺参规则。
 - [web-agent/deep_agent/web_autotest_agent_workflow.py](/Users/jin/Documents/code/github/web-test-agent/web-agent/deep_agent/web_autotest_agent_workflow.py)：主图把 `scheduler` 路由到 `scheduler_config_node`。
 - [web-agent/scheduler_tasks.example.json](/Users/jin/Documents/code/github/web-test-agent/web-agent/scheduler_tasks.example.json)：配置文件示例。
@@ -241,7 +232,7 @@ Master 会尽量抽取这些字段：
 
 ```bash
 mkdir -p ~/webautotest/demo/test_case
-cp web-agent/scheduler_tasks.example.json ~/webautotest/scheduler_tasks.json
+cp web-agent/scheduler_tasks.example.json web-agent/scheduler_tasks.json
 ```
 
 把配置里的 `locations` 改成当前项目里真实存在的 `.spec.ts` 文件。
@@ -265,7 +256,7 @@ cp web-agent/scheduler_tasks.example.json ~/webautotest/scheduler_tasks.json
 ### 10.3 启动服务并观察日志
 
 ```bash
-uv run --project web-agent web-agent-scheduler --config ~/webautotest/scheduler_tasks.json
+uv run --project web-agent web-agent-scheduler
 ```
 
 另开终端：
@@ -294,19 +285,19 @@ uv run --project web-agent python - <<'PY'
 from pathlib import Path
 from deep_agent.scheduler.store import load_scheduler_config
 
-config = load_scheduler_config(Path("~/webautotest/scheduler_tasks.json").expanduser())
+config = load_scheduler_config(Path("web-agent/scheduler_tasks.json").resolve())
 print(config.model_dump(exclude_none=True))
 PY
 ```
 
 ### 10.6 常见问题
 
-- 配置文件不存在：确认 `SCHEDULER_CONFIG_PATH` 或默认 `~/webautotest/scheduler_tasks.json` 是否存在。
+- 配置文件不存在：先通过对话提交项目路径和执行计划，Scheduler Agent 会自动创建默认配置文件。
 - 任务不执行：检查 `enabled` 是否为 `true`，Cron 是否命中当前项目时区。
 - 找不到项目：检查 `project_name` 是否对应 `DEFAULT_AUTOMATION_PROJECT_ROOT/project_name`，或直接使用 `project_dir`。
 - 找不到脚本：`locations` 是相对 `project_dir` 的路径，不能相对仓库根目录理解。
 - 有任务冲突：当前实现是串行队列，同一时间多个任务都会排队执行。
-- 对话修改失败：确认配置里已经有对应 `task_id`；当前不自动创建任务。
+- 对话配置失败：检查项目目录是否真实存在，并确认执行计划能够转换为合法的五段 Cron。
 
 ## 11. 当前实现限制
 
@@ -314,5 +305,5 @@ PY
 - 调度服务是单进程内存去重；重启服务后 `_last_scheduled_minutes` 会清空。
 - 所有到点任务串行执行，没有并发执行策略。
 - 队列没有最大长度限制；高频任务或长耗时任务可能堆积。
-- Scheduler Agent 只能更新已存在任务，不支持创建或删除任务。
+- Scheduler Agent 每个项目维护一个系统托管任务，不支持用户自定义任务 ID，也不提供删除任务能力。
 - 调度服务只负责执行 Playwright，不会自动调用 Healer 修复失败脚本。

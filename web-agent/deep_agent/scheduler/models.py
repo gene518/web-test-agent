@@ -53,7 +53,7 @@ class ScheduledTaskConfig(BaseModel):
     """单个定时任务条目。"""
 
     task_id: str = Field(
-        description="项目内唯一的定时任务标识，用于 agent 更新现有任务配置。",
+        description="项目内唯一的系统任务标识；由项目绝对路径生成，不接受用户自定义。",
     )
     schedule: str = Field(
         description="五段 Cron 表达式，例如 `0 9 * * *`。",

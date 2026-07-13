@@ -81,9 +81,9 @@ class IntentModelTestCase(unittest.TestCase):
             },
         )
 
-    def test_scheduler_requires_project_identifier_and_task_id(self) -> None:
+    def test_scheduler_requires_project_identifier_and_schedule(self) -> None:
         classification = IntentClassification(intent_type="scheduler")
-        self.assertEqual(compute_missing_params(classification), ["project_name", "schedule_task_id"])
+        self.assertEqual(compute_missing_params(classification), ["project_name", "schedule_cron"])
 
         classification = IntentClassification(
             intent_type="scheduler",
@@ -99,11 +99,26 @@ class IntentModelTestCase(unittest.TestCase):
             build_extracted_params(classification),
             {
                 "project_dir": "~/demo-project",
-                "schedule_task_id": "daily_smoke",
                 "schedule_cron": "0 9 * * *",
                 "schedule_headed": False,
                 "schedule_enabled": True,
                 "schedule_locations": ["test_case/demo/a_case.spec.ts"],
+            },
+        )
+
+    def test_scheduler_ignores_user_supplied_task_id(self) -> None:
+        classification = IntentClassification(
+            intent_type="scheduler",
+            project_dir="~/demo-project",
+            schedule_task_id="user-defined-id",
+            schedule_cron="0 9 * * *",
+        )
+
+        self.assertEqual(
+            build_extracted_params(classification),
+            {
+                "project_dir": "~/demo-project",
+                "schedule_cron": "0 9 * * *",
             },
         )
 
@@ -224,4 +239,15 @@ class IntentModelTestCase(unittest.TestCase):
         self.assertEqual(
             build_requested_pipeline(classification, latest_user_request="先生成测试计划，再生成脚本，然后调试失败用例"),
             ["plan", "generator", "healer"],
+        )
+
+    def test_scheduler_path_containing_test_does_not_route_to_healer(self) -> None:
+        classification = IntentClassification(intent_type="scheduler")
+
+        self.assertEqual(
+            build_requested_pipeline(
+                classification,
+                latest_user_request="/Users/jin/webautotest/yn 把这个项目设置为每天 03:20 执行一次",
+            ),
+            [],
         )

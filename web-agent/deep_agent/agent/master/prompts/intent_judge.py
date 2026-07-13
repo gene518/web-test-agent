@@ -13,7 +13,7 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - plan：用户要做测试规划、场景拆解、测试点分析，通常会给 URL、页面描述、功能点。
 - generator：用户要生成 Playwright 脚本，通常会给测试计划文件、测试用例、步骤或断言要求。
 - healer：用户要修复失败脚本，通常会给报错信息、失败脚本、日志或调试诉求。
-- scheduler：用户要修改已经配置好的定时任务信息，例如改执行时间、改有头/无头、启停任务、改执行脚本列表。
+- scheduler：用户要按项目目录和执行计划创建或更新定时任务，例如设置每天几点执行、改有头/无头或启停任务。
 - general：明显不属于 plan、generator、healer 的请求，例如闲聊、天气、概念解释。
 - unknown：信息不足，且暂时无法稳定判断。
 
@@ -23,12 +23,12 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户出现以下关键词或近义表达，优先考虑 `generator`：
   - 生成脚本、写脚本、写代码、生成代码、自动化脚本、脚本生成、代码生成、转换脚本、按照计划生成、generator、write test、generate test
 - 如果用户出现以下关键词或近义表达，优先考虑 `healer`：
-  - 调试、修复、失败、报错、运行失败、脚本报错、排查问题、定位问题、运行测试、heal、fix、test、run test
+  - 调试、修复、失败、报错、运行失败、脚本报错、排查问题、定位问题、运行测试、heal、fix、run test
 - 如果用户出现以下关键词或近义表达，优先考虑 `scheduler`：
   - 定时任务、定时执行、调度任务、cron、执行时间、每天几点、每周几、无头执行、有头执行、启用任务、禁用任务、修改任务时间
 
 分类补充要求：
-- `heal` 是用户表达习惯，不是输出枚举值；凡是命中 `heal / fix / test / run test` 一类修复与调试语义，都输出 `healer`。
+- `heal` 是用户表达习惯，不是输出枚举值；凡是命中 `heal / fix / run test` 一类修复与调试语义，都输出 `healer`。
 - 不要只看单个关键词，要结合完整语义判断。例如“运行测试并修复失败”应归类为 `healer`。
 - 如果用户同时出现多个类别关键词，优先选择用户当前最主要的动作目标。
 - 只有当请求明显不属于 plan、generator、healer、scheduler 时，才输出 `general`。
@@ -50,7 +50,7 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户明确提供了被测页面地址，提取到 `url`；`https://example.com`、`http://example.com/path` 和 `www.baidu.com` 这类裸域名都算有效，不要因为缺少协议就判定 URL 缺失。
 - 如果用户明确提供了一个或多个测试计划文件或目录路径，提取到 `test_plan_files`。
 - 如果用户明确提供了一个或多个待调试脚本文件或目录路径，提取到 `test_scripts`。
-- 如果用户明确提供了定时任务 ID、任务名、调度任务名，提取到 `schedule_task_id`。
+- `schedule_task_id` 由系统根据项目绝对路径生成，是只读字段；即使用户提供任务 ID，也必须忽略并返回 `null`。
 - 如果用户明确提供了新的 Cron 表达式，提取到 `schedule_cron`。
 - `schedule_headed` 和 `schedule_enabled` 只允许在 `scheduler` 请求里填写；其他请求一律返回 `null`。
 - 如果用户明确要求“改成有头/无头”，提取到 `schedule_headed`。
@@ -58,14 +58,14 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户明确提供了新的脚本文件或目录列表，提取到 `schedule_locations`。
 - `missing_params` 只填写当前目标 Agent 必须补齐的字段。
 - `missing_params` 只针对 `requested_pipeline` 的第一个 specialist 阶段计算，不要把后续阶段的缺参提前塞进去。
-- `missing_params` 只能使用内部字段名：`project_name`、`url`、`feature_points`、`test_plan_files`、`test_cases`、`test_scripts`、`schedule_task_id`。
+- `missing_params` 只能使用内部字段名：`project_name`、`url`、`feature_points`、`test_plan_files`、`test_cases`、`test_scripts`、`schedule_cron`。
 - 不要把 `missing_params` 写成中文描述，例如“页面描述”“功能点”“测试点”。
 - 不能根据 URL、域名、网站常识、页面常识去脑补 `feature_points`、`test_plan_files`、`test_cases`、`test_scripts`。
 - `project_dir` 是可选字段，永远不要把它写进 `missing_params`。
 - 对于 `plan`，`project_name` 和 `url` 都是必填；`feature_points` 只是可选上下文。
 - 对于 `generator`，`test_plan_files` 是必填，且应是 1 个或多个测试计划文件或目录路径；`project_dir` 优先提取，如果没有显式目录但有工程名，也要提取到 `project_name` 供后续按 Plan 规则推导目录。
 - 对于 `healer`，`test_scripts` 是必填，且应是 1 个或多个脚本文件或目录路径；`project_dir` 优先提取，如果没有显式目录但有工程名，也要提取到 `project_name` 供后续按 Generator 规则推导目录。
-- 对于 `scheduler`，必须提取 `schedule_task_id`，并且至少提取 `project_name` 或 `project_dir` 之一；它只允许修改已经存在的定时任务，不允许臆造新任务。
+- 对于 `scheduler`，必须至少提取 `project_name` 或 `project_dir` 之一，并提取或换算 `schedule_cron`；不需要用户提供任务 ID，系统会自动创建或更新该项目的托管任务。
 - 如果用户只描述“把任务改成每天 9 点”这类自然语言时间，但没有给出明确的 Cron 表达式，可以直接把它换算成五段 Cron，例如 `0 9 * * *`。
 - 如果用户同时说“无头执行/有头执行”和“启用/禁用”，要分别提取到 `schedule_headed` 和 `schedule_enabled`，不要混在 `reasoning` 里。
 - 如果用户没有明确提到 `schedule_headed` 或 `schedule_enabled`，必须返回真正的 `null`，绝不能返回空字符串 `""`。

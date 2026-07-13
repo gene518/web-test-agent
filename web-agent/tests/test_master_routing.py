@@ -90,12 +90,12 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_intent_judge_routes_scheduler_to_param_completion(self) -> None:
         node = IntentJudgeNode(
             FakeMasterService(
-                initial_params={"project_name": "demo", "schedule_task_id": "daily_smoke"},
+                initial_params={"project_name": "demo", "schedule_cron": "0 9 * * *"},
                 agent_type="scheduler",
             )
         )
 
-        result = await node.execute({"messages": [HumanMessage(content="把 daily_smoke 改成无头执行")]})
+        result = await node.execute({"messages": [HumanMessage(content="把 demo 设置为每天 9 点执行")]})
 
         self.assertEqual(result["agent_type"], "scheduler")
         self.assertEqual(result["next_action"], "complete_params")

@@ -77,6 +77,7 @@ node_modules/
 
 # --- 项目运行期产物 ----------------------------------------
 /web-agent/runtime/
+/web-agent/scheduler_tasks.json
 /web-agent/project_conversation.md
 /web-agent/README.md
 /web-agent/baidu-web/

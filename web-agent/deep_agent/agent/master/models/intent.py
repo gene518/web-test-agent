@@ -13,7 +13,7 @@ NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
 SPECIALIST_STAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "plan": ("生成计划", "测试计划", "制定计划", "测试方案", "生成用例", "用例设计", "plan"),
     "generator": ("生成脚本", "写脚本", "写代码", "自动化脚本", "脚本生成", "按照计划生成", "generator"),
-    "healer": ("调试", "修复", "失败", "报错", "排查问题", "heal", "fix", "test", "run test"),
+    "healer": ("调试", "修复", "失败", "报错", "排查问题", "heal", "fix", "run test"),
 }
 
 # 这张表定义了每种意图至少要收集到哪些参数，后面追问逻辑会直接使用它。
@@ -21,7 +21,7 @@ REQUIRED_PARAMS_BY_INTENT: dict[str, tuple[str, ...]] = {
     "plan": ("project_name", "url"),
     "generator": ("test_plan_files",),
     "healer": ("test_scripts",),
-    "scheduler": ("schedule_task_id",),
+    "scheduler": ("schedule_cron",),
 }
 
 
@@ -46,7 +46,7 @@ class IntentClassification(BaseModel):
     test_plan_files: list[str] = Field(default_factory=list, description="Generator 阶段待消费的测试计划路径列表，可为文件或目录。")
     test_cases: list[str] = Field(default_factory=list, description="Generator 阶段测试用例列表。")
     test_scripts: list[str] = Field(default_factory=list, description="Healer 阶段待调试脚本路径列表，可为文件或目录。")
-    schedule_task_id: str | None = Field(default=None, description="定时任务配置中已存在的任务 ID。")
+    schedule_task_id: str | None = Field(default=None, description="系统生成的只读定时任务 ID；不接受用户自定义。")
     schedule_cron: str | None = Field(default=None, description="需要更新成的五段 Cron 表达式。")
     schedule_headed: bool | None = Field(default=None, description="需要更新成的浏览器模式；`true` 为有头，`false` 为无头。")
     schedule_enabled: bool | None = Field(default=None, description="需要更新成的启用状态；`true` 为启用，`false` 为禁用。")
@@ -115,10 +115,6 @@ def build_extracted_params(result: IntentClassification) -> dict[str, Any]:
     if test_scripts:
         extracted["test_scripts"] = test_scripts
 
-    schedule_task_id = _normalized_optional_text(result.schedule_task_id)
-    if schedule_task_id:
-        extracted["schedule_task_id"] = schedule_task_id
-
     schedule_cron = _normalized_optional_text(result.schedule_cron)
     if schedule_cron:
         extracted["schedule_cron"] = schedule_cron
@@ -181,9 +177,9 @@ def compute_missing_params_for_intent(intent_type: str, params: Mapping[str, Any
             missing.append("project_name")
 
         if intent_type == "scheduler":
-            task_id = _normalized_optional_text(_as_optional_text(params.get("schedule_task_id")))
-            if not task_id:
-                missing.append("schedule_task_id")
+            schedule_cron = _normalized_optional_text(_as_optional_text(params.get("schedule_cron")))
+            if not schedule_cron:
+                missing.append("schedule_cron")
             return missing
 
         list_field_name = "test_plan_files" if intent_type == "generator" else "test_scripts"
@@ -213,6 +209,9 @@ def compute_missing_params_for_intent(intent_type: str, params: Mapping[str, Any
 
 def build_requested_pipeline(result: IntentClassification, *, latest_user_request: str = "") -> list[str]:
     """从结构化结果和原始用户文本构建稳定的阶段执行链。"""
+
+    if result.intent_type not in {"plan", "generator", "healer"}:
+        return []
 
     normalized_pipeline = normalize_requested_pipeline(result.requested_pipeline, default_stage=result.intent_type)
     inferred_pipeline = infer_requested_pipeline_from_text(

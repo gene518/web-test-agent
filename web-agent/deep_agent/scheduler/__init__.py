@@ -9,10 +9,12 @@ from deep_agent.scheduler.models import (
 from deep_agent.scheduler.service import PendingScheduledRun, PlaywrightTaskRunner, ScheduledRunResult, SchedulerService
 from deep_agent.scheduler.store import (
     SCHEDULER_LOG_FILE_NAME,
+    generate_scheduled_task_id,
     load_scheduler_config,
     resolve_scheduler_log_path,
     resolve_scheduler_project_dir,
     save_scheduler_config,
+    upsert_auto_scheduled_task_config,
     update_existing_task_config,
 )
 
@@ -26,9 +28,11 @@ __all__ = [
     "SchedulerRuntimeConfig",
     "SchedulerService",
     "SCHEDULER_LOG_FILE_NAME",
+    "generate_scheduled_task_id",
     "load_scheduler_config",
     "resolve_scheduler_log_path",
     "resolve_scheduler_project_dir",
     "save_scheduler_config",
+    "upsert_auto_scheduled_task_config",
     "update_existing_task_config",
 ]

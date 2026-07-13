@@ -10,7 +10,7 @@
       "headed": false,
       "tasks": [
         {
-          "task_id": "daily_smoke",
+          "task_id": "scheduled-demo-0000000000",
           "schedule": "0 9 * * *",
           "locations": [
             "test_case/demo_health_consultation/a_send_text_message.spec.ts"

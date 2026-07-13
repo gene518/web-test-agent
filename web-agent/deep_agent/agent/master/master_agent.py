@@ -269,7 +269,7 @@ class MasterAgent:
             "test_plan_files": "请提供待生成脚本的测试计划文件或目录路径，至少 1 个；优先传相对 `project_dir` 的路径。",
             "test_cases": "请提供待生成脚本的测试用例列表，至少 1 条。",
             "test_scripts": "请提供待调试脚本文件或目录路径，至少 1 个；优先传相对 `project_dir` 的路径。",
-            "schedule_task_id": "请提供已经存在的定时任务 ID，例如 `daily_smoke`。",
+            "schedule_cron": "请提供具体执行计划，例如 `每天 03:20`、`每周一 09:00`，或五段 Cron 表达式 `20 3 * * *`。",
         }
         return mapping.get(field_name, "请补充这部分关键信息。")
 

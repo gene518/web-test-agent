@@ -1,26 +1,26 @@
-"""修改现有定时任务配置的 Scheduler Agent。"""
+"""创建或更新项目系统托管定时任务的 Scheduler Agent。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.base_agent import BaseAgent
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import AppSettings
+from deep_agent.core.display_message import build_display_summary_message, extract_missing_display_messages
 from deep_agent.core.runtime_logging import build_trace_context, format_messages_for_log, format_state_for_log, get_logger, log_title
-from deep_agent.scheduler.store import update_existing_task_config
+from deep_agent.scheduler.store import upsert_auto_scheduled_task_config
 
 
 logger = get_logger(__name__)
 
 
 class SchedulerAgent(BaseAgent):
-    """只负责更新已存在的定时任务配置，不执行测试。"""
+    """只负责创建或更新项目的系统托管定时任务配置，不直接执行测试。"""
 
     agent_type = "scheduler"
     display_name = "Scheduler Agent"
@@ -48,8 +48,16 @@ class SchedulerAgent(BaseAgent):
             raw_result=raw_result,
             config=config,
         )
+        final_message = build_display_summary_message(
+            final_summary,
+            prefix="scheduler-summary",
+        )
         result: WorkflowState = {
-            "messages": [AIMessage(content=final_summary)],
+            "messages": [final_message],
+            "display_messages": [
+                *extract_missing_display_messages(dict(state)),
+                final_message,
+            ],
             "stage_result": {
                 "agent_type": self.agent_type,
                 "raw_result": raw_result,
@@ -70,25 +78,13 @@ class SchedulerAgent(BaseAgent):
 
         extracted_params = dict(state.get("extracted_params", {}))
         config_path = self._settings.resolved_scheduler_config_path
-        update_fields = self._build_update_fields(extracted_params)
-        if not update_fields:
-            return {
-                "status": "error",
-                "message": (
-                    "未识别到任何可修改的定时任务字段。"
-                    "当前节点只支持修改已存在任务的执行时间、启用状态、有头/无头模式或脚本列表。"
-                ),
-                "config_path": str(config_path),
-            }
-
         try:
-            update_result = update_existing_task_config(
+            update_result = upsert_auto_scheduled_task_config(
                 settings=self._settings,
                 config_path=Path(config_path),
                 project_name=self._optional_text(extracted_params.get("project_name")),
                 project_dir=self._optional_text(extracted_params.get("project_dir")),
-                task_id=self._required_text(extracted_params.get("schedule_task_id"), field_name="schedule_task_id"),
-                schedule=self._optional_text(extracted_params.get("schedule_cron")),
+                schedule=self._required_text(extracted_params.get("schedule_cron"), field_name="schedule_cron"),
                 headed=self._optional_bool(extracted_params.get("schedule_headed")),
                 enabled=self._optional_bool(extracted_params.get("schedule_enabled")),
                 locations=self._optional_string_list(extracted_params.get("schedule_locations")),
@@ -103,29 +99,8 @@ class SchedulerAgent(BaseAgent):
 
         return {
             **update_result,
-            "message": "定时任务配置更新成功；独立调度服务将在下一轮扫描时自动读取最新配置。",
+            "message": "定时任务配置成功；任务 ID 已由系统生成，独立调度服务将在下一轮扫描时自动读取最新配置。",
         }
-
-    def _build_update_fields(self, extracted_params: dict[str, Any]) -> dict[str, Any]:
-        """筛出本次请求真正想修改的字段。"""
-
-        update_fields: dict[str, Any] = {}
-        schedule_cron = self._optional_text(extracted_params.get("schedule_cron"))
-        if schedule_cron is not None:
-            update_fields["schedule"] = schedule_cron
-
-        schedule_headed = self._optional_bool(extracted_params.get("schedule_headed"))
-        if schedule_headed is not None:
-            update_fields["headed"] = schedule_headed
-
-        schedule_enabled = self._optional_bool(extracted_params.get("schedule_enabled"))
-        if schedule_enabled is not None:
-            update_fields["enabled"] = schedule_enabled
-
-        schedule_locations = self._optional_string_list(extracted_params.get("schedule_locations"))
-        if schedule_locations is not None:
-            update_fields["locations"] = schedule_locations
-        return update_fields
 
     def _optional_text(self, value: Any) -> str | None:
         """把参数归一化为可判空字符串。"""

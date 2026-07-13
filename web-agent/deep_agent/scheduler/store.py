@@ -2,16 +2,31 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from deep_agent.core.config import AppSettings
 from deep_agent.scheduler.cron import validate_cron_expression
-from deep_agent.scheduler.models import SchedulerConfigFile
+from deep_agent.scheduler.models import (
+    ScheduledProjectConfig,
+    ScheduledTaskConfig,
+    SchedulerConfigFile,
+)
 
 
 SCHEDULER_LOG_FILE_NAME = "scheduler-service.log"
+
+
+def generate_scheduled_task_id(project_dir: Path) -> str:
+    """根据项目绝对路径生成不可由用户指定的稳定任务 ID。"""
+
+    resolved_project_dir = project_dir.expanduser().resolve()
+    normalized_name = re.sub(r"[^a-z0-9]+", "-", resolved_project_dir.name.lower()).strip("-") or "project"
+    path_digest = hashlib.sha256(str(resolved_project_dir).encode("utf-8")).hexdigest()[:10]
+    return f"scheduled-{normalized_name}-{path_digest}"
 
 
 def load_scheduler_config(config_path: Path) -> SchedulerConfigFile:
@@ -147,6 +162,111 @@ def update_existing_task_config(  # noqa: PLR0913
     }
 
 
+def upsert_auto_scheduled_task_config(  # noqa: PLR0913
+    *,
+    settings: AppSettings,
+    config_path: Path,
+    project_name: str | None,
+    project_dir: str | None,
+    schedule: str,
+    headed: bool | None = None,
+    enabled: bool | None = None,
+    locations: list[str] | None = None,
+) -> dict[str, Any]:
+    """按项目路径创建或更新系统托管任务，任务 ID 始终由系统生成。"""
+
+    validate_cron_expression(schedule)
+    resolved_project_dir = resolve_scheduler_project_dir(
+        settings=settings,
+        project_name=project_name,
+        project_dir=project_dir,
+    )
+    if not resolved_project_dir.is_dir():
+        raise RuntimeError(f"自动化项目目录不存在或不是目录：`{resolved_project_dir}`。")
+
+    resolved_config_path = config_path.expanduser().resolve()
+    config_model = load_scheduler_config(resolved_config_path) if resolved_config_path.is_file() else SchedulerConfigFile()
+    project_model = _find_project_by_resolved_dir(
+        config_model=config_model,
+        settings=settings,
+        resolved_project_dir=resolved_project_dir,
+    )
+    project_created = project_model is None
+    if project_model is None:
+        project_model = ScheduledProjectConfig(
+            project_name=resolved_project_dir.name,
+            project_dir=str(resolved_project_dir),
+        )
+        config_model.projects.append(project_model)
+
+    task_id = generate_scheduled_task_id(resolved_project_dir)
+    task_model = next((task for task in project_model.tasks if task.task_id == task_id), None)
+    task_created = task_model is None
+    if task_model is None:
+        task_model = ScheduledTaskConfig(
+            task_id=task_id,
+            schedule=schedule,
+            locations=locations or [],
+            enabled=True if enabled is None else enabled,
+            headed=headed,
+        )
+        project_model.tasks.append(task_model)
+    else:
+        task_model.schedule = schedule
+        if headed is not None:
+            task_model.headed = headed
+        if enabled is not None:
+            task_model.enabled = enabled
+        if locations is not None:
+            task_model.locations = [str(item).strip() for item in locations if str(item).strip()]
+
+    save_scheduler_config(resolved_config_path, config_model)
+    return {
+        "status": "success",
+        "operation": "created" if task_created else "updated",
+        "project_created": project_created,
+        "config_path": str(resolved_config_path),
+        "project_name": project_model.project_name or resolved_project_dir.name,
+        "project_dir": str(resolved_project_dir),
+        "task_id": task_id,
+        "schedule": task_model.schedule,
+        "headed": project_model.headed if task_model.headed is None else task_model.headed,
+        "enabled": task_model.enabled,
+        "locations": task_model.locations,
+        "log_file": str(
+            resolve_scheduler_log_path(
+                settings=settings,
+                project_name=project_model.project_name,
+                project_dir=project_model.project_dir,
+                test_root_dir=project_model.test_root_dir,
+            )
+        ),
+    }
+
+
+def _find_project_by_resolved_dir(
+    *,
+    config_model: SchedulerConfigFile,
+    settings: AppSettings,
+    resolved_project_dir: Path,
+) -> ScheduledProjectConfig | None:
+    """按规范化绝对目录查找项目；不存在时返回 None。"""
+
+    matches = [
+        project_model
+        for project_model in config_model.projects
+        if resolve_scheduler_project_dir(
+            settings=settings,
+            project_name=project_model.project_name,
+            project_dir=project_model.project_dir,
+        )
+        == resolved_project_dir
+    ]
+    if len(matches) > 1:
+        raise RuntimeError(f"定时任务配置中存在多个相同项目目录：`{resolved_project_dir}`。")
+    return matches[0] if matches else None
+
+
 def _find_project(
     *,
     config_model: SchedulerConfigFile,
@@ -197,9 +317,11 @@ def _find_task(*, project_model, task_id: str):
 
 __all__ = [
     "SCHEDULER_LOG_FILE_NAME",
+    "generate_scheduled_task_id",
     "load_scheduler_config",
     "resolve_scheduler_log_path",
     "resolve_scheduler_project_dir",
     "save_scheduler_config",
+    "upsert_auto_scheduled_task_config",
     "update_existing_task_config",
 ]
