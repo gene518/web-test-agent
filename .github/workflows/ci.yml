@@ -20,7 +20,7 @@ jobs:
     name: 后端测试
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -39,11 +39,11 @@ jobs:
     name: 桌面客户端前端检查
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.5.1
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22.x"
           cache: "pnpm"
@@ -62,7 +62,7 @@ jobs:
     name: 检查 Windows 启动脚本
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: 检查 PowerShell 语法
         shell: powershell
         run: |
@@ -83,11 +83,11 @@ jobs:
     name: 构建 Windows 桌面客户端
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.5.1
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22.x"
           cache: "pnpm"
@@ -108,7 +108,7 @@ jobs:
         working-directory: web-agent-client
         run: pnpm tauri build --bundles nsis
       - name: 上传 Windows 安装包
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: web-test-agent-windows-unsigned
           path: web-agent-client/src-tauri/target/release/bundle/nsis/*-setup.exe
