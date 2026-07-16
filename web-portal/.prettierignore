@@ -1,6 +1,0 @@
-# 忽略构建产物：
-build
-coverage
-
-# 忽略锁文件：
-pnpm-lock.yaml

@@ -1,4 +1,4 @@
-# 在所有 PR 上执行格式化、lint 和拼写检查。
+# 在所有 PR 上验证后端、桌面客户端和平台启动脚本。
 
 name: CI
 
@@ -6,12 +6,8 @@ on:
   push:
     branches: ["main"]
   pull_request:
-  workflow_dispatch: # 允许在 GitHub UI 中手动触发。
+  workflow_dispatch:
 
-# 如果同一个 PR 或分支在当前 workflow 未完成时再次 push，
-# 取消旧任务并运行最新任务。
-#
-# 旧代码的检查结果价值有限；提前取消旧任务可以把 runner 留给更新的检查。
 permissions:
   contents: read
 
@@ -20,8 +16,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  format:
-    name: 检查格式
+  backend-test:
+    name: 后端测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: web-agent/uv.lock
+      - name: 安装后端依赖
+        working-directory: web-agent
+        run: uv sync --frozen --extra dev
+      - name: 运行后端测试
+        working-directory: web-agent
+        run: uv run pytest -q
+
+  client-frontend:
+    name: 桌面客户端前端检查
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -32,17 +47,41 @@ jobs:
         with:
           node-version: "22.x"
           cache: "pnpm"
-          cache-dependency-path: web-portal/pnpm-lock.yaml
-      - name: 安装依赖
-        working-directory: web-portal
+          cache-dependency-path: web-agent-client/pnpm-lock.yaml
+      - name: 安装客户端依赖
+        working-directory: web-agent-client
         run: pnpm install --frozen-lockfile
-      - name: 检查格式
-        working-directory: web-portal
-        run: pnpm format:check
+      - name: 检查类型、测试和构建
+        working-directory: web-agent-client
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm build
 
-  lint:
-    name: 检查 lint
-    runs-on: ubuntu-latest
+  windows-startup-check:
+    name: 检查 Windows 启动脚本
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: 检查 PowerShell 语法
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $scriptPath = Resolve-Path "start/windows-start.ps1"
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
+  web-agent-client-windows:
+    name: 构建 Windows 桌面客户端
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v5
@@ -52,50 +91,25 @@ jobs:
         with:
           node-version: "22.x"
           cache: "pnpm"
-          cache-dependency-path: web-portal/pnpm-lock.yaml
-      - name: 安装依赖
-        working-directory: web-portal
+          cache-dependency-path: web-agent-client/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web-agent-client/src-tauri
+      - name: 安装客户端依赖
+        working-directory: web-agent-client
         run: pnpm install --frozen-lockfile
-      - name: 检查 lint
-        working-directory: web-portal
-        run: pnpm lint
-
-  typecheck:
-    name: 检查 TypeScript
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v5
+      - name: 检查 Rust
+        working-directory: web-agent-client/src-tauri
+        run: |
+          cargo test --locked
+          cargo check --locked
+      - name: 构建未签名 NSIS 安装包
+        working-directory: web-agent-client
+        run: pnpm tauri build --bundles nsis
+      - name: 上传 Windows 安装包
+        uses: actions/upload-artifact@v6
         with:
-          version: 10.5.1
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22.x"
-          cache: "pnpm"
-          cache-dependency-path: web-portal/pnpm-lock.yaml
-      - name: 安装依赖
-        working-directory: web-portal
-        run: pnpm install --frozen-lockfile
-      - name: 检查 TypeScript
-        working-directory: web-portal
-        run: pnpm typecheck
-
-  readme-spelling:
-    name: 检查 README 拼写
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: codespell-project/actions-codespell@v2
-        with:
-          ignore_words_file: web-portal/.codespellignore
-          path: web-portal/README.md
-
-  check-spelling:
-    name: 检查代码拼写
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: codespell-project/actions-codespell@v2
-        with:
-          ignore_words_file: web-portal/.codespellignore
-          path: web-portal/src
+          name: web-test-agent-windows-unsigned
+          path: web-agent-client/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

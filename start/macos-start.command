@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 START_DIR="$PROJECT_ROOT/start"
 BACKEND_DIR="$PROJECT_ROOT/web-agent"
-FRONTEND_DIR="$PROJECT_ROOT/web-portal"
+CLIENT_DIR="$PROJECT_ROOT/web-agent-client"
+PLAYWRIGHT_PROJECT_DIR="$BACKEND_DIR/deep_agent/assets/demo"
 BACKEND_ENV_FILE="$BACKEND_DIR/.env"
 START_SCRIPT_PATH="$SCRIPT_DIR/macos-start.command"
 # 平台相关的持久化状态目录：遵循 macOS 约定放在 ~/Library/Application Support，
@@ -14,26 +15,19 @@ APP_STATE_DIR="${APP_STATE_DIR:-$HOME/Library/Application Support/WebAutoTestAge
 BACKEND_LOG_FILE="$START_DIR/backend.log"
 
 BACKEND_HOST="127.0.0.1"
-FRONTEND_HOST="127.0.0.1"
 BACKEND_PORT="${BACKEND_PORT:-2024}"
-FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 STARTUP_WAIT_SECONDS="${STARTUP_WAIT_SECONDS:-90}"
 NO_RELOAD="${NO_RELOAD:-1}"
 SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-}"
-NEXT_PUBLIC_ASSISTANT_ID="${NEXT_PUBLIC_ASSISTANT_ID:-web-autotest-agent}"
-NEXT_PUBLIC_AUTH_SCHEME="${NEXT_PUBLIC_AUTH_SCHEME:-}"
-FRONTEND_OPEN_URL="${FRONTEND_OPEN_URL:-}"
-OPEN_BROWSER="${OPEN_BROWSER:-1}"
 
 MODE="${1:-start}"
 ENTRY_DISPLAY_NAME="${WEB_AUTOTEST_ENTRY:-$0}"
 BACKEND_PID=""
-FRONTEND_PID=""
 CLEANED_UP=0
 STARTUP_STEP_INDEX=0
-STARTUP_TOTAL_STEPS=11
+STARTUP_TOTAL_STEPS=6
 STOP_STEP_INDEX=0
-STOP_TOTAL_STEPS=4
+STOP_TOTAL_STEPS=3
 PYTHON_BIN=""
 
 mkdir -p "$APP_STATE_DIR"
@@ -201,14 +195,31 @@ check_uv() {
 }
 
 check_pnpm() {
-  # 仅检查 pnpm 是否存在，不做自动安装。pnpm 用于管理前端依赖，期望版本 10.5.1。
   if command -v pnpm >/dev/null 2>&1; then
-    PNPM_CMD=(pnpm)
     setup_log "pnpm 已就绪：$(command -v pnpm) ($(pnpm --version 2>/dev/null))"
     return
   fi
 
-  fail "未找到 pnpm。请先安装 pnpm@10.5.1 后重试。推荐方式：启用 Corepack \`corepack enable && corepack prepare pnpm@10.5.1 --activate\`，或使用 npm 全局安装 \`npm install -g pnpm@10.5.1\`。"
+  fail "未找到 pnpm。请先安装 pnpm 10.5.1 后重试。可执行 \`corepack enable && corepack prepare pnpm@10.5.1 --activate\`。"
+}
+
+check_rust() {
+  append_path_if_exists "$HOME/.cargo/bin"
+  if command -v cargo >/dev/null 2>&1; then
+    setup_log "Rust 已就绪：$(command -v cargo) ($(cargo --version 2>/dev/null))"
+    return
+  fi
+
+  fail "未找到 Rust/Cargo。请先通过 https://rustup.rs/ 安装 Rust 1.88 或更高版本。"
+}
+
+sync_client_dependencies() {
+  if [ ! -d "$CLIENT_DIR/node_modules" ] || [ "${START_FORCE_SETUP:-0}" = "1" ]; then
+    setup_log "开始同步桌面客户端依赖..."
+    run_logged_command_in_dir "$CLIENT_DIR" pnpm install --frozen-lockfile || fail "桌面客户端依赖同步失败。"
+  else
+    setup_log "桌面客户端依赖已存在，跳过同步。"
+  fi
 }
 
 sync_backend_dependencies() {
@@ -225,17 +236,9 @@ sync_backend_dependencies() {
   LANGGRAPH_BIN="$langgraph_bin"
 }
 
-sync_frontend_dependencies() {
-  if [ ! -d "$FRONTEND_DIR/node_modules" ] || [ "${START_FORCE_SETUP:-0}" = "1" ]; then
-    setup_log "开始同步前端依赖..."
-    run_logged_command_in_dir "$FRONTEND_DIR" "${PNPM_CMD[@]}" install || fail "前端依赖同步失败。"
-  else
-    setup_log "前端依赖已存在，跳过同步。"
-  fi
-}
-
 install_playwright_browsers() {
   local marker_file="$APP_STATE_DIR/playwright-chromium-installed"
+  local playwright_version
   if [ "${START_INSTALL_PLAYWRIGHT_BROWSERS:-true}" != "true" ]; then
     setup_log "已跳过 Playwright 浏览器安装。"
     return
@@ -246,7 +249,9 @@ install_playwright_browsers() {
   fi
 
   setup_log "开始安装 Playwright Chromium 浏览器..."
-  run_logged_command_in_dir "$FRONTEND_DIR" npx --yes playwright install chromium || fail "Playwright Chromium 浏览器安装失败。"
+  playwright_version="$(cd "$PLAYWRIGHT_PROJECT_DIR" && node -p "require('./package.json').devDependencies['@playwright/test']")"
+  [ -n "$playwright_version" ] || fail "无法读取内置 demo 的 Playwright 版本。"
+  run_logged_command_in_dir "$PLAYWRIGHT_PROJECT_DIR" npx --yes "playwright@$playwright_version" install chromium || fail "Playwright Chromium 浏览器安装失败。"
   touch "$marker_file"
 }
 
@@ -304,34 +309,6 @@ with socket.socket(family, socket.SOCK_STREAM) as sock:
         raise SystemExit(0)
 raise SystemExit(1)
 PY
-}
-
-find_open_port() {
-  "$PYTHON_BIN" - "$1" <<'PY'
-import socket
-import sys
-
-host = sys.argv[1]
-family = socket.AF_INET6 if ":" in host else socket.AF_INET
-with socket.socket(family, socket.SOCK_STREAM) as sock:
-    sock.bind((host, 0))
-    print(sock.getsockname()[1])
-PY
-}
-
-resolve_port() {
-  local name="$1"
-  local host="$2"
-  local preferred_port="$3"
-  local port_var="$4"
-  local resolved_port="$preferred_port"
-
-  if ! port_is_bindable "$host" "$preferred_port"; then
-    resolved_port="$(find_open_port "$host")"
-    setup_log "${name} 默认端口 ${preferred_port} 已被占用，改用 ${resolved_port}。"
-  fi
-
-  printf -v "$port_var" "%s" "$resolved_port"
 }
 
 wait_for_port() {
@@ -400,9 +377,6 @@ cleanup() {
   fi
   CLEANED_UP=1
 
-  if [ -n "$FRONTEND_PID" ] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
-    has_process=1
-  fi
   if [ -n "$BACKEND_PID" ] && kill -0 "$BACKEND_PID" 2>/dev/null; then
     has_process=1
   fi
@@ -411,10 +385,8 @@ cleanup() {
   fi
 
   log "正在停止本地服务..."
-  kill_tree TERM "$FRONTEND_PID"
   kill_tree TERM "$BACKEND_PID"
   sleep 0.5
-  kill_tree KILL "$FRONTEND_PID"
   kill_tree KILL "$BACKEND_PID"
 }
 
@@ -590,36 +562,6 @@ stop_listener() {
   fi
 }
 
-open_frontend_url() {
-  if [ "$OPEN_BROWSER" != "1" ]; then
-    setup_log "已跳过自动打开浏览器，请手动访问：$FRONTEND_OPEN_URL"
-    return
-  fi
-
-  if command -v open >/dev/null 2>&1; then
-    if open "$FRONTEND_OPEN_URL" >/dev/null 2>&1; then
-      setup_log "已自动打开前端页面：$FRONTEND_OPEN_URL"
-      return
-    fi
-    setup_log "open 命令打开前端失败，尝试使用 AppleScript。"
-  fi
-
-  if command -v osascript >/dev/null 2>&1; then
-    if osascript -e "open location \"$FRONTEND_OPEN_URL\"" >/dev/null 2>&1; then
-      setup_log "已通过 AppleScript 打开前端页面：$FRONTEND_OPEN_URL"
-      return
-    fi
-    setup_log "AppleScript 打开前端失败，尝试使用 Python 浏览器回退。"
-  fi
-
-  if "$PYTHON_BIN" -m webbrowser "$FRONTEND_OPEN_URL" >/dev/null 2>&1; then
-    setup_log "已通过 Python 浏览器回退打开前端页面：$FRONTEND_OPEN_URL"
-    return
-  fi
-
-  setup_log "无法自动打开浏览器，请手动访问：$FRONTEND_OPEN_URL"
-}
-
 show_logs() {
   if [ ! -f "$BACKEND_LOG_FILE" ]; then
     log "未找到后端日志文件：$BACKEND_LOG_FILE"
@@ -652,21 +594,9 @@ start_backend() {
   wait_for_port "后端" "$BACKEND_HOST" "$BACKEND_PORT" "$BACKEND_PID" "$BACKEND_LOG_FILE" || fail "后端启动失败。"
 }
 
-start_frontend() {
-  export NEXT_PUBLIC_API_URL="http://$BACKEND_HOST:$BACKEND_PORT"
-  export NEXT_PUBLIC_ASSISTANT_ID
-  export NEXT_PUBLIC_AUTH_SCHEME
-
-  setup_log "启动前端：http://$FRONTEND_HOST:$FRONTEND_PORT"
-  (
-    cd "$FRONTEND_DIR"
-    exec "${PNPM_CMD[@]}" exec next dev --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT"
-  ) &
-  FRONTEND_PID="$!"
-  wait_for_port "前端" "$FRONTEND_HOST" "$FRONTEND_PORT" "$FRONTEND_PID" || fail "前端启动失败。"
-}
-
-start_main() {
+start_backend_main() {
+  STARTUP_STEP_INDEX=0
+  STARTUP_TOTAL_STEPS=9
   trap handle_signal INT TERM
   trap cleanup EXIT
   : > "$BACKEND_LOG_FILE"
@@ -692,17 +622,9 @@ start_main() {
   check_uv
   finish_step "检查 uv"
 
-  start_step "检查 pnpm"
-  check_pnpm
-  finish_step "检查 pnpm"
-
   start_step "同步后端依赖"
   sync_backend_dependencies
   finish_step "同步后端依赖"
-
-  start_step "同步前端依赖"
-  sync_frontend_dependencies
-  finish_step "同步前端依赖"
 
   start_step "安装 Playwright 浏览器"
   install_playwright_browsers
@@ -710,28 +632,18 @@ start_main() {
 
   start_step "解析 Python 与端口"
   resolve_python_bin
-  resolve_port "后端" "$BACKEND_HOST" "$BACKEND_PORT" BACKEND_PORT
-  resolve_port "前端" "$FRONTEND_HOST" "$FRONTEND_PORT" FRONTEND_PORT
+  port_is_bindable "$BACKEND_HOST" "$BACKEND_PORT" || fail "后端端口 ${BACKEND_PORT} 已被占用。"
   finish_step "解析 Python 与端口"
-
-  if [ -z "$FRONTEND_OPEN_URL" ]; then
-    FRONTEND_OPEN_URL="http://$FRONTEND_HOST:$FRONTEND_PORT/?chatHistoryOpen=true"
-  fi
 
   start_step "启动后端"
   start_backend
   finish_step "启动后端"
 
-  start_step "启动前端并尝试打开页面"
-  start_frontend
-  open_frontend_url
-  finish_step "启动前端并尝试打开页面"
-
   log
-  log "Web AutoTest Agent 已启动。"
-  log "前端地址：$FRONTEND_OPEN_URL"
+  log "Web AutoTest Agent 后端已启动。"
   log "后端地址：http://$BACKEND_HOST:$BACKEND_PORT"
   log "后端日志：$BACKEND_LOG_FILE"
+  log "请通过 web-agent-client 桌面客户端连接。"
   log "关闭本窗口或按 Ctrl+C 会停止本地服务。"
 
   while true; do
@@ -739,12 +651,38 @@ start_main() {
       log "后端进程已退出，请查看 $BACKEND_LOG_FILE"
       exit 1
     fi
-    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
-      log "前端进程已退出，请查看当前终端输出。"
-      exit 1
-    fi
     sleep 1
   done
+}
+
+start_client_main() {
+  STARTUP_STEP_INDEX=0
+  STARTUP_TOTAL_STEPS=6
+
+  start_step "检查项目配置"
+  ensure_backend_env_file
+  load_backend_env_file
+  finish_step "检查项目配置"
+
+  start_step "检查 Node.js"
+  check_node
+  finish_step "检查 Node.js"
+
+  start_step "检查 pnpm"
+  check_pnpm
+  finish_step "检查 pnpm"
+
+  start_step "检查 Rust"
+  check_rust
+  finish_step "检查 Rust"
+
+  start_step "同步桌面客户端依赖"
+  sync_client_dependencies
+  finish_step "同步桌面客户端依赖"
+
+  start_step "启动桌面客户端"
+  setup_log "客户端将自动准备并管理 LangGraph 后端。"
+  run_logged_command_in_dir "$CLIENT_DIR" pnpm tauri dev || fail "桌面客户端启动失败。"
 }
 
 stop_main() {
@@ -765,20 +703,18 @@ stop_main() {
   stop_listener "后端" "$BACKEND_HOST" "$BACKEND_PORT" "backend"
   finish_stop_step "停止后端服务"
 
-  start_stop_step "停止前端服务"
-  stop_listener "前端" "$FRONTEND_HOST" "$FRONTEND_PORT" "frontend"
-  finish_stop_step "停止前端服务"
-
   log
   log "本地服务关闭完成。"
   log "后端端口：$BACKEND_HOST:$BACKEND_PORT"
-  log "前端端口：$FRONTEND_HOST:$FRONTEND_PORT"
 }
 
 main() {
   case "$MODE" in
     start)
-      start_main
+      start_client_main
+      ;;
+    backend)
+      start_backend_main
       ;;
     end)
       stop_main

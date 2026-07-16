@@ -35,6 +35,7 @@ from deep_agent.core.runtime_logging import (
     log_title,
     summarize_model_kwargs,
 )
+from deep_agent.core.model_message_history import normalize_tool_message_history
 
 
 logger = get_logger(__name__)
@@ -304,12 +305,12 @@ class MasterAgent:
         return model_messages
 
     def _messages_for_model(self, state: WorkflowState) -> list[BaseMessage]:
-        """返回送入模型的近期消息，长对话时配合摘要控制上下文长度。"""
+        """返回可安全送入模型的近期消息，并修复历史工具调用链。"""
 
         messages = list(state.get("messages", []))
         if state.get("conversation_summary") and len(messages) > RECENT_MESSAGES_AFTER_SUMMARY_LIMIT:
-            return messages[-RECENT_MESSAGES_AFTER_SUMMARY_LIMIT:]
-        return messages
+            messages = messages[-RECENT_MESSAGES_AFTER_SUMMARY_LIMIT:]
+        return normalize_tool_message_history(messages)
 
     def _count_human_turns(self, messages: Sequence[BaseMessage]) -> int:
         """统计用户消息轮数。"""

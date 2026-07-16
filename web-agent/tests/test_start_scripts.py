@@ -34,6 +34,32 @@ class StartScriptEncodingTestCase(unittest.TestCase):
             "windows-start.ps1 已是独立 PowerShell 入口，不应再包含旧 bat polyglot 标记。",
         )
 
+        script_text = script_bytes.decode("utf-8-sig")
+        self.assertNotIn("FrontendDir", script_text)
+        self.assertIn("web-agent-client", script_text)
+
+    def test_start_scripts_separate_user_client_and_internal_backend_modes(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        macos_script = (project_root / "start" / "macos-start.command").read_text(
+            encoding="utf-8"
+        )
+        windows_script = (project_root / "start" / "windows-start.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertNotIn("FRONTEND_DIR", macos_script)
+        self.assertIn("web-agent-client", macos_script)
+        self.assertIn("deep_agent/assets/demo", macos_script)
+        self.assertIn("pnpm tauri dev", macos_script)
+        self.assertIn("backend)", macos_script)
+        self.assertIn('"backend" {', windows_script)
+        self.assertIn('"tauri", "dev"', windows_script)
+
+    def test_desktop_client_is_the_only_ui_project(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+
+        self.assertTrue((project_root / "web-agent-client" / "package.json").is_file())
+
     def test_langgraph_config_does_not_redeclare_env_file_loading(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "langgraph.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))

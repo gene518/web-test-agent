@@ -40,7 +40,6 @@ venv/
 # --- 日志 ---------------------------------------------------
 *.log
 start/backend.log
-start/frontend.log
 
 # --- LangGraph 本地运行时数据 ------------------------------
 .langgraph_api/
@@ -53,14 +52,12 @@ start/frontend.log
 test-results/
 playwright-report/
 
-# --- Node / Next.js ----------------------------------------
+# --- Node / 前端构建产物 -----------------------------------
 node_modules/
 **/node_modules/
 *.tsbuildinfo
 **/*.tsbuildinfo
 /web-agent-ui/dist/
-/web-portal/dist/
-/web-portal/.next/
 
 # --- 环境变量（仅保留 .env.example 进仓库） ----------------
 .env
@@ -68,11 +65,6 @@ node_modules/
 .env.development.local
 .env.test.local
 .env.production.local
-/web-portal/.env
-/web-portal/.env.local
-/web-portal/.env.development.local
-/web-portal/.env.test.local
-/web-portal/.env.production.local
 /web-agent/.env
 
 # --- 项目运行期产物 ----------------------------------------
@@ -82,10 +74,7 @@ node_modules/
 /web-agent/README.md
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
-
-# --- 冗余的旧 vite 构建输出（保留到历史兼容） --------------
-/web-portal/vite.config.d.ts
-/web-portal/vite.config.js
+/output/
 
 # --- 启动脚本缓存 ------------------------------------------
 /start/script/.cache/

@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: "npm"
-    directory: "/web-portal"
+    directory: "/web-agent-client"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -17,6 +17,12 @@ updates:
           - "*"
         update-types:
           - "major"
+
+  - package-ecosystem: "cargo"
+    directory: "/web-agent-client/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
 
   - package-ecosystem: "github-actions"
     directory: "/"

@@ -7,8 +7,8 @@
 从整体看，项目由三层组成：
 
 1. 后端智能体层：位于 `web-agent/`，使用 LangGraph 编排主图，通过 Master 子图统一判断意图、补齐参数、分发到具体阶段。
-2. 前端交互层：位于 `web-portal/`，基于 Next.js 和 Agent Chat UI，负责对话、历史线程、文件上传、人工中断补参、工具结果展示。
-3. 本地运行与测试层：位于 `start/`、`web-agent/tests/` 和内置 demo 工程，负责一键拉起前后端、验证路由、验证阶段执行和调度服务。
+2. 桌面客户端层：位于 `web-agent-client/`，基于 Tauri v2、React 和 Vite，负责对话、历史线程、人工中断补参、工具结果展示及本地后端生命周期管理。
+3. 本地运行与测试层：位于 `start/`、`web-agent/tests/` 和内置 demo 工程，负责拉起后端、验证路由、验证阶段执行和调度服务。
 
 分模块看，后端围绕一个 Master 和四类执行目标组织：
 
@@ -18,76 +18,43 @@
 - `healer`：运行失败脚本、定位问题、修改脚本并复测。
 - `scheduler`：维护定时任务配置，并可由独立服务按 Cron 扫描执行。
 
-## 2. 执行 Demo 示例
+## 2. 桌面客户端示例
 
-下面以一个完整请求走完 Plan、Generator、Healer 三个阶段，演示 Agent 从接到需求到调试通过的闭环。
+### 2.1 快捷任务模板
 
-示例输入：
+新对话提供四个单行排列的快捷入口，按钮只显示标题，点击后把完整模板填入输入框，用户补齐 `{...}` 占位参数后即可提交：
 
-> 为 www.baidu.com 这个网站生成三条测试用例，必须挑选优先级最高的前三条，然后生成脚本、调试通过，项目名字 xn
-
-对应的三个阶段分别产出「测试计划 Markdown」「Playwright `.spec.ts` 脚本」「调试通过的脚本与测试报告」，整体流程与第 4 节运行架构图中的 Plan、Generator、Healer 一一对应。
-
-### 2.1 Plan 阶段：探索页面并保存测试计划
-
-Master 识别意图后进入 Plan 阶段，Agent 会探索目标站点，挑选优先级最高的前三条用例并落盘为 Markdown 测试计划。
+- `完整流程`：在同一轮按 Plan -> Generator -> Healer 顺序连续执行，阶段间自动继承产物。
+- `独立 Plan`：探索真实页面并保存 Markdown 测试计划。
+- `独立 Generator`：读取指定或本对话最近生成的 Markdown，为目标用例生成 Playwright 脚本。
+- `独立 Healer`：只运行、修复并复测指定范围内的失败脚本。
 
 <p align="center">
-  <img src="doc/images/demo/01-plan-start.png" alt="Plan 阶段开始：接到请求、准备探索页面" width="820" /><br />
-  <em>① 接到用户请求，进入 Plan 阶段，确定工程名 `xn` 与目标 URL。</em>
+  <img src="doc/images/client/01-quick-prompts.png" alt="桌面客户端新对话页的四个快捷任务模板" width="960" /><br />
+  <em>四个入口保持一行展示；点击“独立 Healer”后，输入框已填入完整任务模板。</em>
 </p>
 
+### 2.2 后端日志主题
+
+“后端日志”窗口会解析 ANSI 控制符并显示日志级别、模块名等原始颜色，不再把转义序列当作乱码。主题可切换为 `macOS 控制台`、`深色` 或 `浅色`，选择结果会保存在本机。
+
 <p align="center">
-  <img src="doc/images/demo/02-plan-tools.png" alt="Plan 阶段工具调用：浏览器探索与写文件" width="820" /><br />
-  <em>② Plan 阶段按计划调用 Playwright MCP 工具探索页面，并多次 `write_file` 记录候选用例。</em>
+  <img src="doc/images/client/02-log-theme-macos.png" alt="使用 macOS 控制台主题和 ANSI 颜色的后端日志窗口" width="960" /><br />
+  <em>macOS 控制台主题下的真实后端日志，ANSI 颜色已正确渲染。</em>
 </p>
 
-<p align="center">
-  <img src="doc/images/demo/03-plan-done.png" alt="Plan 阶段成功：保存测试计划并列出 3 条用例" width="820" /><br />
-  <em>③ `planner_save_plan` 将测试计划写入 `test_case/aaaplanning_baidu/aaa_baidu.md`，并规划出 3 条待生成的 `.spec.ts` 脚本。</em>
-</p>
+### 2.3 历史会话续聊
 
-### 2.2 Generator 阶段：读取计划并生成 Playwright 脚本
-
-Plan 阶段完成后，阶段链推进到 Generator。Agent 读取上一阶段落盘的测试计划，逐条生成 Playwright 脚本并写入目标工程目录。
+点击历史会话后可以继续发送消息。后端会在再次调用模型前修复持久化工具消息链：忽略没有对应调用的孤立工具结果，并为未闭合的工具调用补齐结果，避免 OpenAI `function_call_output` 协议错误。
 
 <p align="center">
-  <img src="doc/images/demo/04-generator-start.png" alt="Generator 阶段开始：读取测试计划" width="820" /><br />
-  <em>④ Generator 阶段启动，进度 2/3，测试计划输入来自 Plan 阶段的产物。</em>
-</p>
-
-<p align="center">
-  <img src="doc/images/demo/05-generator-done.png" alt="Generator 阶段成功：生成 3 个 spec 脚本" width="820" /><br />
-  <em>⑤ 生成 3 个 `.spec.ts` 脚本，并给出进入下一阶段的提示（直接回复"调试脚本通过"即可进入 Healer）。</em>
-</p>
-
-### 2.3 Healer 阶段：运行、修复并复测脚本
-
-最后进入 Healer，Agent 会运行刚生成的脚本，命中失败时定位问题、修改脚本并复测，直到所有脚本全部通过。
-
-<p align="center">
-  <img src="doc/images/demo/06-healer-start.png" alt="Healer 阶段开始：准备运行失败脚本" width="820" /><br />
-  <em>⑥ Healer 阶段启动，进度 3/3，输入为 Generator 阶段生成的 3 个脚本。</em>
-</p>
-
-<p align="center">
-  <img src="doc/images/demo/07-healer-done.png" alt="Healer 阶段成功：验证运行目标全部通过" width="820" /><br />
-  <em>⑦ Healer 完成：变更文件落盘，验证运行目标覆盖全部 3 个脚本。</em>
-</p>
-
-<p align="center">
-  <img src="doc/images/demo/08-report.png" alt="Playwright 测试报告：3 条用例全部通过" width="820" /><br />
-  <em>⑧ Playwright 测试报告：3 条用例全部通过，总耗时约 19 秒。</em>
-</p>
-
-<p align="center">
-  <img src="doc/images/demo/09-project-tree.png" alt="目标工程目录与脚本内容" width="820" /><br />
-  <em>⑨ 目标工程 `webautotest/xn` 下的 `test_case/baidu/` 目录，生成的 `.spec.ts` 脚本可直接在本地 Playwright 中运行。</em>
+  <img src="doc/images/client/03-history-continuation.png" alt="桌面客户端在历史会话中继续聊天并收到 Agent 回复" width="960" /><br />
+  <em>选择既有会话后发送唯一验证消息，Agent 正常回复并恢复空闲状态。</em>
 </p>
 
 ## 3. 目录结构
 
-说明：本节重点展开服务端目录、核心类和入口函数。`web-portal/` 前端子工程不再逐文件展开；后端本地缓存、运行日志、运行时数据、测试缓存、虚拟环境和构建产物也不在这里说明。
+说明：本节重点展开服务端目录、核心类和入口函数。桌面客户端的详细结构见其子工程 README；本地缓存、运行日志、运行时数据、测试缓存、依赖目录和构建产物不在这里说明。
 
 ```text
 web-test-agent/  # 仓库根目录。
@@ -95,14 +62,14 @@ web-test-agent/  # 仓库根目录。
 ├── DEVELOPMENT_GUIDE.md  # 开发规范和协作约束。
 ├── doc/  # 说明文档与示例资源。
 │   ├── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
-│   └── images/demo/  # 第 2 节「执行 Demo 示例」使用的截图资源。
+│   └── images/client/  # 第 2 节桌面客户端示例使用的验证截图。
 ├── .github/  # GitHub 自动化配置。
 │   └── workflows/
 │       └── ci.yml  # 持续集成流程。
 ├── start/  # 启动根目录，平台脚本直接放在这里。
 │   ├── README.md
-│   ├── macos-start.command  # macOS 启动脚本，支持 start / end / logs 参数。
-│   └── windows-start.ps1   # Windows 启动入口（PowerShell 实现），支持 start / end / logs 参数。
+│   ├── macos-start.command  # macOS 一键启动客户端和后端，支持 start / end / logs。
+│   └── windows-start.ps1   # Windows 一键启动客户端和后端，支持 start / end / logs。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。
@@ -154,6 +121,7 @@ web-test-agent/  # 仓库根目录。
 │   │   │   ├── cancellation.py  # LangGraph 用户取消信号识别。
 │   │   │   ├── local_runtime_cleanup.py  # 本地 in-memory runtime 启动清理。
 │   │   │   ├── runtime_logging.py  # 统一日志格式、状态摘要和敏感信息截断。
+│   │   │   ├── model_message_history.py  # 修复发给模型的工具调用与工具结果消息链。
 │   │   │   └── display_message/  # 用户可见消息提取、去重和汇总逻辑。
 │   │   ├── scheduler/  # 独立定时执行服务。
 │   │   │   ├── cli.py  # 定时服务命令行入口。
@@ -172,7 +140,10 @@ web-test-agent/  # 仓库根目录。
 │   │   │       └── tool_error_policy.py  # `PlaywrightMCPToolErrorPolicy`，区分可重试和不可重试错误。
 │   │   └── assets/  # 内置 demo 模板与资源文件。
 │   └── tests/  # 后端自动化测试与调试脚本。
-└── web-portal/  # 前端聊天界面工程，目录细节见子工程 README。
+└── web-agent-client/  # Tauri v2 桌面客户端，支持 macOS 和 Windows。
+    ├── src/  # React 会话、历史、工具消息和任务取消界面。
+    ├── src-tauri/  # 原生窗口、HTTP 权限和后端进程生命周期管理。
+    └── README.md  # 开发、构建和运行说明。
 ```
 
 ### 3.1 服务端核心类与职责
@@ -189,8 +160,8 @@ web-test-agent/  # 仓库根目录。
 
 ```mermaid
 flowchart TD
-    用户["用户在前端输入请求"] --> 前端["Next.js 聊天界面"]
-    前端 --> 流式连接["LangGraph 流式接口"]
+    用户["用户在桌面客户端输入请求"] --> 客户端["Tauri + React 会话界面"]
+    客户端 --> 流式连接["LangGraph 流式接口"]
     流式连接 --> 入口["web-agent/langgraph.json 暴露 web-autotest-agent 主图"]
     入口 --> 应用入口["deep_agent/app.py 初始化配置和日志"]
     应用入口 --> 主图["web_autotest_agent_workflow.build_web_autotest_agent_workflow 构建主图"]
@@ -200,8 +171,8 @@ flowchart TD
     意图判断 --> 文件解析["resolve_stage_files_node：继承历史产物并解析阶段输入"]
     文件解析 --> 参数补全{"参数是否齐全"}
     参数补全 -- 否 --> 中断["complete_params_node：触发 interrupt 等待用户补参"]
-    中断 --> 前端
-    前端 --> 参数补全
+    中断 --> 客户端
+    客户端 --> 参数补全
     参数补全 -- 是 --> 阶段路由{"进入哪个阶段"}
 
     阶段路由 --> 计划["plan_node：探索页面并保存测试计划"]
@@ -229,7 +200,7 @@ flowchart TD
 运行状态可以按一次用户请求理解为七步：
 
 1. 初始化：`app.py` 读取环境变量、配置日志、调用 `build_web_autotest_agent_workflow()` 编译图。
-2. 等待输入：前端通过 LangGraph 流式接口连接 `web-autotest-agent` 主图，等待用户提交消息。
+2. 等待输入：桌面客户端通过 LangGraph 流式接口连接 `web-autotest-agent` 主图，等待用户提交消息。
 3. Master 路由：`IntentJudgeNode` 调用 `MasterAgent` 判断请求属于计划、生成、修复、普通问答或定时任务。
 4. 参数准备：`ResolveStageFilesNode` 继承历史产物，`CompleteParamsNode` 在缺参时中断并等待补充。
 5. 阶段执行：Plan、Generator、Healer 通过 `BaseSpecialistAgent` 准备工作目录、加载提示词、获取 MCP 工具并执行 Deep Agent。
