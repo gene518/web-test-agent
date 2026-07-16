@@ -149,7 +149,8 @@ class PlaywrightTestMCPProvider:
         suffix = f" 原始错误：{error}" if error else ""
         return RuntimeError(
             "无法连接到 MCP server `playwright-test`。请确认本机可以执行 "
-            "`npx playwright run-test-mcp-server`，并且项目目录可执行 npm install。"
+            "`npx --yes --package=<PLAYWRIGHT_MCP_PACKAGE> playwright run-test-mcp-server`，"
+            "并且项目目录可执行 npm install。"
             f" workspace_dir={workspace_dir}.{suffix}"
         )
 
@@ -231,7 +232,6 @@ class PlaywrightTestMCPProvider:
 
         package_name = re.sub(r"[^a-z0-9._-]+", "-", workspace_path.name.lower()).strip("._-")
         return package_name[:214] or "web-autotest-workspace"
-
 
 PLAYWRIGHT_TEST_MCP_PROVIDER = PlaywrightTestMCPProvider()
 

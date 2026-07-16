@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "deepagents",
   "langchain",
+  "langchain-anthropic",
   "langchain-mcp-adapters",
   "langchain-openai",
   "langgraph",
@@ -23,6 +24,7 @@ web-agent-scheduler = "deep_agent.scheduler.cli:main"
 
 [project.optional-dependencies]
 dev = [
+  "langgraph-api>=0.11.0",
   "langgraph-cli[inmem]",
   "pytest",
 ]

@@ -3,12 +3,12 @@ import {
   ReactNode,
   FormEvent,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/useStreamContext";
 import { Button } from "../ui/button";
@@ -20,7 +20,6 @@ import {
   ensureToolCallsHaveResponses,
 } from "@/lib/ensure-tool-responses";
 import { LangGraphLogoSVG } from "../icons/langgraph";
-import { TooltipIconButton } from "./tooltip-icon-button";
 import {
   ArrowDown,
   LoaderCircle,
@@ -36,6 +35,7 @@ import ThreadHistory from "./history";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
+import { Switch } from "../ui/switch";
 import { GitHubSVG } from "../icons/github";
 import {
   Tooltip,
@@ -54,9 +54,10 @@ import {
 import {
   filterConversationMessages,
   getActiveInterrupt,
-  getHumanMessages,
   getLastLiveRenderSignal,
+  getPersistedConversationMessages,
   mergeVisibleMessages,
+  orderMessagesByReference,
   THREAD_STREAM_MODES,
 } from "./message-utils";
 import { isAgentInboxInterruptSchema } from "@/lib/agent-inbox-interrupt";
@@ -84,6 +85,30 @@ function isThreadNotFoundError(message: string | undefined): boolean {
     /Thread with ID .+ not found/i.test(message) ||
     /HTTP 404:.*Thread with ID .+ not found/i.test(message)
   );
+}
+
+const MODEL_ERROR_TITLES: Record<string, string> = {
+  model_adapter_error: "模型适配失败",
+  model_configuration_error: "模型配置错误",
+  model_invocation_error: "模型调用失败",
+  structured_output_error: "模型结构化输出失败",
+  tool_protocol_error: "模型工具协议不兼容",
+};
+
+function parseModelAdapterError(
+  message: string,
+): { title: string; description: string } | null {
+  const match = message.match(
+    /\[(model_adapter_error|model_configuration_error|model_invocation_error|structured_output_error|tool_protocol_error)\]\s*([^\n]+)/,
+  );
+  if (!match) {
+    return null;
+  }
+  const [, code, description] = match;
+  return {
+    title: MODEL_ERROR_TITLES[code] ?? "模型调用失败",
+    description: description.trim(),
+  };
 }
 
 function getThreadMetadataForAssistant(
@@ -159,6 +184,47 @@ function OpenGitHubRepo() {
   );
 }
 
+function NewThreadButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className="shrink-0"
+      onClick={onClick}
+      aria-label="新建对话"
+    >
+      <SquarePen className="size-4" />
+      <span className="hidden sm:inline">新建对话</span>
+    </Button>
+  );
+}
+
+function HistoryToggleButton({
+  open,
+  onClick,
+}: {
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size="icon"
+      variant="ghost"
+      className="shrink-0 hover:bg-gray-100"
+      onClick={onClick}
+      aria-label={open ? "关闭对话历史" : "打开对话历史"}
+    >
+      {open ? (
+        <PanelRightOpen className="size-5" />
+      ) : (
+        <PanelRightClose className="size-5" />
+      )}
+    </Button>
+  );
+}
+
 export function Thread() {
   const [artifactContext, setArtifactContext] = useArtifactContext();
   const [artifactOpen, closeArtifact] = useArtifactOpen();
@@ -167,6 +233,10 @@ export function Thread() {
   const [chatHistoryOpen, setChatHistoryOpen] = useQueryState(
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
+  );
+  const [hideToolCalls, setHideToolCalls] = useQueryState(
+    "hideToolCalls",
+    parseAsBoolean.withDefault(true),
   );
   const [input, setInput] = useState("");
   const {
@@ -184,28 +254,42 @@ export function Thread() {
 
   const stream = useStreamContext();
   const displayMessages = stream.values.display_messages;
-  const stateHumanMessages = useMemo(
-    () => getHumanMessages(stream.values.messages),
-    [stream.values.messages],
-  );
+  const deferredDisplayMessages = useDeferredValue(displayMessages);
+  const deferredLiveMessages = useDeferredValue(stream.messages);
   const persistedMessages = useMemo(
     () =>
-      mergeVisibleMessages(
-        filterConversationMessages(displayMessages),
-        stateHumanMessages,
+      getPersistedConversationMessages(
+        deferredDisplayMessages,
+        stream.values.messages,
       ),
-    [displayMessages, stateHumanMessages],
+    [deferredDisplayMessages, stream.values.messages],
   );
   const visibleLiveMessages = useMemo(
-    () => filterConversationMessages(stream.messages),
-    [stream.messages],
+    () => filterConversationMessages(deferredLiveMessages),
+    [deferredLiveMessages],
   );
-  const messages = useMemo(
-    () =>
+  const messages = useMemo(() => {
+    const mergedMessages =
       persistedMessages === visibleLiveMessages
         ? visibleLiveMessages
-        : mergeVisibleMessages(persistedMessages, visibleLiveMessages),
-    [persistedMessages, visibleLiveMessages],
+        : mergeVisibleMessages(persistedMessages, visibleLiveMessages);
+    return orderMessagesByReference(mergedMessages, stream.values.messages);
+  }, [persistedMessages, stream.values.messages, visibleLiveMessages]);
+  const renderMessages = useMemo(
+    () =>
+      messages.filter(
+        (message) =>
+          !message.id?.startsWith(DO_NOT_RENDER_ID_PREFIX) &&
+          (!hideToolCalls || message.type !== "tool"),
+      ),
+    [hideToolCalls, messages],
+  );
+  const renderableLiveMessages = useMemo(
+    () =>
+      hideToolCalls
+        ? visibleLiveMessages.filter((message) => message.type !== "tool")
+        : visibleLiveMessages,
+    [hideToolCalls, visibleLiveMessages],
   );
   const isLoading = stream.isLoading;
   const [cancelSubmitting, setCancelSubmitting] = useState(false);
@@ -220,7 +304,7 @@ export function Thread() {
       ? activeInterrupt
       : undefined;
   const hasGenericInterrupt = !!activeGenericInterrupt;
-  const lastLiveRenderSignal = getLastLiveRenderSignal(visibleLiveMessages);
+  const lastLiveRenderSignal = getLastLiveRenderSignal(renderableLiveMessages);
 
   const lastError = useRef<string | undefined>(undefined);
 
@@ -286,10 +370,12 @@ export function Thread() {
 
       // 消息已定义且尚未记录，先保存再发送错误。
       lastError.current = message;
-      toast.error("发生错误，请重试。", {
+      const modelError = parseModelAdapterError(message);
+      toast.error(modelError?.title ?? "发生错误，请重试。", {
         description: (
           <p>
-            <strong>错误：</strong> <code>{message}</code>
+            <strong>错误：</strong>{" "}
+            <code>{modelError?.description ?? message}</code>
           </p>
         ),
         richColors: true,
@@ -547,11 +633,12 @@ export function Thread() {
   }, [cancelSubmitting, stream, threadId]);
 
   const chatStarted = !!threadId || !!messages.length;
-  const hasNoAIOrToolMessages = !messages.find(
+  const hasNoAIOrToolMessages = !renderMessages.find(
     (m) => m.type === "ai" || m.type === "tool",
   );
-  const lastVisibleMessageId = messages[messages.length - 1]?.id;
-  const lastVisibleMessageType = messages[messages.length - 1]?.type;
+  const lastVisibleMessageId = renderMessages[renderMessages.length - 1]?.id;
+  const lastVisibleMessageType =
+    renderMessages[renderMessages.length - 1]?.type;
   const shouldRenderStandaloneInterrupt =
     !!activeInterrupt &&
     (hasNoAIOrToolMessages ||
@@ -560,44 +647,20 @@ export function Thread() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
-      <div className="relative hidden lg:flex">
-        <motion.div
-          className="absolute z-20 h-full overflow-hidden border-r bg-white"
-          style={{ width: 300 }}
-          animate={
-            isLargeScreen
-              ? { x: chatHistoryOpen ? 0 : -300 }
-              : { x: chatHistoryOpen ? 0 : -300 }
-          }
-          initial={{ x: -300 }}
-          transition={
-            isLargeScreen
-              ? { type: "spring", stiffness: 300, damping: 30 }
-              : { duration: 0 }
-          }
-        >
-          <div
-            className="relative h-full"
-            style={{ width: 300 }}
-          >
-            <ThreadHistory />
-          </div>
-        </motion.div>
-      </div>
+      <ThreadHistory />
 
       <div
         className={cn(
-          "grid w-full grid-cols-[1fr_0fr] transition-all duration-500",
+          "grid w-full grid-cols-[1fr_0fr]",
           artifactOpen && "grid-cols-[3fr_2fr]",
         )}
       >
-        <motion.div
+        <div
           className={cn(
             "relative flex min-w-0 flex-1 flex-col overflow-hidden",
             !chatStarted && "grid-rows-[1fr]",
           )}
-          layout={isLargeScreen}
-          animate={{
+          style={{
             marginLeft: chatHistoryOpen ? (isLargeScreen ? 300 : 0) : 0,
             width: chatHistoryOpen
               ? isLargeScreen
@@ -605,87 +668,44 @@ export function Thread() {
                 : "100%"
               : "100%",
           }}
-          transition={
-            isLargeScreen
-              ? { type: "spring", stiffness: 300, damping: 30 }
-              : { duration: 0 }
-          }
         >
           {!chatStarted && (
             <div className="absolute top-0 left-0 z-10 flex w-full items-center justify-between gap-3 p-2 pl-4">
-              <div>
-                {(!chatHistoryOpen || !isLargeScreen) && (
-                  <Button
-                    className="hover:bg-gray-100"
-                    variant="ghost"
-                    onClick={() => setChatHistoryOpen((p) => !p)}
-                  >
-                    {chatHistoryOpen ? (
-                      <PanelRightOpen className="size-5" />
-                    ) : (
-                      <PanelRightClose className="size-5" />
-                    )}
-                  </Button>
-                )}
-              </div>
-              <div className="absolute top-2 right-4 flex items-center">
+              <HistoryToggleButton
+                open={!!chatHistoryOpen}
+                onClick={() => setChatHistoryOpen((open) => !open)}
+              />
+              <div className="flex shrink-0 items-center gap-2">
+                <NewThreadButton onClick={() => setThreadId(null)} />
                 <OpenGitHubRepo />
               </div>
             </div>
           )}
           {chatStarted && (
             <div className="relative z-10 flex items-center justify-between gap-3 p-2">
-              <div className="relative flex items-center justify-start gap-2">
-                <div className="absolute left-0 z-10">
-                  {(!chatHistoryOpen || !isLargeScreen) && (
-                    <Button
-                      className="hover:bg-gray-100"
-                      variant="ghost"
-                      onClick={() => setChatHistoryOpen((p) => !p)}
-                    >
-                      {chatHistoryOpen ? (
-                        <PanelRightOpen className="size-5" />
-                      ) : (
-                        <PanelRightClose className="size-5" />
-                      )}
-                    </Button>
-                  )}
-                </div>
-                <motion.button
-                  className="flex cursor-pointer items-center gap-2"
+              <div className="flex min-w-0 items-center justify-start gap-2">
+                <HistoryToggleButton
+                  open={!!chatHistoryOpen}
+                  onClick={() => setChatHistoryOpen((open) => !open)}
+                />
+                <button
+                  type="button"
+                  className="flex min-w-0 cursor-pointer items-center gap-2"
                   onClick={() => setThreadId(null)}
-                  animate={{
-                    marginLeft: !chatHistoryOpen ? 48 : 0,
-                  }}
-                  transition={{
-                    type: "spring",
-                    stiffness: 300,
-                    damping: 30,
-                  }}
                 >
                   <LangGraphLogoSVG
                     width={32}
                     height={32}
                   />
-                  <span className="text-xl font-semibold tracking-tight">
+                  <span className="truncate text-xl font-semibold tracking-tight">
                     Agent Chat
                   </span>
-                </motion.button>
+                </button>
               </div>
 
-              <div className="flex items-center gap-4">
-                <div className="flex items-center">
-                  <OpenGitHubRepo />
-                </div>
-                <TooltipIconButton
-                  size="lg"
-                  className="p-4"
-                  tooltip="新建 thread"
-                  variant="ghost"
-                  onClick={() => setThreadId(null)}
-                >
-                  <SquarePen className="size-5" />
-                </TooltipIconButton>
+              <div className="flex shrink-0 items-center gap-2">
+                <NewThreadButton onClick={() => setThreadId(null)} />
+                <OpenGitHubRepo />
               </div>
 
               <div className="from-background to-background/0 absolute inset-x-0 top-full h-5 bg-gradient-to-b" />
@@ -702,27 +722,32 @@ export function Thread() {
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
               content={
                 <>
-                  {messages
-                    .filter((m) => !m.id?.startsWith(DO_NOT_RENDER_ID_PREFIX))
-                    .map((message, index) =>
-                      message.type === "human" ? (
-                        <HumanMessage
-                          key={message.id || `${message.type}-${index}`}
-                          message={message}
-                          isLoading={isLoading}
-                        />
-                      ) : (
-                        <AssistantMessage
-                          key={message.id || `${message.type}-${index}`}
-                          message={message}
-                          isLoading={isLoading}
-                          interrupt={activeInterrupt}
-                          isLastMessage={message.id === lastVisibleMessageId}
-                          hasNoAIOrToolMessages={hasNoAIOrToolMessages}
-                          handleRegenerate={handleRegenerate}
-                        />
-                      ),
-                    )}
+                  {stream.isThreadLoading && renderMessages.length === 0 ? (
+                    <div className="mx-auto flex items-center gap-2 py-8 text-sm text-[#475569]">
+                      <LoaderCircle className="size-4 animate-spin" />
+                      <span>正在加载历史对话...</span>
+                    </div>
+                  ) : null}
+                  {renderMessages.map((message, index) =>
+                    message.type === "human" ? (
+                      <HumanMessage
+                        key={message.id || `${message.type}-${index}`}
+                        message={message}
+                        isLoading={isLoading}
+                      />
+                    ) : (
+                      <AssistantMessage
+                        key={message.id || `${message.type}-${index}`}
+                        message={message}
+                        isLoading={isLoading}
+                        interrupt={activeInterrupt}
+                        isLastMessage={message.id === lastVisibleMessageId}
+                        hasNoAIOrToolMessages={hasNoAIOrToolMessages}
+                        handleRegenerate={handleRegenerate}
+                        hideToolCalls={!!hideToolCalls}
+                      />
+                    ),
+                  )}
                   {/* interrupt 可能发生在最后一条用户消息之后，此时没有后续 AI/tool 消息承载补参 UI。 */}
                   {shouldRenderStandaloneInterrupt && (
                     <AssistantMessage
@@ -733,11 +758,20 @@ export function Thread() {
                       isLastMessage={true}
                       hasNoAIOrToolMessages={hasNoAIOrToolMessages}
                       handleRegenerate={handleRegenerate}
+                      hideToolCalls={!!hideToolCalls}
                     />
                   )}
                   {isLoading && !firstTokenReceived && (
                     <AssistantMessageLoading />
                   )}
+                  {!!threadId &&
+                  !stream.isThreadLoading &&
+                  !isLoading &&
+                  renderMessages.length === 0 ? (
+                    <p className="mx-auto py-8 text-sm text-[#64748b]">
+                      该对话没有可展示的消息。
+                    </p>
+                  ) : null}
                 </>
               }
               footer={
@@ -792,6 +826,19 @@ export function Thread() {
                       />
 
                       <div className="flex items-center gap-4 p-2 pt-4">
+                        <div className="flex shrink-0 items-center space-x-2">
+                          <Switch
+                            id="hide-tool-calls"
+                            checked={hideToolCalls}
+                            onCheckedChange={setHideToolCalls}
+                          />
+                          <Label
+                            htmlFor="hide-tool-calls"
+                            className="text-sm text-gray-600"
+                          >
+                            隐藏工具调用
+                          </Label>
+                        </div>
                         <Label
                           htmlFor="file-input"
                           className="flex cursor-pointer items-center gap-2"
@@ -840,7 +887,7 @@ export function Thread() {
               }
             />
           </StickToBottom>
-        </motion.div>
+        </div>
         <div className="relative flex flex-col border-l">
           <div className="absolute inset-0 flex min-w-[30vw] flex-col">
             <div className="grid grid-cols-[1fr_auto] border-b p-4">

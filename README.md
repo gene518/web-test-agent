@@ -4,11 +4,12 @@
 
 本项目是一个面向 Web 自动化测试的智能体工程，整体目标是把"理解测试需求、生成测试计划、生成 Playwright 脚本、调试修复失败脚本、定时执行测试"串成可持续使用的闭环。
 
-从整体看，项目由三层组成：
+从整体看，项目由四层组成：
 
 1. 后端智能体层：位于 `web-agent/`，使用 LangGraph 编排主图，通过 Master 子图统一判断意图、补齐参数、分发到具体阶段。
 2. 前端交互层：位于 `web-portal/`，基于 Next.js 和 Agent Chat UI，负责对话、历史线程、文件上传、人工中断补参、工具结果展示。
 3. 本地运行与测试层：位于 `start/`、`web-agent/tests/` 和内置 demo 工程，负责一键拉起前后端、验证路由、验证阶段执行和调度服务。
+4. 桌面客户端层：位于 `pc-client/`，使用 Tauri v2 为 macOS 和 Windows 提供轻量 Agent 会话界面，并复用现有后端协议与启动脚本。
 
 分模块看，后端围绕一个 Master 和四类执行目标组织：
 
@@ -17,6 +18,32 @@
 - `generator`：读取测试计划并生成 Playwright `.spec.ts` 脚本。
 - `healer`：运行失败脚本、定位问题、修改脚本并复测。
 - `scheduler`：维护定时任务配置，并可由独立服务按 Cron 扫描执行。
+
+### 1.1 模型适配配置
+
+Master 与 Specialist 支持分别接入 Qwen、MiniMax、GLM、OpenAI 或其他兼容网关。新配置使用 Pydantic 嵌套环境变量，例如：
+
+```dotenv
+MASTER_LLM__FAMILY=qwen
+MASTER_LLM__CHANNEL=dashscope_openai
+MASTER_LLM__MODEL=qwen3.5-plus
+MASTER_LLM__API_KEY=your-dashscope-api-key
+MASTER_LLM__BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MASTER_LLM__THINKING=disabled
+
+SPECIALIST_LLM__FAMILY=minimax
+SPECIALIST_LLM__CHANNEL=minimax_anthropic
+SPECIALIST_LLM__MODEL=MiniMax-M2.7
+SPECIALIST_LLM__API_KEY=your-minimax-api-key
+SPECIALIST_LLM__BASE_URL=https://api.minimax.io/anthropic
+SPECIALIST_LLM__THINKING=auto
+```
+
+`FAMILY` 表示模型家族，`CHANNEL` 表示实际接入协议。两者必须分开配置，因为同一模型通过原厂接口、Anthropic 兼容接口或百炼网关调用时，thinking、工具调用和结构化输出参数并不相同。`MASTER_LLM__API_KEY` 与 `SPECIALIST_LLM__API_KEY` 分别保存两个角色直接使用的密钥，不再通过其他环境变量间接引用。完整示例见 `web-agent/.env.example`。
+
+旧的 `MASTER_MODEL`、`SPECIALIST_MODEL`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 仍可使用；启动时会提示迁移。`MODEL_ADAPTER_V2_ENABLED=false` 可临时回退到旧模型初始化逻辑。
+
+配置完成后可在 `web-agent/` 下运行 `uv run python -m deep_agent.model.diagnostics`，检查两个角色最终解析到的模型家族、通道、结构化输出策略、上下文限制和缺失配置。诊断结果不会输出 API Key 或完整提示词，也不会发起计费模型请求。
 
 ## 2. 执行 Demo 示例
 
@@ -103,6 +130,10 @@ web-test-agent/  # 仓库根目录。
 │   ├── README.md
 │   ├── macos-start.command  # macOS 启动脚本，支持 start / end / logs 参数。
 │   └── windows-start.ps1   # Windows 启动入口（PowerShell 实现），支持 start / end / logs 参数。
+├── pc-client/  # Tauri v2 桌面客户端，支持 macOS 和 Windows。
+│   ├── src/  # React Agent 会话、历史、工具消息和取消任务界面。
+│   ├── src-tauri/  # 原生窗口、HTTP 权限和后端进程生命周期管理。
+│   └── README.md  # 开发、构建和运行说明。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。
@@ -148,6 +179,7 @@ web-test-agent/  # 仓库根目录。
 │   │   │       └── scheduler_agent.py  # `SchedulerAgent`，把自然语言定时需求转成调度配置更新。
 │   │   ├── config/  # 静态配置和文件过滤规则。
 │   │   │   └── specialist_file_filter.py  # Specialist 文件查询范围和过滤规则。
+│   │   ├── model/  # Qwen、MiniMax、GLM、OpenAI 及兼容网关的模型协议适配层。
 │   │   ├── core/  # 基础设施、配置解析和显示消息逻辑。
 │   │   │   ├── config.py  # `AppSettings` 与 `get_settings()`，集中管理环境变量和运行配置。
 │   │   │   ├── autotest_project_directory.py  # 自动化工程目录解析与内置 demo 模板复制。

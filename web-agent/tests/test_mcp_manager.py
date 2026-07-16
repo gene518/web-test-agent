@@ -234,6 +234,15 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
             str(project_a),
         )
         self.assertEqual(
+            FakeClient.instances[0].connections[PLAYWRIGHT_TEST_MCP_SERVER_NAME]["args"],
+            [
+                "--yes",
+                f"--package={settings.playwright_mcp_package}",
+                "playwright",
+                "run-test-mcp-server",
+            ],
+        )
+        self.assertEqual(
             FakeClient.instances[1].connections[PLAYWRIGHT_TEST_MCP_SERVER_NAME]["cwd"],
             str(project_b),
         )

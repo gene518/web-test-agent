@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, convert_to_messages
 
+from deep_agent.model.reasoning import sanitize_reasoning_for_display, sanitize_reasoning_metadata_for_display
+
 
 DISPLAY_TEXT_CHAR_LIMIT = 12000
 DISPLAY_TOOL_ARG_CHAR_LIMIT = 4000
@@ -59,7 +61,7 @@ def sanitize_display_messages(messages: Any) -> list[BaseMessage]:
 def _sanitize_display_message(message: BaseMessage) -> BaseMessage:
     updates: dict[str, Any] = {
         "content": _truncate_display_value(
-            message.content,
+            sanitize_reasoning_for_display(message.content),
             max_string_chars=DISPLAY_TEXT_CHAR_LIMIT,
         )
     }
@@ -74,7 +76,7 @@ def _sanitize_display_message(message: BaseMessage) -> BaseMessage:
     additional_kwargs = getattr(message, "additional_kwargs", None)
     if isinstance(additional_kwargs, Mapping) and additional_kwargs:
         updates["additional_kwargs"] = _truncate_display_value(
-            dict(additional_kwargs),
+            sanitize_reasoning_metadata_for_display(additional_kwargs),
             max_string_chars=DISPLAY_TOOL_ARG_CHAR_LIMIT,
         )
 

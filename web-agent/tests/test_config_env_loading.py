@@ -5,10 +5,33 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from deep_agent.core.config import load_project_env_file
+from deep_agent.core.config import AppSettings, load_project_env_file
 
 
 class ProjectEnvLoadingTestCase(unittest.TestCase):
+    def test_playwright_mcp_args_pin_configured_package_version(self) -> None:
+        settings = AppSettings(
+            _env_file=None,
+            playwright_mcp_package="@playwright/test@1.61.1",
+            playwright_test_package="@playwright/test@1.58.0",
+        )
+
+        self.assertEqual(
+            settings.playwright_mcp_args,
+            (
+                "--yes",
+                "--package=@playwright/test@1.61.1",
+                "playwright",
+                "run-test-mcp-server",
+            ),
+        )
+
+    def test_empty_legacy_model_names_fall_back_to_defaults(self) -> None:
+        settings = AppSettings(master_model=" ", specialist_model="")
+
+        self.assertEqual(settings.master_model, "openai:gpt-4.1")
+        self.assertEqual(settings.specialist_model, "openai:gpt-5.4")
+
     def test_load_project_env_file_reads_utf8_and_preserves_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"

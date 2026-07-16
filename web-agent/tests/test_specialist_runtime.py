@@ -184,18 +184,22 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     def test_openai_compatible_base_url_disables_responses_api(self) -> None:
         settings = AppSettings(
+            _env_file=None,
+            master_model="openai:glm-5.2",
             openai_api_key="test-key",
             openai_base_url=" https://open.bigmodel.cn/api/paas/v4/ ",
         )
 
-        kwargs = settings.build_model_kwargs("openai:gpt-5.4")
+        kwargs = settings.build_model_kwargs(role="master")
 
         self.assertEqual(kwargs["base_url"], "https://open.bigmodel.cn/api/paas/v4/")
         self.assertFalse(kwargs["use_responses_api"])
-        self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+        self.assertEqual(kwargs["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(kwargs["disabled_params"], {"parallel_tool_calls": None})
 
     def test_specialist_agent_uses_configured_model_instance(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             specialist_model="openai:gpt-5.4",
             openai_api_key="test-key",
             openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
@@ -217,15 +221,17 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             result = agent._create_specialist_agent(context)
 
         self.assertIs(result, fake_deep_agent)
-        self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model"], "gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model_provider"], "openai")
         self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
-        self.assertEqual(init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False})
+        self.assertNotIn("extra_body", init_model_mock.call_args.kwargs)
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertIsNone(create_agent_mock.call_args.kwargs["backend"])
         self.assertIsNone(create_agent_mock.call_args.kwargs["permissions"])
 
     def test_master_agent_uses_same_thinking_switch_as_specialist(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             master_model="openai:gpt-5.4",
             openai_api_key="test-key",
             openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
@@ -236,9 +242,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             agent = MasterAgent(settings)
 
         self.assertIs(agent._model, fake_model)
-        self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model"], "gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model_provider"], "openai")
         self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
-        self.assertEqual(init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False})
+        self.assertNotIn("extra_body", init_model_mock.call_args.kwargs)
 
     async def test_base_specialist_runtime_passes_configured_recursion_limit(self) -> None:
         agent = DefaultRuntimeAgent(

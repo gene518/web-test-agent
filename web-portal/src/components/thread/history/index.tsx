@@ -13,7 +13,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PanelRightOpen, PanelRightClose } from "lucide-react";
+import { PanelRightOpen } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import {
   summarizeThreadRequestTitle,
@@ -238,11 +238,13 @@ function ThreadList({
             <Button
               variant="ghost"
               className="h-auto w-full items-start justify-start px-3 py-2 text-left font-normal"
+              aria-current={t.thread_id === threadId ? "true" : undefined}
               onClick={(e) => {
                 e.preventDefault();
+                if (t.thread_id !== threadId) {
+                  setThreadId(t.thread_id);
+                }
                 onThreadClick?.(t.thread_id);
-                if (t.thread_id === threadId) return;
-                setThreadId(t.thread_id);
               }}
             >
               <div className="flex w-full flex-col items-start gap-0.5">
@@ -253,9 +255,7 @@ function ThreadList({
                   {timeLabel ? (
                     <span
                       className="shrink-0 text-xs text-slate-400 tabular-nums"
-                      title={
-                        timestamp ? timestamp.toLocaleString() : undefined
-                      }
+                      title={timestamp ? timestamp.toLocaleString() : undefined}
                     >
                       {timeLabel}
                     </span>
@@ -309,27 +309,28 @@ export default function ThreadHistory() {
 
   return (
     <>
-      <div className="shadow-inner-right hidden h-screen w-[300px] shrink-0 flex-col items-start justify-start gap-6 border-r-[1px] border-slate-300 lg:flex">
-        <div className="flex w-full items-center justify-between px-4 pt-1.5">
-          <Button
-            className="hover:bg-gray-100"
-            variant="ghost"
-            onClick={() => setChatHistoryOpen((p) => !p)}
-          >
-            {chatHistoryOpen ? (
+      {chatHistoryOpen && isLargeScreen ? (
+        <div className="shadow-inner-right fixed inset-y-0 left-0 z-30 hidden w-[300px] flex-col items-start justify-start gap-6 overflow-hidden border-r border-[#cbd5e1] bg-[#ffffff] lg:flex">
+          <div className="flex w-full items-center justify-between px-4 pt-1.5">
+            <Button
+              type="button"
+              size="icon"
+              className="hover:bg-gray-100"
+              variant="ghost"
+              aria-label="关闭对话历史"
+              onClick={() => setChatHistoryOpen(false)}
+            >
               <PanelRightOpen className="size-5" />
-            ) : (
-              <PanelRightClose className="size-5" />
-            )}
-          </Button>
-          <h1 className="text-xl font-semibold tracking-tight">对话历史</h1>
+            </Button>
+            <h1 className="text-xl font-semibold tracking-tight">对话历史</h1>
+          </div>
+          {threadsLoading ? (
+            <ThreadHistoryLoading />
+          ) : (
+            <ThreadList threads={threads} />
+          )}
         </div>
-        {threadsLoading ? (
-          <ThreadHistoryLoading />
-        ) : (
-          <ThreadList threads={threads} />
-        )}
-      </div>
+      ) : null}
       <div className="lg:hidden">
         <Sheet
           open={!!chatHistoryOpen && !isLargeScreen}
@@ -345,10 +346,14 @@ export default function ThreadHistory() {
             <SheetHeader>
               <SheetTitle>对话历史</SheetTitle>
             </SheetHeader>
-            <ThreadList
-              threads={threads}
-              onThreadClick={() => setChatHistoryOpen((o) => !o)}
-            />
+            {threadsLoading ? (
+              <ThreadHistoryLoading />
+            ) : (
+              <ThreadList
+                threads={threads}
+                onThreadClick={() => setChatHistoryOpen(false)}
+              />
+            )}
           </SheetContent>
         </Sheet>
       </div>

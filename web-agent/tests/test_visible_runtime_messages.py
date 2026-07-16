@@ -170,3 +170,17 @@ class VisibleRuntimeMessagesTestCase(unittest.TestCase):
         self.assertLess(len(messages[0].content), len(large_text))
         self.assertIn("UI 展示已截断", messages[0].content)
         self.assertIn("UI 展示已截断", messages[0].tool_calls[0]["args"]["code"])
+
+    def test_sanitize_display_messages_hides_reasoning_but_preserves_answer(self) -> None:
+        source = AIMessage(
+            content="<think>private chain of thought</think>\n最终答案",
+            id="ai-reasoning",
+            additional_kwargs={"reasoning_content": "private", "safe_field": "kept"},
+        )
+
+        sanitized = sanitize_display_messages([source])[0]
+
+        self.assertEqual(source.content, "<think>private chain of thought</think>\n最终答案")
+        self.assertEqual(sanitized.content, "最终答案")
+        self.assertNotIn("reasoning_content", sanitized.additional_kwargs)
+        self.assertEqual(sanitized.additional_kwargs["safe_field"], "kept")

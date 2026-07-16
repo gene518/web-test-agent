@@ -12,6 +12,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from deep_agent.model.errors import ModelAdapterError
+
 from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.display_message import (
@@ -266,6 +268,13 @@ class SpecialistDisplayMixin:
     def _build_unhandled_exception_message(self, exc: Exception) -> str:
         """把漏网异常压缩成一条用户可读、不会打爆 graph 的消息。"""
 
+        if isinstance(exc, ModelAdapterError):
+            payload = exc.diagnostic_payload()
+            return (
+                f"{self.display_name} 因模型适配错误停止当前阶段。"
+                f"错误码：`{payload['code']}`。"
+                f"错误信息：{payload['message']}"
+            )
         error_message = str(exc).strip() or exc.__class__.__name__
         if len(error_message) > 1200:
             error_message = f"{error_message[:1200]}... [truncated]"

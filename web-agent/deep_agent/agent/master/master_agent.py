@@ -27,6 +27,7 @@ from deep_agent.agent.master.prompts.intent_judge import INTENT_JUDGE_SYSTEM_PRO
 from deep_agent.agent.master.prompts.summary import FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import AppSettings
+from deep_agent.model import adapt_chat_model, invoke_structured, resolve_model_capabilities
 from deep_agent.core.runtime_logging import (
     build_trace_context,
     debug_max_chars,
@@ -57,9 +58,24 @@ class MasterAgent:
         """
 
         self._settings = settings
-        model_kwargs = settings.build_model_kwargs(settings.master_model)
+        self._adapter_enabled = settings.model_adapter_v2_enabled
+        self._model_connection = settings.resolve_model_connection("master") if self._adapter_enabled else None
+        self._model_capabilities = (
+            resolve_model_capabilities(self._model_connection)
+            if self._model_connection is not None
+            else None
+        )
+        model_kwargs = settings.build_model_kwargs(role="master")
         # 这个模型实例同时用于意图识别、参数补全、general 回答、历史压缩和最终总结。
-        self._model = init_chat_model(**model_kwargs)
+        raw_model = init_chat_model(**model_kwargs)
+        if self._model_connection is not None and self._model_capabilities is not None:
+            self._model = adapt_chat_model(
+                raw_model,
+                connection=self._model_connection,
+                capabilities=self._model_capabilities,
+            )
+        else:
+            self._model = raw_model
         logger.info("%s Master 模型初始化完成 model_kwargs=%s",
             log_title("初始化", "模型初始化"), summarize_model_kwargs(model_kwargs),)
 
@@ -72,15 +88,11 @@ class MasterAgent:
 
         # 主链路：这里开始意图识别的结构化模型调用；输出会直接决定后续进入写用例、
         # 写脚本、调试修复还是仅做 general 问答。
-        classifier_model = self._model.with_structured_output(
-            IntentClassification,
-            method="function_calling",
-        )
         state_with_summary = await self.ensure_conversation_summary(state, config=config)
         model_messages = self._build_classifier_messages(state_with_summary)
         log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="intent_judge_node", event_name="model_start"), model="master_classifier", messages=model_messages)
-        classification = await classifier_model.ainvoke(model_messages, config=config)
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="intent_judge_node", event_name="model_end"), model="master_classifier", output=classification.model_dump())
+        classification, strategy, attempts = await self._invoke_intent_classification(model_messages, config=config)
+        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="intent_judge_node", event_name="model_end"), model="master_classifier", output={"parsed": classification.model_dump(), "strategy": strategy, "attempts": attempts})
 
         extracted_params = build_extracted_params(classification)
         latest_user_request = self.latest_human_message_text(state.get("messages", []))
@@ -119,10 +131,6 @@ class MasterAgent:
 
         # 主链路：这里开始固定意图的补参结构化调用；当前节点只允许补齐参数，
         # 不允许把既定阶段从 plan / generator / healer / scheduler 切走。
-        classifier_model = self._model.with_structured_output(
-            IntentClassification,
-            method="function_calling",
-        )
         context_prompt = build_master_complete_params_prompt(
             agent_type=agent_type,
             extracted_params=existing_params,
@@ -141,9 +149,37 @@ class MasterAgent:
             HumanMessage(content=resume_text),
         ]
         log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="complete_params_node", event_name="model_start"), model="master_param_completion", messages=model_messages)
-        classification = await classifier_model.ainvoke(model_messages, config=config)
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="complete_params_node", event_name="model_end"), model="master_param_completion", output=classification.model_dump())
+        classification, strategy, attempts = await self._invoke_intent_classification(model_messages, config=config)
+        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="complete_params_node", event_name="model_end"), model="master_param_completion", output={"parsed": classification.model_dump(), "strategy": strategy, "attempts": attempts})
         return build_extracted_params(classification)
+
+    async def _invoke_intent_classification(
+        self,
+        messages: list[BaseMessage],
+        *,
+        config: RunnableConfig | None,
+    ) -> tuple[IntentClassification, str, int]:
+        """执行结构化分类；关闭适配层时完整恢复旧 Function Calling。"""
+
+        if not self._adapter_enabled:
+            classifier_model = self._model.with_structured_output(
+                IntentClassification,
+                method="function_calling",
+            )
+            classification = await classifier_model.ainvoke(messages, config=config)
+            return classification, "legacy_function_calling", 1
+
+        if self._model_capabilities is None or self._model_connection is None:
+            raise RuntimeError("模型适配层已开启，但 Master 模型能力未初始化。")
+        structured_result = await invoke_structured(
+            model=self._model,
+            schema=IntentClassification,
+            messages=messages,
+            capabilities=self._model_capabilities,
+            connection=self._model_connection,
+            config=config,
+        )
+        return structured_result.parsed, structured_result.strategy, structured_result.attempts
 
     async def answer_general_request(
         self,

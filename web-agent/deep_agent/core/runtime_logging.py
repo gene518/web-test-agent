@@ -145,6 +145,7 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
     return {
         "master_model": getattr(settings, "master_model", None),
         "specialist_model": getattr(settings, "specialist_model", None),
+        "model_adapter_v2_enabled": getattr(settings, "model_adapter_v2_enabled", None),
         "default_automation_project_root": str(
             getattr(settings, "resolved_default_automation_project_root", getattr(settings, "default_automation_project_root", None))
         ),
@@ -160,6 +161,7 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         "pwtest_headed": getattr(settings, "pwtest_headed", None),
         "playwright_bootstrap_workspace": getattr(settings, "playwright_bootstrap_workspace", None),
         "playwright_skip_browser_download": getattr(settings, "playwright_skip_browser_download", None),
+        "playwright_mcp_package": getattr(settings, "playwright_mcp_package", None),
         "playwright_test_package": getattr(settings, "playwright_test_package", None),
         "langsmith_project": getattr(settings, "langsmith_project", None),
         "langsmith_tracing": getattr(settings, "langsmith_tracing", None),
@@ -182,8 +184,24 @@ def summarize_model_kwargs(model_kwargs: Mapping[str, Any]) -> dict[str, Any]:
         "stream_chunk_timeout": model_kwargs.get("stream_chunk_timeout"),
         "max_retries": model_kwargs.get("max_retries"),
         "use_responses_api": model_kwargs.get("use_responses_api"),
+        "disabled_params": sorted(model_kwargs.get("disabled_params", {})),
         "enable_thinking": (
             model_kwargs.get("extra_body", {}).get("enable_thinking")
+            if isinstance(model_kwargs.get("extra_body"), Mapping)
+            else None
+        ),
+        "thinking": (
+            model_kwargs.get("extra_body", {}).get("thinking")
+            if isinstance(model_kwargs.get("extra_body"), Mapping)
+            else None
+        ),
+        "reasoning_split": (
+            model_kwargs.get("extra_body", {}).get("reasoning_split")
+            if isinstance(model_kwargs.get("extra_body"), Mapping)
+            else None
+        ),
+        "tool_stream": (
+            model_kwargs.get("extra_body", {}).get("tool_stream")
             if isinstance(model_kwargs.get("extra_body"), Mapping)
             else None
         ),

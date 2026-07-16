@@ -62,6 +62,8 @@ bash start/macos-start.command logs
 
 如果脚本触发执行策略拦截，执行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 放行即可。
 
+Windows 启动脚本会在创建 Python 进程前统一启用 UTF-8，避免中文系统的 CP936 控制台无法输出 LangGraph Unicode 日志。前端使用操作系统字体，不会在启动或构建时访问 Google Fonts。
+
 > Playwright 浏览器安装标记等运行时状态文件统一放在 `%LOCALAPPDATA%\WebAutoTestAgent\`，不会污染仓库目录。
 
 ## 启动行为
@@ -74,9 +76,27 @@ bash start/macos-start.command logs
 4. 同步前端依赖（`pnpm install`）
 5. 安装 Playwright Chromium 浏览器（首次启动）
 6. 解析 Python 与端口
-7. 启动后端、前端，并尝试打开浏览器
+7. Windows 构建前端生产版本（避免开发服务器在长任务期间触发编译和调试开销）
+8. 启动后端、前端，并尝试打开浏览器
 
-启动过程中会按阶段输出进度，例如 `"[3/11] 检查 Node.js"`。服务启动后，当前窗口会持续打印后端和前端运行日志；依赖安装和 setup 信息也只打印到当前控制台，不单独保存日志文件。
+启动过程中会按阶段输出进度，例如 Windows 下的 `"[3/13] 检查 Node.js"`。服务启动后，当前窗口会持续打印后端和前端运行日志；依赖安装和 setup 信息也只打印到当前控制台，不单独保存日志文件。
+
+### 桌面客户端后端模式
+
+`pc-client/` 会设置 `CLIENT_BACKEND_ONLY=1` 和 `OPEN_BROWSER=0` 调用同一套平台脚本。该模式保留配置检查、系统依赖检查、后端/前端依赖同步和 Playwright 浏览器安装，只跳过 Web Portal 的生产构建、启动和浏览器打开。
+
+客户端模式要求使用指定的 `BACKEND_PORT`，端口已被占用时脚本会失败，不会自动切换端口。客户端在调用脚本前会先通过 `/info` 确认并停止旧 LangGraph 服务；非 LangGraph 服务不会被终止。
+
+手动验证后端专用分支时可执行：
+
+```bash
+CLIENT_BACKEND_ONLY=1 OPEN_BROWSER=0 BACKEND_PORT=2024 bash start/macos-start.command start
+```
+
+```powershell
+$env:CLIENT_BACKEND_ONLY="1"; $env:OPEN_BROWSER="0"; $env:BACKEND_PORT="2024"
+.\start\windows-start.ps1 -Mode start
+```
 
 ## 日志约定
 
@@ -95,7 +115,11 @@ bash start/macos-start.command logs
 
 启动相关配置统一放在 `web-agent/.env`：
 
+- `MASTER_LLM__*`：Master 模型家族、通道、模型名、独立 API Key、Base URL 和 thinking 配置
+- `SPECIALIST_LLM__*`：Plan、Generator、Healer 共用的模型连接配置和独立 API Key
+- `MODEL_ADAPTER_V2_ENABLED=false`：紧急回退旧模型初始化逻辑
 - `OPEN_BROWSER=0`：启动后不自动打开浏览器
+- `CLIENT_BACKEND_ONLY=1`：仅启动 LangGraph 后端，供桌面客户端使用
 - `FRONTEND_OPEN_URL=`：自定义启动后打开的页面地址
 - `START_FORCE_SETUP=1`：强制重新同步依赖
 - `START_INSTALL_PLAYWRIGHT_BROWSERS=true`：启动时安装 Playwright Chromium 浏览器

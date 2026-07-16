@@ -29,6 +29,9 @@ type ToolCallArgsState = {
 };
 
 const FINGERPRINT_VALUE_LIMIT = 2000;
+const normalizedMessageCache = new WeakMap<object, CanonicalMessage | null>();
+const normalizedToolCallsCache = new WeakMap<object, RenderToolCall[]>();
+const messageFingerprintsCache = new WeakMap<object, string[]>();
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null;
@@ -372,6 +375,10 @@ export function normalizeToolCalls(
       }
     | undefined,
 ): RenderToolCall[] {
+  if (message && normalizedToolCallsCache.has(message)) {
+    return normalizedToolCallsCache.get(message) ?? [];
+  }
+
   const mergedToolCalls = new Map<string, RenderToolCall>();
 
   const upsertToolCall = (
@@ -513,7 +520,11 @@ export function normalizeToolCalls(
   }
 
   if (!Array.isArray(message?.content)) {
-    return finalizeToolCalls(Array.from(mergedToolCalls.values()));
+    const result = finalizeToolCalls(Array.from(mergedToolCalls.values()));
+    if (message) {
+      normalizedToolCallsCache.set(message, result);
+    }
+    return result;
   }
 
   (message.content as Record<string, any>[]).forEach((block, index) => {
@@ -572,7 +583,11 @@ export function normalizeToolCalls(
     }
   });
 
-  return finalizeToolCalls(Array.from(mergedToolCalls.values()));
+  const result = finalizeToolCalls(Array.from(mergedToolCalls.values()));
+  if (message) {
+    normalizedToolCallsCache.set(message, result);
+  }
+  return result;
 }
 
 function mergeToolCalls(
@@ -620,9 +635,13 @@ function normalizeMessage(message: unknown): CanonicalMessage | undefined {
   if (!isRecord(message)) {
     return undefined;
   }
+  if (normalizedMessageCache.has(message)) {
+    return normalizedMessageCache.get(message) ?? undefined;
+  }
 
   const type = normalizeMessageType(message.type);
   if (!type) {
+    normalizedMessageCache.set(message, null);
     return undefined;
   }
 
@@ -637,9 +656,12 @@ function normalizeMessage(message: unknown): CanonicalMessage | undefined {
     if (toolCalls.length > 0) {
       normalizedMessage.tool_calls = toolCalls;
     }
+    normalizedToolCallsCache.set(normalizedMessage, toolCalls);
   }
 
-  return normalizedMessage as CanonicalMessage;
+  const canonicalMessage = normalizedMessage as CanonicalMessage;
+  normalizedMessageCache.set(message, canonicalMessage);
+  return canonicalMessage;
 }
 
 export function normalizeMessages(messages: unknown): CanonicalMessage[] {
@@ -659,6 +681,20 @@ export function getHumanMessages(messages: unknown): CanonicalMessage[] {
   );
 }
 
+export function getPersistedConversationMessages(
+  displayMessages: unknown,
+  stateMessages: unknown,
+): CanonicalMessage[] {
+  const display = filterConversationMessages(displayMessages);
+  if (display.length === 0) {
+    // Threads created before display_messages was introduced only persist the
+    // main message channel. Use it as a compatibility transcript.
+    return filterConversationMessages(stateMessages);
+  }
+
+  return mergeVisibleMessages(display, getHumanMessages(stateMessages));
+}
+
 export function filterConversationMessages(
   messages: unknown,
 ): CanonicalMessage[] {
@@ -671,7 +707,10 @@ export function filterConversationMessages(
       return true;
     }
 
-    return hasVisibleTextContent(message.content);
+    return (
+      hasVisibleTextContent(message.content) ||
+      normalizeToolCalls(message).length > 0
+    );
   });
 }
 
@@ -702,14 +741,22 @@ function contentFingerprint(message: CanonicalMessage): string {
 }
 
 function messageFingerprints(message: CanonicalMessage): string[] {
+  const cached = messageFingerprintsCache.get(message);
+  if (cached) {
+    return cached;
+  }
+
   if (message.id && shouldUseIdOnlyFingerprint(message)) {
-    return [`id:${message.id}`];
+    const fingerprints = [`id:${message.id}`];
+    messageFingerprintsCache.set(message, fingerprints);
+    return fingerprints;
   }
 
   const fingerprints = [contentFingerprint(message)];
   if (message.id) {
     fingerprints.unshift(`id:${message.id}`);
   }
+  messageFingerprintsCache.set(message, fingerprints);
   return fingerprints;
 }
 
@@ -845,6 +892,97 @@ export function mergeVisibleMessages(
   }
 
   return dedupeCanonicalMessages(merged);
+}
+
+export function orderMessagesByReference(
+  visibleMessages: unknown,
+  referenceMessages: unknown,
+): CanonicalMessage[] {
+  const visible = normalizeMessages(visibleMessages);
+  const reference = normalizeMessages(referenceMessages);
+  if (visible.length < 2 || reference.length === 0) {
+    return visible;
+  }
+
+  const referenceIndexesByFingerprint = new Map<string, number[]>();
+  reference.forEach((message, index) => {
+    messageFingerprints(message).forEach((fingerprint) => {
+      const indexes = referenceIndexesByFingerprint.get(fingerprint) ?? [];
+      indexes.push(index);
+      referenceIndexesByFingerprint.set(fingerprint, indexes);
+    });
+  });
+
+  const usedReferenceIndexes = new Set<number>();
+  const unmatchedMessages = new Set<CanonicalMessage>();
+  const rankedMessages: {
+    message: CanonicalMessage;
+    referenceIndex: number;
+    visibleIndex: number;
+  }[] = [];
+
+  visible.forEach((message, visibleIndex) => {
+    const referenceIndex = messageFingerprints(message)
+      .flatMap(
+        (fingerprint) => referenceIndexesByFingerprint.get(fingerprint) ?? [],
+      )
+      .find((index) => !usedReferenceIndexes.has(index));
+    if (referenceIndex == null) {
+      unmatchedMessages.add(message);
+      return;
+    }
+
+    usedReferenceIndexes.add(referenceIndex);
+    rankedMessages.push({ message, referenceIndex, visibleIndex });
+  });
+
+  // Keep front-end-only messages in their existing slots and reorder only
+  // messages that can be placed reliably using the graph state sequence.
+  const ordered = [...visible];
+  if (rankedMessages.length >= 2) {
+    const sortedMessages = [...rankedMessages].sort(
+      (left, right) => left.referenceIndex - right.referenceIndex,
+    );
+    rankedMessages.forEach(({ visibleIndex }, index) => {
+      ordered[visibleIndex] = sortedMessages[index].message;
+    });
+  }
+
+  const latestReferenceHumanIndex = reference.findLastIndex(
+    (message) => message.type === "human",
+  );
+  const latestMatchedHuman = rankedMessages.find(
+    ({ message, referenceIndex }) =>
+      message.type === "human" && referenceIndex === latestReferenceHumanIndex,
+  );
+  if (!latestMatchedHuman) {
+    return ordered;
+  }
+
+  const originalHumanIndex = visible.indexOf(latestMatchedHuman.message);
+  let unmatchedTailStart = originalHumanIndex;
+  while (
+    unmatchedTailStart > 0 &&
+    unmatchedMessages.has(visible[unmatchedTailStart - 1]) &&
+    visible[unmatchedTailStart - 1].type !== "human"
+  ) {
+    unmatchedTailStart -= 1;
+  }
+  if (unmatchedTailStart === originalHumanIndex) {
+    return ordered;
+  }
+
+  const unmatchedTail = visible.slice(unmatchedTailStart, originalHumanIndex);
+  const humanIndex = ordered.indexOf(latestMatchedHuman.message);
+  let insertionIndex = Math.min(
+    ...unmatchedTail.map((message) => ordered.indexOf(message)),
+  );
+  ordered.splice(humanIndex, 1);
+  if (humanIndex < insertionIndex) {
+    insertionIndex -= 1;
+  }
+  ordered.splice(insertionIndex, 0, latestMatchedHuman.message);
+  return ordered;
 }
 
 function normalizeInterruptValue(rawInterrupt: unknown): unknown | undefined {

@@ -1,6 +1,6 @@
 """各 Specialist 可调用的 Playwright Test MCP 工具精确名单。
 
-当前 Agent 支持的 @playwright/test 版本：1.58.0
+当前 Agent 支持的 @playwright/test 版本：1.61.1
 工具白名单必须与该版本 MCP server 实际暴露的工具保持一致。
 """
 

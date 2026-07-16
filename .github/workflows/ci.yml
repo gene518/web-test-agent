@@ -1,4 +1,4 @@
-# 在所有 PR 上执行格式化、lint 和拼写检查。
+# 在所有 PR 上执行后端测试、前端格式化、lint、类型和拼写检查。
 
 name: CI
 
@@ -20,6 +20,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backend-test:
+    name: 后端测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: web-agent/uv.lock
+      - name: 安装后端依赖
+        working-directory: web-agent
+        run: uv sync --frozen --extra dev
+      - name: 运行后端测试
+        working-directory: web-agent
+        run: uv run pytest -q
+
+  windows-startup-check:
+    name: 检查 Windows 启动脚本
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: 检查 PowerShell 语法
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $scriptPath = Resolve-Path "start/windows-start.ps1"
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
   format:
     name: 检查格式
     runs-on: ubuntu-latest
@@ -99,3 +139,44 @@ jobs:
         with:
           ignore_words_file: web-portal/.codespellignore
           path: web-portal/src
+
+  pc-client-windows:
+    name: 构建 Windows 桌面客户端
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10.5.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+          cache-dependency-path: pc-client/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pc-client/src-tauri
+      - name: 安装桌面客户端依赖
+        working-directory: pc-client
+        run: pnpm install --frozen-lockfile
+      - name: 检查前端并运行单测
+        working-directory: pc-client
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: 检查 Rust
+        working-directory: pc-client/src-tauri
+        run: |
+          cargo test --locked
+          cargo check --locked
+      - name: 构建未签名 NSIS 安装包
+        working-directory: pc-client
+        run: pnpm tauri build --bundles nsis
+      - name: 上传 Windows 安装包
+        uses: actions/upload-artifact@v6
+        with:
+          name: web-test-agent-windows-unsigned
+          path: pc-client/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

@@ -11,6 +11,8 @@ import { ThreadView } from "../agent-inbox";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
 import { ToolResult } from "./tool-result";
+import { ToolCalls } from "./tool-calls";
+import { normalizeToolCalls } from "../message-utils";
 
 function CustomComponent({
   message,
@@ -78,6 +80,7 @@ export function AssistantMessage({
   isLastMessage,
   hasNoAIOrToolMessages,
   handleRegenerate,
+  hideToolCalls,
 }: {
   message: Message | undefined;
   isLoading: boolean;
@@ -85,15 +88,21 @@ export function AssistantMessage({
   isLastMessage: boolean;
   hasNoAIOrToolMessages: boolean;
   handleRegenerate: (parentCheckpoint: Checkpoint | null | undefined) => void;
+  hideToolCalls: boolean;
 }) {
   const content = message?.content ?? [];
   const contentString = getContentString(content);
+  const toolCalls =
+    !hideToolCalls && message ? normalizeToolCalls(message) : [];
 
   const thread = useStreamContext();
   const meta = message ? thread.getMessagesMetadata(message) : undefined;
 
   const parentCheckpoint = meta?.firstSeenState?.parent_checkpoint;
   if (message?.type === "tool") {
+    if (hideToolCalls) {
+      return null;
+    }
     return (
       <div className="group mr-auto flex w-full items-start gap-2">
         <div className="flex w-full flex-col gap-2">
@@ -117,6 +126,8 @@ export function AssistantMessage({
               <MarkdownText>{contentString}</MarkdownText>
             </div>
           )}
+
+          {!hideToolCalls && <ToolCalls toolCalls={toolCalls} />}
 
           {message && (
             <CustomComponent

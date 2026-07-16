@@ -24,6 +24,7 @@ NEXT_PUBLIC_ASSISTANT_ID="${NEXT_PUBLIC_ASSISTANT_ID:-web-autotest-agent}"
 NEXT_PUBLIC_AUTH_SCHEME="${NEXT_PUBLIC_AUTH_SCHEME:-}"
 FRONTEND_OPEN_URL="${FRONTEND_OPEN_URL:-}"
 OPEN_BROWSER="${OPEN_BROWSER:-1}"
+CLIENT_BACKEND_ONLY="${CLIENT_BACKEND_ONLY:-0}"
 
 MODE="${1:-start}"
 ENTRY_DISPLAY_NAME="${WEB_AUTOTEST_ENTRY:-$0}"
@@ -31,7 +32,11 @@ BACKEND_PID=""
 FRONTEND_PID=""
 CLEANED_UP=0
 STARTUP_STEP_INDEX=0
-STARTUP_TOTAL_STEPS=11
+if [ "$CLIENT_BACKEND_ONLY" = "1" ]; then
+  STARTUP_TOTAL_STEPS=11
+else
+  STARTUP_TOTAL_STEPS=12
+fi
 STOP_STEP_INDEX=0
 STOP_TOTAL_STEPS=4
 PYTHON_BIN=""
@@ -85,17 +90,6 @@ ensure_backend_env_file() {
   fail "未找到项目配置文件：${BACKEND_ENV_FILE}。请先参考 ${BACKEND_DIR}/.env.example 创建并填写它。"
 }
 
-warn_if_missing_config() {
-  local key="$1"
-  local hint="$2"
-
-  if [ -n "${!key:-}" ]; then
-    return
-  fi
-
-  setup_log "提示：$BACKEND_ENV_FILE 中 $key 为空；$hint"
-}
-
 import_project_env_file() {
   set -a
   # 项目配置使用 shell .env 语法，直接注入当前启动进程。
@@ -108,13 +102,15 @@ import_project_env_file() {
 
 load_backend_env_file() {
   import_project_env_file
-  warn_if_missing_config "MASTER_MODEL" "将使用项目默认值。"
-  warn_if_missing_config "SPECIALIST_MODEL" "将使用项目默认值。"
+  if [ -z "${MASTER_LLM__MODEL:-}" ] && [ -z "${MASTER_MODEL:-}" ]; then
+    setup_log "提示：Master 模型未配置，将使用项目默认值。"
+  fi
+  if [ -z "${SPECIALIST_LLM__MODEL:-}" ] && [ -z "${SPECIALIST_MODEL:-}" ]; then
+    setup_log "提示：Specialist 模型未配置，将使用项目默认值。"
+  fi
 
-  if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${OPENAI_BASE_URL:-}" ]; then
-    setup_log "提示：$BACKEND_ENV_FILE 中 OPENAI_API_KEY 和 OPENAI_BASE_URL 都为空，请确认模型服务配置。"
-  elif [ -z "${OPENAI_API_KEY:-}" ]; then
-    setup_log "提示：$BACKEND_ENV_FILE 中 OPENAI_API_KEY 为空；如果你的模型服务需要 Key，请先补齐。"
+  if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${MASTER_LLM__API_KEY:-}" ] && [ -z "${SPECIALIST_LLM__API_KEY:-}" ]; then
+    setup_log "提示：未检测到模型 API Key；V2 配置请分别填写 Master 与 Specialist 的独立密钥。"
   fi
 }
 
@@ -710,8 +706,12 @@ start_main() {
 
   start_step "解析 Python 与端口"
   resolve_python_bin
-  resolve_port "后端" "$BACKEND_HOST" "$BACKEND_PORT" BACKEND_PORT
-  resolve_port "前端" "$FRONTEND_HOST" "$FRONTEND_PORT" FRONTEND_PORT
+  if [ "$CLIENT_BACKEND_ONLY" = "1" ]; then
+    port_is_bindable "$BACKEND_HOST" "$BACKEND_PORT" || fail "后端端口 ${BACKEND_PORT} 已被占用，客户端模式不会改用其他端口。"
+  else
+    resolve_port "后端" "$BACKEND_HOST" "$BACKEND_PORT" BACKEND_PORT
+    resolve_port "前端" "$FRONTEND_HOST" "$FRONTEND_PORT" FRONTEND_PORT
+  fi
   finish_step "解析 Python 与端口"
 
   if [ -z "$FRONTEND_OPEN_URL" ]; then
@@ -722,14 +722,20 @@ start_main() {
   start_backend
   finish_step "启动后端"
 
-  start_step "启动前端并尝试打开页面"
-  start_frontend
-  open_frontend_url
-  finish_step "启动前端并尝试打开页面"
+  if [ "$CLIENT_BACKEND_ONLY" != "1" ]; then
+    start_step "启动前端并尝试打开页面"
+    start_frontend
+    open_frontend_url
+    finish_step "启动前端并尝试打开页面"
+  fi
 
   log
   log "Web AutoTest Agent 已启动。"
-  log "前端地址：$FRONTEND_OPEN_URL"
+  if [ "$CLIENT_BACKEND_ONLY" = "1" ]; then
+    log "运行模式：桌面客户端后端专用"
+  else
+    log "前端地址：$FRONTEND_OPEN_URL"
+  fi
   log "后端地址：http://$BACKEND_HOST:$BACKEND_PORT"
   log "后端日志：$BACKEND_LOG_FILE"
   log "关闭本窗口或按 Ctrl+C 会停止本地服务。"
@@ -739,7 +745,7 @@ start_main() {
       log "后端进程已退出，请查看 $BACKEND_LOG_FILE"
       exit 1
     fi
-    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+    if [ "$CLIENT_BACKEND_ONLY" != "1" ] && ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
       log "前端进程已退出，请查看当前终端输出。"
       exit 1
     fi

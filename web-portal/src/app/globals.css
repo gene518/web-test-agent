@@ -5,6 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  --font-ui:
+    "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", Arial,
+    sans-serif;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -121,6 +124,7 @@
 
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-ui);
   }
 
   :root {
