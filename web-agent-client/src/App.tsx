@@ -47,8 +47,8 @@ import {
 } from "./lib/backend";
 import {
   buildToolInvocations,
-  conversationMessages,
   extractInterruptQuestion,
+  historicalConversationMessages,
   mergeMessages,
   messageText,
   threadTitle,
@@ -276,7 +276,9 @@ function App() {
     client,
     threadId,
     messagesKey: "display_messages",
-    fetchStateHistory: true,
+    // 当前界面只需要最新 checkpoint。false 会调用 getState；true 会改走完整
+    // history 接口，某些本地 LangGraph 运行时会因此出现列表可见但详情为空。
+    fetchStateHistory: false,
     onThreadId: (id) => {
       setThreadId(id);
       window.setTimeout(() => void refreshThreads(), 700);
@@ -302,9 +304,10 @@ function App() {
     },
   });
 
+  const selectedThread = threads.find((thread) => thread.thread_id === threadId);
   const messages = useMemo(
-    () => conversationMessages(stream.values, stream.messages),
-    [stream.messages, stream.values],
+    () => historicalConversationMessages(selectedThread?.values, stream.values, stream.messages),
+    [selectedThread?.values, stream.messages, stream.values],
   );
   const toolInvocations = useMemo(() => buildToolInvocations(messages), [messages]);
   const linkedToolIds = useMemo(
@@ -318,7 +321,6 @@ function App() {
   );
   const interrupt = stream.interrupt ?? stream.values.__interrupt__;
   const isRunning = stream.isLoading || Boolean(activeRunId);
-  const selectedThread = threads.find((thread) => thread.thread_id === threadId);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });

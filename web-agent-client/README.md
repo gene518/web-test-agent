@@ -30,11 +30,11 @@
 构建客户端还需要 Rust 1.88+ 和平台构建工具：
 
 - macOS：Xcode Command Line Tools
-- Windows：Microsoft C++ Build Tools 和 WebView2
+- Windows：Microsoft C++ Build Tools；运行界面使用系统安装并自动更新的 WebView2 Runtime
 
 模型、Base URL 和 API Key 继续只配置在 `web-agent/.env`。
 
-Windows x64 免安装包是独立的发布形态，不受上述源码开发环境要求约束。它随包携带本地后端和浏览器运行时，解压后直接双击 `Web Test Agent.exe`；便携配置位于 `config/.env`。当前 NSIS 安装包仍然只包含客户端，完整离线运行请使用 `*-windows-x64-portable.zip`。
+Windows x64 免安装包是独立的发布形态，不受上述源码开发环境要求约束。它随包携带本地后端和 Playwright Chromium，界面复用 Windows 11 自带的 WebView2 Runtime；解压后直接双击 `Web Test Agent.exe`，便携配置位于 `config/.env`。当前 NSIS 安装包仍然只包含客户端，完整离线运行请使用 `*-windows-x64-portable.zip`。
 
 ## 开发启动
 

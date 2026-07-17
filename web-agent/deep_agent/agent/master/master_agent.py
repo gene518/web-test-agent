@@ -58,7 +58,7 @@ class MasterAgent:
         """
 
         self._settings = settings
-        model_kwargs = settings.build_model_kwargs(settings.master_model)
+        model_kwargs = settings.build_model_kwargs(settings.master_model, role="master")
         # 这个模型实例同时用于意图识别、参数补全、general 回答、历史压缩和最终总结。
         self._model = init_chat_model(**model_kwargs)
         logger.info("%s Master 模型初始化完成 model_kwargs=%s",

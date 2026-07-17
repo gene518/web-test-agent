@@ -20,6 +20,7 @@
 - `web-agent/.env` 是项目环境变量的唯一配置源；新增或调整配置键时，必须先更新该文件，并按当前分组结构放到正确位置。
 - `web-agent/.env.example` 只作为脱敏镜像和分发模板使用；完成本地验证后，必须把同名配置同步到该文件，并移除真实密钥、令牌和私有地址等敏感信息。
 - 禁止只改 `web-agent/.env.example` 而不改 `web-agent/.env`；两者的配置键集合、顺序、分组标题和注释说明都必须以 `web-agent/.env` 为准保持一致。
+- 涉及环境变量的开发任务，只有在 `web-agent/.env` 与 `web-agent/.env.example` 已同步更新并完成配置加载验证后才算完成；只修改其中任意一个文件不得交付。
 - 启动脚本相关配置，例如 `START_FORCE_SETUP`、`START_INSTALL_PLAYWRIGHT_BROWSERS`、`BACKEND_PORT`，也统一维护在 `web-agent/.env`，不要再为 `start/` 目录单独维护配置副本。
 
 ## 3. 目录与变更策略

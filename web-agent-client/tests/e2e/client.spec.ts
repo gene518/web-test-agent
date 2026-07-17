@@ -1,12 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { PROMPT_TEMPLATES } from "../../src/lib/prompt-templates";
 
-const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
-const REPOSITORY_ROOT = resolve(TEST_DIR, "../../..");
-const CLIENT_SCREENSHOTS = resolve(REPOSITORY_ROOT, "doc/images/client");
 const historyTest = process.env.E2E_REAL_BACKEND === "1" ? test : test.skip;
 
 test("four prompt shortcuts stay on one row and fill the complete prompt", async ({ page }) => {
@@ -75,16 +69,10 @@ test("four prompt shortcuts stay on one row and fill the complete prompt", async
 
   await page.getByRole("button", { name: "plan+generator+healer", exact: true }).click();
   await expect.poll(() => composer.evaluate((element) => (element as HTMLTextAreaElement).scrollTop)).toBe(0);
-
-  await page.screenshot({ path: resolve(CLIENT_SCREENSHOTS, "01-quick-prompts.png") });
 });
 
 test("ANSI backend logs render with selectable persistent themes", async ({ page }) => {
-  const backendLog = readFileSync(resolve(REPOSITORY_ROOT, "start/backend.log"), "utf8")
-    .split(/\r?\n/)
-    .slice(-80)
-    .join("\n");
-  const rawLog = `\u001b[32m[info]\u001b[0m UI ANSI 颜色验证\n${backendLog}`;
+  const rawLog = "\u001b[32m[info]\u001b[0m UI ANSI 颜色验证";
 
   await page.addInitScript((log) => {
     Object.assign(globalThis, { isTauri: true });
@@ -130,7 +118,82 @@ test("ANSI backend logs render with selectable persistent themes", async ({ page
   expect(await page.evaluate(() => localStorage.getItem("web-test-agent.log-theme.v1"))).toBe("light");
 
   await theme.selectOption("macos");
-  await page.screenshot({ path: resolve(CLIENT_SCREENSHOTS, "02-log-theme-macos.png") });
+});
+
+test("historical details stay visible while the latest checkpoint hydrates", async ({ page }) => {
+  let stateRequests = 0;
+  const threadId = "history-detail-regression";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: threadId,
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "历史详情回归" },
+            status: "idle",
+            values: {
+              display_messages: [
+                { id: "human-history", type: "human", content: "历史问题正文" },
+                { id: "ai-history", type: "ai", content: "历史回答正文" },
+              ],
+            },
+            interrupts: {},
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/state`) {
+      stateRequests += 1;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await route.fulfill({
+        headers,
+        json: {
+          values: {},
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs`) {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /历史详情回归/ }).click();
+
+  await expect(page.getByText("历史问题正文", { exact: true })).toBeVisible();
+  await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
+  await expect.poll(() => stateRequests).toBe(1);
+  await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
 });
 
 historyTest("a selected historical conversation can continue", async ({ page }) => {
@@ -155,5 +218,4 @@ historyTest("a selected historical conversation can continue", async ({ page }) 
   await expect(page.locator(".thread-item.selected .thread-copy span")).not.toHaveText("正在运行", {
     timeout: 30_000,
   });
-  await page.screenshot({ path: resolve(CLIENT_SCREENSHOTS, "03-history-continuation.png") });
 });

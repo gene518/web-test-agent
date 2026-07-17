@@ -18,7 +18,7 @@
 - `healer`：运行失败脚本、定位问题、修改脚本并复测。
 - `scheduler`：维护定时任务配置，并可由独立服务按 Cron 扫描执行。
 
-## 2. 桌面客户端示例
+## 2. 桌面客户端能力
 
 ### 2.1 快捷任务模板
 
@@ -29,28 +29,15 @@
 - `独立 Generator`：读取指定或本对话最近生成的 Markdown，为目标用例生成 Playwright 脚本。
 - `独立 Healer`：只运行、修复并复测指定范围内的失败脚本。
 
-<p align="center">
-  <img src="doc/images/client/01-quick-prompts.png" alt="桌面客户端新对话页的四个快捷任务模板" width="960" /><br />
-  <em>四个入口保持一行展示；输入框会随内容增高，超过五行后在内部滚动。</em>
-</p>
+四个入口保持一行展示；输入框会随内容增高，超过五行后在内部滚动。
 
 ### 2.2 后端日志主题
 
 “后端日志”窗口会解析 ANSI 控制符并显示日志级别、模块名等原始颜色，不再把转义序列当作乱码。主题可切换为 `macOS 控制台`、`深色` 或 `浅色`，选择结果会保存在本机。
 
-<p align="center">
-  <img src="doc/images/client/02-log-theme-macos.png" alt="使用 macOS 控制台主题和 ANSI 颜色的后端日志窗口" width="960" /><br />
-  <em>macOS 控制台主题下的真实后端日志，ANSI 颜色已正确渲染。</em>
-</p>
-
 ### 2.3 历史会话续聊
 
 点击历史会话后可以继续发送消息。后端会在再次调用模型前修复持久化工具消息链：忽略没有对应调用的孤立工具结果，并为未闭合的工具调用补齐结果，避免 OpenAI `function_call_output` 协议错误。
-
-<p align="center">
-  <img src="doc/images/client/03-history-continuation.png" alt="桌面客户端在历史会话中继续聊天并收到 Agent 回复" width="960" /><br />
-  <em>选择既有会话后发送唯一验证消息，Agent 正常回复并恢复空闲状态。</em>
-</p>
 
 ## 3. 目录结构
 
@@ -60,16 +47,15 @@
 web-test-agent/  # 仓库根目录。
 ├── README.md  # 当前工程说明文档。
 ├── DEVELOPMENT_GUIDE.md  # 开发规范和协作约束。
-├── doc/  # 说明文档与示例资源。
-│   ├── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
-│   └── images/client/  # 第 2 节桌面客户端示例使用的验证截图。
+├── doc/  # 产品需求文档。
+│   └── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
 ├── .github/  # GitHub 自动化配置。
 │   └── workflows/
 │       └── ci.yml  # 持续集成流程。
 ├── start/  # 启动根目录，平台脚本直接放在这里。
-│   ├── README.md
 │   ├── macos-start.command  # macOS 一键启动客户端和后端，支持 start / end / logs。
-│   └── windows-start.ps1   # Windows 一键启动客户端和后端，支持 start / end / logs。
+│   ├── windows-start.ps1  # Windows 一键启动客户端和后端，支持 start / end / logs。
+│   └── build-windows-x64-portable.ps1  # Windows x64 便携包构建脚本。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。

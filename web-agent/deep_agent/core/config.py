@@ -6,7 +6,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from deep_agent.core.runtime_logging import (
@@ -20,9 +20,27 @@ from deep_agent.core.runtime_logging import (
 
 logger = get_logger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_ENV_FILE = Path(
-    os.environ.get("WEB_TEST_AGENT_ENV_FILE", str(_PROJECT_ROOT / ".env"))
-).expanduser().resolve()
+
+
+def _discover_default_env_file(
+    project_root: Path,
+    explicit_env_file: str | None,
+) -> Path:
+    """解析源码仓库或 Windows 便携目录中的配置文件。"""
+
+    if explicit_env_file:
+        return Path(explicit_env_file).expanduser().resolve()
+
+    portable_env_file = project_root.parent.parent / "config" / ".env"
+    if project_root.parent.name.lower() == "runtime" and portable_env_file.is_file():
+        return portable_env_file.resolve()
+    return (project_root / ".env").resolve()
+
+
+_DEFAULT_ENV_FILE = _discover_default_env_file(
+    _PROJECT_ROOT,
+    os.environ.get("WEB_TEST_AGENT_ENV_FILE"),
+)
 
 
 def load_project_env_file(env_file: str | Path | None = None) -> None:
@@ -42,7 +60,7 @@ def load_project_env_file(env_file: str | Path | None = None) -> None:
     except ImportError:
         env_values = _read_fallback_dotenv_values(resolved_env_file)
     else:
-        env_values = dotenv_values(resolved_env_file, encoding="utf-8")
+        env_values = dotenv_values(resolved_env_file, encoding="utf-8-sig")
 
     for key, value in env_values.items():
         if not key or value is None or key in os.environ:
@@ -103,7 +121,7 @@ class AppSettings(BaseSettings):
     # `SettingsConfigDict` 告诉 Pydantic 去哪里找 `.env` 文件，以及如何解析环境变量。
     model_config = SettingsConfigDict(
         env_file=_DEFAULT_ENV_FILE,
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
         case_sensitive=False,
         extra="ignore",
     )
@@ -115,6 +133,38 @@ class AppSettings(BaseSettings):
     specialist_model: str = Field(
         default="openai:gpt-5.4",
         description="Plan、Generator、Healer 等 Specialist Agent 默认使用的模型。",
+    )
+    master_llm_model: str | None = Field(
+        default=None,
+        description="Master 独立使用的模型名；未配置时回退到 MASTER_MODEL。",
+    )
+    master_llm_api_key: str | None = Field(
+        default=None,
+        description="Master 独立使用的 OpenAI 兼容接口 API Key。",
+    )
+    master_llm_base_url: str | None = Field(
+        default=None,
+        description="Master 独立使用的 OpenAI 兼容接口基础地址。",
+    )
+    master_llm_thinking: bool = Field(
+        default=False,
+        description="是否为 Master 模型请求开启 thinking。",
+    )
+    specialist_llm_model: str | None = Field(
+        default=None,
+        description="Plan、Generator、Healer 独立使用的模型名；未配置时回退到 SPECIALIST_MODEL。",
+    )
+    specialist_llm_api_key: str | None = Field(
+        default=None,
+        description="Plan、Generator、Healer 独立使用的 OpenAI 兼容接口 API Key。",
+    )
+    specialist_llm_base_url: str | None = Field(
+        default=None,
+        description="Plan、Generator、Healer 独立使用的 OpenAI 兼容接口基础地址。",
+    )
+    specialist_llm_thinking: bool = Field(
+        default=False,
+        description="是否为 Plan、Generator、Healer 模型请求开启 thinking。",
     )
     openai_api_key: str | None = Field(
         default=None,
@@ -206,6 +256,32 @@ class AppSettings(BaseSettings):
         description="独立定时执行服务轮询配置文件并检查到点任务的时间间隔，单位为秒。",
     )
 
+    @field_validator("master_model", "specialist_model", mode="before")
+    @classmethod
+    def _empty_model_name_uses_default(cls, value: object, info: ValidationInfo) -> object:
+        """便携包模板中的空模型值不能覆盖字段默认值。"""
+
+        if not isinstance(value, str) or value.strip():
+            return value
+        return "openai:gpt-4.1" if info.field_name == "master_model" else "openai:gpt-5.4"
+
+    @field_validator(
+        "master_llm_model",
+        "master_llm_api_key",
+        "master_llm_base_url",
+        "specialist_llm_model",
+        "specialist_llm_api_key",
+        "specialist_llm_base_url",
+        mode="before",
+    )
+    @classmethod
+    def _empty_role_model_value_uses_fallback(cls, value: object) -> object:
+        """把角色级配置中的空字符串视为未配置，以便回退到原配置。"""
+
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
     @property
     def playwright_mcp_env(self) -> dict[str, str]:
         """返回 Playwright Test MCP 所需的环境变量。
@@ -242,7 +318,12 @@ class AppSettings(BaseSettings):
             return None
         return self.stream_chunk_timeout_seconds
 
-    def build_model_kwargs(self, model_name: str) -> dict[str, object]:
+    def build_model_kwargs(
+        self,
+        model_name: str,
+        *,
+        role: str | None = None,
+    ) -> dict[str, object]:
         """根据模型名称生成 `init_chat_model` 所需参数。
 
         这里把 OpenAI 的可选代理地址与超时配置收敛到一起，避免每个 Agent
@@ -250,6 +331,7 @@ class AppSettings(BaseSettings):
 
         Args:
             model_name: 目标模型名，推荐使用 `provider:model` 格式。
+            role: 模型角色；传入 master 或 specialist 时读取对应的扁平配置。
 
         Returns:
             dict[str, object]: 可以直接传给 `init_chat_model` 的关键字参数。
@@ -257,6 +339,29 @@ class AppSettings(BaseSettings):
         Raises:
             None.
         """
+
+        api_key = self.openai_api_key
+        base_url = self._normalized_openai_base_url()
+        enable_thinking = self.llm_enable_thinking
+
+        if role == "master" and any(
+            (self.master_llm_model, self.master_llm_api_key, self.master_llm_base_url)
+        ):
+            model_name = self.master_llm_model or model_name
+            api_key = self.master_llm_api_key or api_key
+            base_url = self.master_llm_base_url or base_url
+            enable_thinking = self.master_llm_thinking
+        elif role == "specialist" and any(
+            (
+                self.specialist_llm_model,
+                self.specialist_llm_api_key,
+                self.specialist_llm_base_url,
+            )
+        ):
+            model_name = self.specialist_llm_model or model_name
+            api_key = self.specialist_llm_api_key or api_key
+            base_url = self.specialist_llm_base_url or base_url
+            enable_thinking = self.specialist_llm_thinking
 
         # 先准备所有模型都共用的基础参数，目的是把“每个 Agent 都会重复写的初始化参数”收敛掉。
         kwargs: dict[str, object] = {
@@ -274,11 +379,10 @@ class AppSettings(BaseSettings):
         # 只有 OpenAI 兼容模型才需要额外拼接 API Key 和 base URL，
         # 目的是让非 OpenAI provider 不被无关参数污染。
         if model_name.startswith("openai:") or ":" not in model_name:
-            if self.openai_api_key:
-                kwargs["api_key"] = self.openai_api_key
-            normalized_base_url = self._normalized_openai_base_url()
-            if normalized_base_url:
-                kwargs["base_url"] = normalized_base_url
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
                 # 大多数 OpenAI 兼容平台只实现 Chat Completions，不支持 OpenAI Responses API。
                 # 明确关闭后可以避免 gpt-5/codex 等模型名或 Deep Agents 默认策略把请求打到
                 # `{base_url}/responses`，导致兼容平台返回 404。
@@ -287,7 +391,7 @@ class AppSettings(BaseSettings):
             # 这里统一收敛到一个全局开关，避免 Master / Specialist 分别维护不同默认值。
             extra_body = kwargs.get("extra_body")
             normalized_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
-            normalized_extra_body["enable_thinking"] = self.llm_enable_thinking
+            normalized_extra_body["enable_thinking"] = enable_thinking
             kwargs["extra_body"] = normalized_extra_body
             # 显式覆盖 LangChain OpenAI 默认的 120s 流式静默超时，避免它先于总超时触发。
             kwargs["stream_chunk_timeout"] = self.resolved_stream_chunk_timeout_seconds

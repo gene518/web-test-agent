@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$OutputDirectory = "",
   [string]$ClientExecutable = "",
   [switch]$SkipSmokeTest
@@ -26,11 +26,8 @@ $PythonDir = Join-Path $RuntimeDir "python"
 $NodeDir = Join-Path $RuntimeDir "node"
 $PlaywrightDir = Join-Path $RuntimeDir "playwright"
 $BrowserDir = Join-Path $RuntimeDir "browsers"
-$WebView2Dir = Join-Path $RuntimeDir "webview2"
 $ConfigDir = Join-Path $PackageRoot "config"
 $DataDir = Join-Path $PackageRoot "data\logs"
-$WebView2Version = "150.0.4078.65"
-$WebView2Url = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/c00b9782-0422-4114-be27-8eec079b394d/Microsoft.WebView2.FixedVersionRuntime.$WebView2Version.x64.cab"
 
 function Write-Step {
   param([string]$Message)
@@ -89,9 +86,28 @@ Write-Step "Create portable package layout"
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Remove-Item -LiteralPath $BuildRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $ArchivePath, $ChecksumPath -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $PackageRoot, $RuntimeDir, $AppDir, $PythonDir, $NodeDir, $PlaywrightDir, $BrowserDir, $WebView2Dir, $ConfigDir, $DataDir -Force | Out-Null
+New-Item -ItemType Directory -Path $PackageRoot, $RuntimeDir, $AppDir, $PythonDir, $NodeDir, $PlaywrightDir, $BrowserDir, $ConfigDir, $DataDir -Force | Out-Null
 Copy-Item -LiteralPath $ClientExecutable -Destination (Join-Path $PackageRoot "Web Test Agent.exe")
-Copy-Item -LiteralPath (Join-Path $ScriptDir "portable\README.txt") -Destination (Join-Path $PackageRoot "README.txt")
+$PortableReadme = @'
+Web Test Agent - Windows 11 x64 免安装版
+
+1. 完整解压 ZIP 后双击“Web Test Agent.exe”。
+2. 模型配置位于 config\.env；首次使用前请填写模型密钥。
+3. 默认测试工程位于当前 Windows 用户目录下的 webautotest 文件夹。
+
+本包已包含 Python、Node.js、Playwright 和 Chromium，不需要安装 Git、
+Python、Node.js、Rust、uv、pnpm 或浏览器依赖。桌面界面使用 Windows 11
+自带并自动更新的 Microsoft Edge WebView2 Runtime。
+
+目录：
+- config\.env：模型与 Agent 配置。
+- data\logs\backend.log：本地后端日志。
+- runtime\：程序运行时，请勿删除或移动其中的文件。
+
+仅支持 Windows 11 x64，不支持 Windows ARM64。未签名版本可能触发
+Windows SmartScreen；不要分享包含真实 API Key 的压缩包。
+'@
+$PortableReadme | Set-Content -LiteralPath (Join-Path $PackageRoot "README.txt") -Encoding UTF8
 
 Write-Step "Prepare portable Python and backend"
 Invoke-Checked -Command $UvExe -Arguments @(
@@ -134,21 +150,6 @@ try {
   $env:PLAYWRIGHT_BROWSERS_PATH = $PreviousBrowserPath
 }
 
-Write-Step "Download fixed WebView2 $WebView2Version"
-$WebView2Cab = Join-Path $BuildRoot "webview2-x64.cab"
-$WebView2Extract = Join-Path $BuildRoot "webview2-extracted"
-Invoke-WebRequest -Uri $WebView2Url -OutFile $WebView2Cab -UseBasicParsing
-New-Item -ItemType Directory -Path $WebView2Extract -Force | Out-Null
-Invoke-Checked -Command "expand.exe" -Arguments @($WebView2Cab, "-F:*", $WebView2Extract) -FailureMessage "WebView2 extraction failed"
-$WebView2Executable = Get-ChildItem -LiteralPath $WebView2Extract -Filter "msedgewebview2.exe" -Recurse -File | Select-Object -First 1
-if (-not $WebView2Executable) {
-  $WebView2Executable = Get-ChildItem -LiteralPath $WebView2Extract -Filter "msedge.exe" -Recurse -File | Select-Object -First 1
-}
-if (-not $WebView2Executable) {
-  throw "The fixed WebView2 archive does not contain a browser executable."
-}
-Copy-Item -Path (Join-Path $WebView2Executable.Directory.FullName "*") -Destination $WebView2Dir -Recurse -Force
-
 $PortablePython = Join-Path $PythonDir "python.exe"
 $env:PYTHONPATH = "$AppDir;$PortableSitePackages"
 $env:PYTHONUTF8 = "1"
@@ -161,7 +162,7 @@ $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
 
 Write-Step "Validate portable runtime"
 Invoke-Checked -Command $PortablePython -Arguments @(
-  "-c", "import deep_agent, langgraph_cli, langgraph_api, pydantic_core; print('portable Python imports OK')"
+  "-c", "import os; from pathlib import Path; import deep_agent, langgraph_cli, langgraph_api, pydantic_core; from deep_agent.core.config import AppSettings, _DEFAULT_ENV_FILE; assert _DEFAULT_ENV_FILE == Path(os.environ['WEB_TEST_AGENT_ENV_FILE']).resolve(); settings = AppSettings(); assert settings.master_model and settings.specialist_model; print('portable Python config OK')"
 ) -FailureMessage "Portable Python import check failed" -WorkingDirectory $AppDir
 Invoke-Checked -Command $PortableNode -Arguments @($PortablePlaywrightCli, "--version") -FailureMessage "Portable Playwright CLI check failed"
 
@@ -234,7 +235,7 @@ $Manifest = [ordered]@{
   python = (& $PortablePython --version 2>&1 | Out-String).Trim()
   node = (& $PortableNode --version 2>&1 | Out-String).Trim()
   playwright = $PlaywrightVersion
-  webview2 = $WebView2Version
+  webview2 = "system-evergreen"
 }
 $Manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $PackageRoot "portable-manifest.json") -Encoding UTF8
 

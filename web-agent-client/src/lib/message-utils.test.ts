@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Thread } from "@langchain/langgraph-sdk";
 import {
   buildToolInvocations,
+  historicalConversationMessages,
   mergeMessages,
   summarizeThreadTitle,
   threadTitle,
@@ -17,6 +18,20 @@ describe("message normalization", () => {
     );
     expect(messages.map((message) => message.type)).toEqual(["ai", "human"]);
     expect(messages[0].content).toBe("完整回答");
+  });
+
+  it("keeps selected thread details while the current checkpoint hydrates", () => {
+    const messages = historicalConversationMessages(
+      {
+        display_messages: [
+          { id: "human-1", type: "human", content: "历史问题" },
+          { id: "ai-1", type: "ai", content: "历史回答" },
+        ],
+      },
+      {},
+    );
+
+    expect(messages.map((message) => message.content)).toEqual(["历史问题", "历史回答"]);
   });
 });
 

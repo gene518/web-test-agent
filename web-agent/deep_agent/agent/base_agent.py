@@ -255,7 +255,10 @@ class BaseSpecialistAgent(
 
         # 主链路：这里开始初始化当前 Specialist 的模型实例；后续写用例、写脚本、
         # 调试修复等阶段都会基于这一个模型对象继续进入 Deep Agent 编排。
-        model_kwargs = self._settings.build_model_kwargs(self._settings.specialist_model)
+        model_kwargs = self._settings.build_model_kwargs(
+            self._settings.specialist_model,
+            role="specialist",
+        )
         model = init_chat_model(**model_kwargs)
         logger.info("%s %s 模型初始化完成 model_kwargs=%s",
             log_title("初始化", "模型初始化", node_name=f"{self.agent_type}_node"), self.display_name, summarize_model_kwargs(model_kwargs),)

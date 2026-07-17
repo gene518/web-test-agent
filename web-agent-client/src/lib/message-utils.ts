@@ -138,6 +138,17 @@ export function conversationMessages(
   );
 }
 
+export function historicalConversationMessages(
+  selectedValues: AgentState | undefined,
+  hydratedValues: AgentState | undefined,
+  liveMessages: unknown[] = [],
+): CanonicalMessage[] {
+  return mergeMessages(
+    conversationMessages(selectedValues),
+    conversationMessages(hydratedValues, liveMessages),
+  );
+}
+
 export function buildToolInvocations(messages: CanonicalMessage[]): ToolInvocation[] {
   const items: ToolInvocation[] = [];
   const byId = new Map<string, ToolInvocation>();
