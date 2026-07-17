@@ -7,7 +7,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptPath = $MyInvocation.MyCommand.Path
+if ($ScriptPath.StartsWith("\\?\")) {
+  $ScriptPath = $ScriptPath.Substring(4)
+}
+$ScriptDir = Split-Path -Parent $ScriptPath
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $BackendDir = Join-Path $ProjectRoot "web-agent"
 $ClientDir = Join-Path $ProjectRoot "web-agent-client"
@@ -140,6 +144,69 @@ function Check-Rust {
   Write-SetupLog "Rust 已就绪：$cargo ($versionText)"
 }
 
+function Initialize-NativeBuildEnvironment {
+  $hostArch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+  $targetArch = if ($env:CARGO_BUILD_TARGET -match '^x86_64-') {
+    "x64"
+  } elseif ($env:CARGO_BUILD_TARGET -match '^aarch64-') {
+    "arm64"
+  } else {
+    $hostArch
+  }
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+    Fail-Startup "未找到 vswhere.exe。请安装 Visual Studio 2022 C++ Build Tools。"
+  }
+
+  $installationPath = ((& $vswhere -latest -products * -property installationPath 2>$null) -join "").Trim()
+  if (-not $installationPath) {
+    Fail-Startup "未找到 Visual Studio 2022 C++ Build Tools 安装目录。"
+  }
+  $vsDevCmd = Join-Path $installationPath "Common7\Tools\VsDevCmd.bat"
+  if (-not (Test-Path -LiteralPath $vsDevCmd -PathType Leaf)) {
+    Fail-Startup "未找到 Visual Studio 开发环境脚本：$vsDevCmd"
+  }
+
+  $commandLine = "`"$vsDevCmd`" -no_logo -arch=$targetArch -host_arch=$hostArch && set"
+  $environmentLines = & $env:ComSpec /d /s /c $commandLine
+  if ($LASTEXITCODE -ne 0) {
+    Fail-Startup "无法初始化 Visual Studio $targetArch 开发环境。"
+  }
+  foreach ($line in $environmentLines) {
+    if ($line -match '^([^=]+)=(.*)$') {
+      [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+    }
+  }
+
+  $cl = Get-Command "cl.exe" -ErrorAction SilentlyContinue
+  if (-not $cl) {
+    Fail-Startup "Visual Studio 开发环境中未找到 cl.exe，请补装对应 CPU 架构的 C++ Build Tools。"
+  }
+
+  if ($targetArch -eq "arm64") {
+    $clangCandidates = @(
+      (Join-Path $env:ProgramFiles "LLVM\bin\clang.exe"),
+      (Join-Path ${env:ProgramFiles(x86)} "LLVM\bin\clang.exe")
+    )
+    $clang = Get-Command "clang.exe" -ErrorAction SilentlyContinue
+    if (-not $clang) {
+      foreach ($candidate in $clangCandidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+          $env:PATH = "$(Split-Path -Parent $candidate);$env:PATH"
+          $clang = Get-Command "clang.exe" -ErrorAction SilentlyContinue
+          break
+        }
+      }
+    }
+    if (-not $clang) {
+      Fail-Startup "Windows ARM64 编译 ring 依赖 LLVM Clang。请执行 winget install --exact --id LLVM.LLVM --architecture arm64。"
+    }
+    Write-SetupLog "LLVM Clang 已就绪：$($clang.Source)"
+  }
+
+  Write-SetupLog "C++ 编译环境已就绪：$($cl.Source) ($targetArch)"
+}
+
 function Check-Python {
   $candidates = @("python.exe", "python3.exe", "python", "python3")
   foreach ($candidate in $candidates) {
@@ -262,10 +329,22 @@ function Start-Backend {
   Write-SetupLog "启动后端：http://${BackendHost}:$($script:BackendPort)"
   [System.IO.File]::WriteAllText($BackendLogFile, "", [System.Text.UTF8Encoding]::new($false))
   Push-Location $BackendDir
+  $previousErrorActionPreference = $ErrorActionPreference
   try {
-    & $LangGraphExe @arguments 2>&1 | Tee-Object -FilePath $BackendLogFile -Append
+    # Windows PowerShell 会把原生程序的 stderr 包装为 ErrorRecord；LangGraph 的正常 INFO 日志也会走 stderr。
+    $ErrorActionPreference = "Continue"
+    & $LangGraphExe @arguments 2>&1 | ForEach-Object {
+      $line = $_.ToString()
+      Write-SetupLog $line
+      [System.IO.File]::AppendAllText(
+        $BackendLogFile,
+        "$line$([Environment]::NewLine)",
+        [System.Text.UTF8Encoding]::new($false)
+      )
+    }
     $exitCode = $LASTEXITCODE
   } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
     Pop-Location
   }
   if ($exitCode -ne 0) {
@@ -368,9 +447,10 @@ function Start-ClientMain {
   Check-Pnpm
   Complete-SetupStep "检查 pnpm"
 
-  Start-SetupStep "检查 Rust"
+  Start-SetupStep "检查 Rust/C++ 工具链"
   Check-Rust
-  Complete-SetupStep "检查 Rust"
+  Initialize-NativeBuildEnvironment
+  Complete-SetupStep "检查 Rust/C++ 工具链"
 
   Start-SetupStep "同步桌面客户端依赖"
   Sync-ClientDependencies

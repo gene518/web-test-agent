@@ -326,50 +326,58 @@ class GeneratorRuntimeHelper:
     ) -> dict[str, Any]:
         """构建 Generator 产物，并在必要时回退到最终落盘文件做校验。"""
 
-        finalized_input_files = await asyncio.to_thread(
-            self._finalize_generated_plan_files,
-            workspace_dir,
-            input_files,
-        )
         after_manifest = await snapshot_workspace_manifest_async(workspace_dir)
 
         payload_error: Exception | None = None
+        stage_artifact: dict[str, Any] | None = None
         try:
             self._assert_expected_test_scripts_written(
                 expected_test_scripts=expected_test_scripts,
                 actual_test_scripts=[payload.get("fileName", "") for payload in successful_write_payloads],
             )
-            return extract_generator_artifact_from_writes_and_snapshot(
+            stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
                 writes=successful_write_payloads,
                 before_manifest=before_manifest,
                 after_manifest=after_manifest,
                 workspace_dir=workspace_dir,
                 project_name=project_name,
-                input_files=finalized_input_files,
+                input_files=input_files,
             )
         except Exception as exc:  # noqa: BLE001
             payload_error = exc
 
-        fallback_writes = self._build_workspace_generator_writes(
-            workspace_dir=workspace_dir,
-            expected_test_scripts=expected_test_scripts,
-            successful_workspace_write_paths=successful_workspace_write_paths,
-            before_manifest=before_manifest,
-            after_manifest=after_manifest,
-        )
-        try:
-            return extract_generator_artifact_from_writes_and_snapshot(
-                writes=fallback_writes,
+        if stage_artifact is None:
+            fallback_writes = self._build_workspace_generator_writes(
+                workspace_dir=workspace_dir,
+                expected_test_scripts=expected_test_scripts,
+                successful_workspace_write_paths=successful_workspace_write_paths,
                 before_manifest=before_manifest,
                 after_manifest=after_manifest,
-                workspace_dir=workspace_dir,
-                project_name=project_name,
-                input_files=finalized_input_files,
             )
-        except Exception as exc:  # noqa: BLE001
-            if payload_error is None:
-                raise
-            raise RuntimeError(f"{payload_error} 回退到最终文件落盘校验后仍失败：{exc}") from exc
+            try:
+                stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
+                    writes=fallback_writes,
+                    before_manifest=before_manifest,
+                    after_manifest=after_manifest,
+                    workspace_dir=workspace_dir,
+                    project_name=project_name,
+                    input_files=input_files,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if payload_error is None:
+                    raise
+                raise RuntimeError(f"{payload_error} 回退到最终文件落盘校验后仍失败：{exc}") from exc
+
+        # 只有脚本集合与落盘产物都校验成功后，才把 planning 目录迁移为正式目录。
+        # 失败路径必须保留原计划，确保同一对话可以修复环境后继续 Generator。
+        finalized_input_files = await asyncio.to_thread(
+            self._finalize_generated_plan_files,
+            workspace_dir,
+            input_files,
+        )
+        stage_artifact["input_files"] = finalized_input_files
+        stage_artifact["test_plan_files"] = finalized_input_files
+        return stage_artifact
 
     def log_generator_write_state(
         self,

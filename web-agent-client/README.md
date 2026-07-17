@@ -9,17 +9,19 @@
 - 重新加入运行中的线程流
 - 取消当前线程的 `running` / `pending` runs
 - 展示 interrupt，并把下一条文本作为 `command.resume` 提交
-- 提供完整流程、独立 Plan、独立 Generator、独立 Healer 四个快捷任务模板
+- 提供 plan+generator+healer、独立 Plan、独立 Generator、独立 Healer 四个快捷任务模板
 - 选择仓库根目录、重启本地后端和查看带 ANSI 颜色及主题的后端日志
 
 ## 快捷任务模板
 
 新对话页的四个快捷入口保持在同一行，按钮只显示标题。点击后会把完整任务说明填入输入框，不会立即提交，用户可以先补齐工程名、URL、功能范围、计划文件或脚本范围等参数：
 
-- `完整流程`：按 Plan -> Generator -> Healer 顺序连续执行，自动继承本轮上游产物。
+- `plan+generator+healer`：按 Plan -> Generator -> Healer 顺序连续执行，自动继承本轮上游产物。
 - `独立 Plan`：探索真实页面并保存 Markdown 测试计划。
 - `独立 Generator`：根据指定 Markdown 或本对话最近一次计划产物生成脚本。
 - `独立 Healer`：仅运行、修复和复测指定脚本范围。
+
+开始页使用 50 字简介概括 Agent 的页面探索、用例规划、脚本生成与失败修复能力。输入框会按内容自动增高，最多显示五行，超过后使用内部滚动。
 
 ## 运行要求
 
@@ -31,6 +33,8 @@
 - Windows：Microsoft C++ Build Tools 和 WebView2
 
 模型、Base URL 和 API Key 继续只配置在 `web-agent/.env`。
+
+Windows x64 免安装包是独立的发布形态，不受上述源码开发环境要求约束。它随包携带本地后端和浏览器运行时，解压后直接双击 `Web Test Agent.exe`；便携配置位于 `config/.env`。当前 NSIS 安装包仍然只包含客户端，完整离线运行请使用 `*-windows-x64-portable.zip`。
 
 ## 开发启动
 
@@ -91,7 +95,7 @@ cargo test
 cargo check
 ```
 
-默认端到端测试使用浏览器内的 Tauri 命令模拟验证快捷模板与日志窗口。需要验证真实历史会话续聊时，先运行本地后端和 `pnpm dev`，再执行：
+默认端到端测试使用浏览器内的 Tauri 命令模拟验证快捷模板、输入框高度与日志窗口。需要验证真实历史会话续聊时，先运行本地后端和 `pnpm dev`，再执行：
 
 ```bash
 E2E_REAL_BACKEND=1 pnpm test:e2e
@@ -110,6 +114,8 @@ pnpm tauri build --bundles nsis
 ```
 
 GitHub Actions 会在 Windows runner 上执行前端测试、Rust 测试和 NSIS 构建，并上传未签名安装包。当前工程不包含代码签名、公证或应用商店发布配置。
+
+手动触发 CI 时还会构建并实测 Windows 11 x64 免安装包。构建过程会验证便携 Python 导入、Playwright 模块复制、Chromium 实际运行和 LangGraph `/info` 健康检查，然后上传 ZIP 及 SHA-256 文件。
 
 ## 关键约定
 

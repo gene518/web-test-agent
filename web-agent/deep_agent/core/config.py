@@ -20,7 +20,9 @@ from deep_agent.core.runtime_logging import (
 
 logger = get_logger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_ENV_FILE = _PROJECT_ROOT / ".env"
+_DEFAULT_ENV_FILE = Path(
+    os.environ.get("WEB_TEST_AGENT_ENV_FILE", str(_PROJECT_ROOT / ".env"))
+).expanduser().resolve()
 
 
 def load_project_env_file(env_file: str | Path | None = None) -> None:

@@ -68,15 +68,20 @@ jobs:
         run: |
           $tokens = $null
           $parseErrors = $null
-          $scriptPath = Resolve-Path "start/windows-start.ps1"
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            $scriptPath,
-            [ref]$tokens,
-            [ref]$parseErrors
-          )
-          if ($parseErrors.Count -gt 0) {
-            $parseErrors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+          foreach ($scriptPath in @(
+            (Resolve-Path "start/windows-start.ps1"),
+            (Resolve-Path "start/build-windows-x64-portable.ps1")
+          )) {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $scriptPath,
+              [ref]$tokens,
+              [ref]$parseErrors
+            )
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error "$scriptPath`: $($_.Message)" }
+              exit 1
+            }
           }
 
   web-agent-client-windows:
@@ -107,9 +112,32 @@ jobs:
       - name: 构建未签名 NSIS 安装包
         working-directory: web-agent-client
         run: pnpm tauri build --bundles nsis
+      - uses: actions/setup-python@v6
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          enable-cache: true
+          cache-dependency-glob: web-agent/uv.lock
+      - name: 构建 Windows x64 免安装包
+        if: github.event_name == 'workflow_dispatch'
+        shell: powershell
+        run: .\start\build-windows-x64-portable.ps1
       - name: 上传 Windows 安装包
         uses: actions/upload-artifact@v6
         with:
           name: web-test-agent-windows-unsigned
           path: web-agent-client/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+      - name: 上传 Windows x64 免安装包
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: web-test-agent-windows-x64-portable
+          path: |
+            dist/windows-x64/*-portable.zip
+            dist/windows-x64/*-portable.zip.sha256
+          if-no-files-found: error
+          retention-days: 7

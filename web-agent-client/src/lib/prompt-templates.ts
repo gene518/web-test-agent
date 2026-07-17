@@ -4,10 +4,12 @@ export interface PromptTemplate {
   content: string;
 }
 
+export const AGENT_INTRO = "网页测试智能体专注自动化，可探索真实页面、规划测试用例、生成脚本，并自动调试修复失败，完成测试闭环。";
+
 export const PROMPT_TEMPLATES: readonly PromptTemplate[] = [
   {
     id: "full",
-    title: "完整流程",
+    title: "plan+generator+healer",
     content: `请执行完整的 Web UI 自动化测试闭环，严格按 plan → generator → healer 顺序连续执行。阶段之间自动继承上一阶段产物，不要等待我再次确认。
 
 - 自动化工程名称：{project_name}

@@ -24,14 +24,14 @@
 
 新对话提供四个单行排列的快捷入口，按钮只显示标题，点击后把完整模板填入输入框，用户补齐 `{...}` 占位参数后即可提交：
 
-- `完整流程`：在同一轮按 Plan -> Generator -> Healer 顺序连续执行，阶段间自动继承产物。
+- `plan+generator+healer`：在同一轮按 Plan -> Generator -> Healer 顺序连续执行，阶段间自动继承产物。
 - `独立 Plan`：探索真实页面并保存 Markdown 测试计划。
 - `独立 Generator`：读取指定或本对话最近生成的 Markdown，为目标用例生成 Playwright 脚本。
 - `独立 Healer`：只运行、修复并复测指定范围内的失败脚本。
 
 <p align="center">
   <img src="doc/images/client/01-quick-prompts.png" alt="桌面客户端新对话页的四个快捷任务模板" width="960" /><br />
-  <em>四个入口保持一行展示；点击“独立 Healer”后，输入框已填入完整任务模板。</em>
+  <em>四个入口保持一行展示；输入框会随内容增高，超过五行后在内部滚动。</em>
 </p>
 
 ### 2.2 后端日志主题

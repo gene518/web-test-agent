@@ -79,7 +79,18 @@ class PlaywrightTaskRunner:
             f"scheduled-{run_request.task_id}-"
             f"{run_request.scheduled_minute.strftime('%Y%m%d-%H%M')}"
         )
-        command = ["npx", "playwright", "test", *run_request.locations]
+        portable_node = os.environ.get("WEB_TEST_AGENT_NODE_EXECUTABLE")
+        portable_cli = os.environ.get("WEB_TEST_AGENT_PLAYWRIGHT_CLI")
+        if portable_node and portable_cli:
+            workspace_cli = run_request.project_dir / "node_modules" / "playwright" / "cli.js"
+            command = [
+                portable_node,
+                str(workspace_cli if workspace_cli.is_file() else portable_cli),
+                "test",
+                *run_request.locations,
+            ]
+        else:
+            command = ["npx", "playwright", "test", *run_request.locations]
         env = os.environ.copy()
         env["PWTEST_HEADED"] = "1" if run_request.headed else "0"
         env["PW_TEST_REPORT_NAME"] = report_name

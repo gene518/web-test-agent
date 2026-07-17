@@ -602,6 +602,88 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
 
         run_npm.assert_not_called()
 
+    def test_playwright_provider_uses_portable_runtime_without_npm(self) -> None:
+        settings = AppSettings(
+            default_automation_project_root=str(self.root_path / "projects"),
+            playwright_test_package="@playwright/test@1.58.0",
+        )
+        project_dir = self.root_path / "portable-project"
+        portable_modules = self.root_path / "portable-runtime" / "node_modules"
+        for relative_path in ("@playwright/test", "playwright", "playwright-core"):
+            package_dir = portable_modules / relative_path
+            package_dir.mkdir(parents=True)
+            (package_dir / "package.json").write_text(
+                json.dumps({"name": relative_path, "version": "1.58.0"}),
+                encoding="utf-8",
+            )
+
+        with (
+            patch.dict(
+                "deep_agent.tools.playwright.mcp_provider.os.environ",
+                {"WEB_TEST_AGENT_PLAYWRIGHT_MODULES": str(portable_modules)},
+                clear=True,
+            ),
+            patch.object(type(PLAYWRIGHT_TEST_MCP_PROVIDER), "_run_npm", autospec=True) as run_npm,
+        ):
+            PLAYWRIGHT_TEST_MCP_PROVIDER.prepare_workspace(settings, str(project_dir))
+
+        package_json = json.loads((project_dir / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package_json["devDependencies"]["@playwright/test"], "1.58.0")
+        for relative_path in ("@playwright/test", "playwright", "playwright-core"):
+            self.assertTrue((project_dir / "node_modules" / relative_path / "package.json").is_file())
+        run_npm.assert_not_called()
+
+    def test_playwright_provider_launches_packaged_cli_with_portable_node(self) -> None:
+        settings = AppSettings(default_automation_project_root=str(self.root_path / "projects"))
+        portable_node = self.root_path / "runtime" / "node" / "node.exe"
+        portable_cli = self.root_path / "runtime" / "playwright" / "cli.js"
+
+        with patch.dict(
+            "deep_agent.tools.playwright.mcp_provider.os.environ",
+            {
+                "WEB_TEST_AGENT_NODE_EXECUTABLE": str(portable_node),
+                "WEB_TEST_AGENT_PLAYWRIGHT_CLI": str(portable_cli),
+            },
+            clear=True,
+        ):
+            connection = PLAYWRIGHT_TEST_MCP_PROVIDER.build_connection_config(
+                settings,
+                str(self.root_path),
+            )
+
+        self.assertEqual(connection["command"], str(portable_node.resolve()))
+        self.assertEqual(
+            connection["args"],
+            [str(portable_cli.resolve()), "run-test-mcp-server"],
+        )
+
+    def test_playwright_provider_prefers_provisioned_workspace_cli(self) -> None:
+        settings = AppSettings(default_automation_project_root=str(self.root_path / "projects"))
+        portable_node = self.root_path / "runtime" / "node" / "node.exe"
+        portable_cli = self.root_path / "runtime" / "playwright" / "cli.js"
+        workspace = self.root_path / "workspace"
+        workspace_cli = workspace / "node_modules" / "playwright" / "cli.js"
+        workspace_cli.parent.mkdir(parents=True)
+        workspace_cli.write_text("", encoding="utf-8")
+
+        with patch.dict(
+            "deep_agent.tools.playwright.mcp_provider.os.environ",
+            {
+                "WEB_TEST_AGENT_NODE_EXECUTABLE": str(portable_node),
+                "WEB_TEST_AGENT_PLAYWRIGHT_CLI": str(portable_cli),
+            },
+            clear=True,
+        ):
+            connection = PLAYWRIGHT_TEST_MCP_PROVIDER.build_connection_config(
+                settings,
+                str(workspace),
+            )
+
+        self.assertEqual(
+            connection["args"],
+            [str(workspace_cli.resolve()), "run-test-mcp-server"],
+        )
+
     def test_playwright_provider_sets_skip_browser_download_env_for_npm_install(self) -> None:
         settings = AppSettings(default_automation_project_root=str(self.root_path / "projects"))
         project_dir = self.root_path / "bootstrap-project"

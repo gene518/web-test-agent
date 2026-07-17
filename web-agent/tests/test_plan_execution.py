@@ -64,7 +64,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.tools = [
             DummyTool(name="browser_navigate"),
-            DummyTool(name="browser_run_code_unsafe"),
+            DummyTool(name="browser_close"),
             DummyTool(name="planner_setup_page"),
             DummyTool(name="planner_save_plan"),
         ]

@@ -3,6 +3,7 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -56,7 +57,7 @@ import {
   type ToolInvocation,
 } from "./lib/message-utils";
 import { activeRunIds, buildSubmitRequest } from "./lib/session-actions";
-import { PROMPT_TEMPLATES } from "./lib/prompt-templates";
+import { AGENT_INTRO, PROMPT_TEMPLATES } from "./lib/prompt-templates";
 import {
   ASSISTANT_ID,
   STREAM_MODES,
@@ -69,6 +70,7 @@ type DisplayMessagesEvent = { type: "display_messages"; messages: unknown[] };
 type LogTheme = "macos" | "dark" | "light";
 
 const LOG_THEME_STORAGE_KEY = "web-test-agent.log-theme.v1";
+const MAX_COMPOSER_ROWS = 5;
 const LOG_THEME_OPTIONS: readonly { value: LogTheme; label: string }[] = [
   { value: "macos", label: "macOS 控制台" },
   { value: "dark", label: "深色" },
@@ -234,6 +236,7 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | undefined>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const joinedRunsRef = useRef(new Set<string>());
 
   const client = useMemo(() => createAgentClient(backend.apiUrl), [backend.apiUrl]);
@@ -320,6 +323,22 @@ function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, stream.isLoading, interrupt]);
+
+  useLayoutEffect(() => {
+    const textarea = composerInputRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    textarea.style.overflowY = "hidden";
+    const style = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+    const verticalPadding =
+      (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+    const maxHeight = lineHeight * MAX_COMPOSER_ROWS + verticalPadding;
+    const contentHeight = textarea.scrollHeight;
+    textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+    textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }, [input]);
 
   useEffect(() => {
     let cancelled = false;
@@ -457,6 +476,13 @@ function App() {
     }
   };
 
+  const handlePromptTemplate = (content: string) => {
+    setInput(content);
+    window.requestAnimationFrame(() => {
+      if (composerInputRef.current) composerInputRef.current.scrollTop = 0;
+    });
+  };
+
   const handleCancel = async () => {
     if (!threadId || cancelBusy) {
       await stream.stop();
@@ -533,7 +559,11 @@ function App() {
           </button>
         </div>
 
-        <button className="new-chat-button" onClick={handleNewThread} title="新建对话">
+        <button
+          className="new-chat-button"
+          onClick={handleNewThread}
+          title="新建对话"
+        >
           <Plus size={18} />
           {sidebarOpen && <span>新建对话</span>}
         </button>
@@ -639,13 +669,13 @@ function App() {
               <div className="empty-state">
                 <div className="empty-icon"><Bot size={25} /></div>
                 <h1>开始一个测试任务</h1>
-                <p>描述要测试的页面、流程和预期结果。</p>
+                <p>{AGENT_INTRO}</p>
                 <div className="prompt-examples">
                   {PROMPT_TEMPLATES.map((template) => (
                     <button
                       key={template.id}
                       type="button"
-                      onClick={() => setInput(template.content)}
+                      onClick={() => handlePromptTemplate(template.content)}
                     >
                       {template.title}
                     </button>
@@ -691,6 +721,8 @@ function App() {
         <footer className="composer-area">
           <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
             <textarea
+              ref={composerInputRef}
+              aria-label="对话输入框"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleInputKeyDown}

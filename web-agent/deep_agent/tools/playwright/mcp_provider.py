@@ -22,6 +22,9 @@ from deep_agent.tools.playwright.tool_error_policy import PLAYWRIGHT_MCP_TOOL_ER
 
 PLAYWRIGHT_TEST_MCP_SERVER_NAME = "playwright-test"
 PLAYWRIGHT_TEST_PACKAGE_NAME = "@playwright/test"
+PORTABLE_NODE_ENV = "WEB_TEST_AGENT_NODE_EXECUTABLE"
+PORTABLE_PLAYWRIGHT_CLI_ENV = "WEB_TEST_AGENT_PLAYWRIGHT_CLI"
+PORTABLE_PLAYWRIGHT_MODULES_ENV = "WEB_TEST_AGENT_PLAYWRIGHT_MODULES"
 
 logger = get_logger(__name__)
 
@@ -89,10 +92,24 @@ class PlaywrightTestMCPProvider:
     ) -> dict[str, object]:
         """构建 Playwright Test MCP 的 stdio 连接配置。"""
 
+        portable_node = os.environ.get(PORTABLE_NODE_ENV)
+        portable_cli = os.environ.get(PORTABLE_PLAYWRIGHT_CLI_ENV)
+        if portable_node and portable_cli:
+            command = str(Path(portable_node).expanduser().resolve())
+            resolved_cli = Path(portable_cli).expanduser().resolve()
+            if workspace_dir:
+                workspace_cli = Path(workspace_dir) / "node_modules" / "playwright" / "cli.js"
+                if workspace_cli.is_file():
+                    resolved_cli = workspace_cli.resolve()
+            args = [str(resolved_cli), *settings.playwright_mcp_args[1:]]
+        else:
+            command = _resolve_node_executable("npx")
+            args = list(settings.playwright_mcp_args)
+
         return {
             "transport": "stdio",
-            "command": _resolve_node_executable("npx"),
-            "args": list(settings.playwright_mcp_args),
+            "command": command,
+            "args": args,
             "env": settings.playwright_mcp_env,
             "cwd": workspace_dir,
         }
@@ -128,6 +145,27 @@ class PlaywrightTestMCPProvider:
         if dependency_declared and dependency_installed:
             return
 
+        portable_modules = os.environ.get(PORTABLE_PLAYWRIGHT_MODULES_ENV)
+        if portable_modules:
+            self._provision_portable_modules(
+                Path(portable_modules).expanduser().resolve(),
+                workspace_path,
+            )
+            if not dependency_declared:
+                dev_dependencies = package_data.setdefault("devDependencies", {})
+                if not isinstance(dev_dependencies, dict):
+                    raise RuntimeError(
+                        f"`{package_json}` 的 devDependencies 必须是 JSON object。"
+                    )
+                dev_dependencies[PLAYWRIGHT_TEST_PACKAGE_NAME] = settings.playwright_test_package.removeprefix(
+                    f"{PLAYWRIGHT_TEST_PACKAGE_NAME}@"
+                )
+                package_json.write_text(
+                    json.dumps(package_data, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            return
+
         if dependency_declared:
             command = ("npm", "install")
         else:
@@ -136,6 +174,42 @@ class PlaywrightTestMCPProvider:
         logger.info("%s 初始化 Playwright Test 项目依赖 workspace_dir=%s command=%s",
             log_title("工具", "Playwright依赖"), workspace_path, " ".join(command),)
         self._run_npm(command, workspace_path, settings=settings)
+
+    def _provision_portable_modules(
+        self,
+        portable_modules: Path,
+        workspace_path: Path,
+    ) -> None:
+        """从便携包复制固定版本的 Playwright 依赖，不调用 npm 或访问网络。"""
+
+        package_paths = (
+            Path("@playwright") / "test",
+            Path("playwright"),
+            Path("playwright-core"),
+        )
+        missing = [
+            str(relative_path)
+            for relative_path in package_paths
+            if not (portable_modules / relative_path / "package.json").is_file()
+        ]
+        if missing:
+            raise RuntimeError(
+                "便携 Playwright 运行时不完整，缺少：" + "、".join(missing)
+            )
+
+        workspace_modules = workspace_path / "node_modules"
+        for relative_path in package_paths:
+            source = portable_modules / relative_path
+            destination = workspace_modules / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+
+        logger.info(
+            "%s 已从便携运行时补齐 Playwright 依赖 workspace_dir=%s source=%s",
+            log_title("工具", "Playwright依赖"),
+            workspace_path,
+            portable_modules,
+        )
 
     def build_connection_error(
         self,
@@ -147,9 +221,12 @@ class PlaywrightTestMCPProvider:
 
         error = str(exc).strip()
         suffix = f" 原始错误：{error}" if error else ""
+        if os.environ.get(PORTABLE_PLAYWRIGHT_CLI_ENV):
+            hint = "请确认便携 Node、Playwright CLI 和 Chromium 目录完整。"
+        else:
+            hint = "请确认本机可以执行 `npx playwright run-test-mcp-server`，并且项目目录可执行 npm install。"
         return RuntimeError(
-            "无法连接到 MCP server `playwright-test`。请确认本机可以执行 "
-            "`npx playwright run-test-mcp-server`，并且项目目录可执行 npm install。"
+            f"无法连接到 MCP server `playwright-test`。{hint}"
             f" workspace_dir={workspace_dir}.{suffix}"
         )
 

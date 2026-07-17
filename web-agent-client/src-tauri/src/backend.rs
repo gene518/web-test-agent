@@ -53,6 +53,22 @@ enum Platform {
 struct LaunchSpec {
     program: String,
     args: Vec<String>,
+    working_dir: PathBuf,
+    environment: Vec<(String, String)>,
+    process_log: PathBuf,
+}
+
+#[derive(Debug, PartialEq)]
+struct PortableRuntime {
+    root: PathBuf,
+    app_dir: PathBuf,
+    python: PathBuf,
+    node: PathBuf,
+    playwright_cli: PathBuf,
+    playwright_modules: PathBuf,
+    browsers: PathBuf,
+    env_file: PathBuf,
+    backend_log: PathBuf,
 }
 
 fn api_url(port: u16) -> String {
@@ -79,10 +95,56 @@ fn start_script(root: &Path, platform: Platform) -> PathBuf {
     }
 }
 
+fn portable_runtime(root: &Path) -> Option<PortableRuntime> {
+    let runtime_dir = root.join("runtime");
+    let app_dir = runtime_dir.join("app");
+    let python = runtime_dir.join("python/python.exe");
+    let node = runtime_dir.join("node/node.exe");
+    let playwright_modules = runtime_dir.join("playwright/node_modules");
+    let playwright_cli = playwright_modules.join("playwright/cli.js");
+    let browsers = runtime_dir.join("browsers");
+    let env_file = root.join("config/.env");
+    if !app_dir.join("langgraph.json").is_file()
+        || !python.is_file()
+        || !node.is_file()
+        || !playwright_cli.is_file()
+        || !playwright_modules
+            .join("@playwright/test/package.json")
+            .is_file()
+        || !browsers.is_dir()
+        || !env_file.is_file()
+    {
+        return None;
+    }
+    Some(PortableRuntime {
+        root: root.to_path_buf(),
+        app_dir,
+        python,
+        node,
+        playwright_cli,
+        playwright_modules,
+        browsers,
+        env_file,
+        backend_log: root.join("data/logs/backend.log"),
+    })
+}
+
+fn portable_root_from_executable(platform: Platform) -> Option<PathBuf> {
+    if platform != Platform::Windows {
+        return None;
+    }
+    let executable = std::env::current_exe().ok()?;
+    let root = executable.parent()?.canonicalize().ok()?;
+    portable_runtime(&root).map(|runtime| runtime.root)
+}
+
 fn validate_project_root_for(root: &Path, platform: Platform) -> Result<PathBuf, String> {
     let canonical = root
         .canonicalize()
         .map_err(|_| format!("项目目录不存在：{}", root.display()))?;
+    if platform == Platform::Windows && portable_runtime(&canonical).is_some() {
+        return Ok(canonical);
+    }
     let graph_config = canonical.join("web-agent/langgraph.json");
     let script = start_script(&canonical, platform);
     if !graph_config.is_file() {
@@ -111,6 +173,9 @@ fn find_root_from(start: &Path, platform: Platform) -> Option<PathBuf> {
 }
 
 fn resolve_project_root(candidate: &str, platform: Platform) -> Result<PathBuf, String> {
+    if let Some(root) = portable_root_from_executable(platform) {
+        return Ok(root);
+    }
     if !candidate.trim().is_empty() {
         return validate_project_root_for(Path::new(candidate), platform);
     }
@@ -267,12 +332,80 @@ fn stop_langgraph_listener(port: u16, platform: Platform) -> Result<(), String> 
     }
 }
 
-fn build_launch_spec(root: &Path, platform: Platform) -> LaunchSpec {
+fn build_launch_spec(root: &Path, platform: Platform, port: u16) -> LaunchSpec {
+    if platform == Platform::Windows {
+        if let Some(runtime) = portable_runtime(root) {
+            let python_path = format!(
+                "{};{}",
+                runtime.app_dir.display(),
+                runtime
+                    .python
+                    .parent()
+                    .unwrap_or(root)
+                    .join("Lib/site-packages")
+                    .display()
+            );
+            return LaunchSpec {
+                program: runtime.python.to_string_lossy().into_owned(),
+                args: vec![
+                    "-m".to_string(),
+                    "langgraph_cli".to_string(),
+                    "dev".to_string(),
+                    "--host".to_string(),
+                    BACKEND_HOST.to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                    "--no-browser".to_string(),
+                    "--allow-blocking".to_string(),
+                    "--no-reload".to_string(),
+                    "--server-log-level".to_string(),
+                    "ERROR".to_string(),
+                    "--config".to_string(),
+                    runtime
+                        .app_dir
+                        .join("langgraph.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                working_dir: runtime.app_dir,
+                environment: vec![
+                    ("PYTHONPATH".to_string(), python_path),
+                    ("PYTHONUTF8".to_string(), "1".to_string()),
+                    ("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string()),
+                    (
+                        "WEB_TEST_AGENT_ENV_FILE".to_string(),
+                        runtime.env_file.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "WEB_TEST_AGENT_NODE_EXECUTABLE".to_string(),
+                        runtime.node.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "WEB_TEST_AGENT_PLAYWRIGHT_CLI".to_string(),
+                        runtime.playwright_cli.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "WEB_TEST_AGENT_PLAYWRIGHT_MODULES".to_string(),
+                        runtime.playwright_modules.to_string_lossy().into_owned(),
+                    ),
+                    (
+                        "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+                        runtime.browsers.to_string_lossy().into_owned(),
+                    ),
+                ],
+                process_log: runtime.backend_log,
+            };
+        }
+    }
+
     let script = start_script(root, platform).to_string_lossy().into_owned();
     match platform {
         Platform::MacOs => LaunchSpec {
             program: "bash".to_string(),
             args: vec![script, "backend".to_string()],
+            working_dir: root.to_path_buf(),
+            environment: vec![("BACKEND_PORT".to_string(), port.to_string())],
+            process_log: root.join("start/backend-bootstrap.log"),
         },
         Platform::Windows => LaunchSpec {
             program: "powershell.exe".to_string(),
@@ -285,8 +418,28 @@ fn build_launch_spec(root: &Path, platform: Platform) -> LaunchSpec {
                 "-Mode".to_string(),
                 "backend".to_string(),
             ],
+            working_dir: root.to_path_buf(),
+            environment: vec![("BACKEND_PORT".to_string(), port.to_string())],
+            process_log: root.join("start/backend-bootstrap.log"),
         },
     }
+}
+
+fn backend_log_path(root: &Path) -> PathBuf {
+    portable_runtime(root)
+        .map(|runtime| runtime.backend_log)
+        .unwrap_or_else(|| root.join("start/backend.log"))
+}
+
+fn configure_background_process(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
 }
 
 fn stop_managed_child(app: &AppHandle) {
@@ -355,14 +508,36 @@ fn restart_impl(app: &AppHandle, project_root: &str, port: u16) -> Result<Backen
     stop_managed_child(app);
     stop_langgraph_listener(port, platform)?;
 
-    let spec = build_launch_spec(&root, platform);
-    let child = Command::new(&spec.program)
+    let spec = build_launch_spec(&root, platform, port);
+    let bootstrap_log_path = spec.process_log.clone();
+    if let Some(parent) = bootstrap_log_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建日志目录 {}：{error}", parent.display()))?;
+    }
+    let bootstrap_log = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&bootstrap_log_path)
+        .map_err(|error| {
+            format!(
+                "无法创建后端启动日志 {}：{error}",
+                bootstrap_log_path.display()
+            )
+        })?;
+    let bootstrap_error_log = bootstrap_log
+        .try_clone()
+        .map_err(|error| format!("无法打开后端启动错误日志：{error}"))?;
+    let mut command = Command::new(&spec.program);
+    command
         .args(&spec.args)
-        .current_dir(&root)
-        .env("BACKEND_PORT", port.to_string())
+        .current_dir(&spec.working_dir)
+        .envs(spec.environment.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(bootstrap_log))
+        .stderr(Stdio::from(bootstrap_error_log));
+    configure_background_process(&mut command);
+    let child = command
         .spawn()
         .map_err(|error| format!("无法启动后端脚本：{error}"))?;
     let child_id = child.id();
@@ -401,7 +576,8 @@ fn restart_impl(app: &AppHandle, project_root: &str, port: u16) -> Result<Backen
         };
         if let Some(status) = exited {
             return Err(format!(
-                "后端启动脚本提前退出（{status}），请查看后端日志。"
+                "后端启动进程提前退出（{status}），请查看 {}。",
+                bootstrap_log_path.display()
             ));
         }
         thread::sleep(Duration::from_millis(500));
@@ -447,7 +623,7 @@ pub async fn stop_backend(app: AppHandle, port: u16) -> Result<(), String> {
 pub async fn backend_log(project_root: String, tail_lines: usize) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = resolve_project_root(&project_root, current_platform()?)?;
-        let log_path = root.join("start/backend.log");
+        let log_path = backend_log_path(&root);
         let content = fs::read_to_string(&log_path)
             .map_err(|error| format!("无法读取 {}：{error}", log_path.display()))?;
         let lines: Vec<&str> = content.lines().collect();
@@ -493,17 +669,62 @@ mod tests {
     #[test]
     fn generates_platform_launch_commands() {
         let root = Path::new("/repo");
-        let mac = build_launch_spec(root, Platform::MacOs);
+        let mac = build_launch_spec(root, Platform::MacOs, 2024);
         assert_eq!(mac.program, "bash");
         assert!(mac.args[0].ends_with("start/macos-start.command"));
         assert_eq!(mac.args[1], "backend");
-        let windows = build_launch_spec(Path::new(r"C:\repo"), Platform::Windows);
+        let windows = build_launch_spec(Path::new(r"C:\repo"), Platform::Windows, 2024);
         assert_eq!(windows.program, "powershell.exe");
         assert!(windows
             .args
             .iter()
             .any(|arg| arg.ends_with("windows-start.ps1")));
         assert_eq!(windows.args.last().map(String::as_str), Some("backend"));
+    }
+
+    #[test]
+    fn builds_portable_windows_launch_command() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("web-agent-client-portable-{unique}"));
+        for directory in [
+            "runtime/app",
+            "runtime/python",
+            "runtime/node",
+            "runtime/playwright/node_modules/@playwright/test",
+            "runtime/playwright/node_modules/playwright",
+            "runtime/browsers",
+            "config",
+        ] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        for file in [
+            "runtime/app/langgraph.json",
+            "runtime/python/python.exe",
+            "runtime/node/node.exe",
+            "runtime/playwright/node_modules/@playwright/test/package.json",
+            "runtime/playwright/node_modules/playwright/cli.js",
+            "config/.env",
+        ] {
+            fs::write(root.join(file), "").unwrap();
+        }
+
+        let spec = build_launch_spec(&root, Platform::Windows, 3210);
+
+        assert!(Path::new(&spec.program).ends_with(Path::new("runtime/python/python.exe")));
+        assert_eq!(spec.args[0..3], ["-m", "langgraph_cli", "dev"]);
+        assert!(spec.args.windows(2).any(|args| args == ["--port", "3210"]));
+        assert!(spec
+            .environment
+            .iter()
+            .any(|(key, value)| key == "PLAYWRIGHT_BROWSERS_PATH"
+                && Path::new(value).ends_with(Path::new("runtime/browsers"))));
+        assert!(spec
+            .process_log
+            .ends_with(Path::new("data/logs/backend.log")));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

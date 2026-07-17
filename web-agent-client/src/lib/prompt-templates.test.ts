@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { PROMPT_TEMPLATES } from "./prompt-templates";
+import { AGENT_INTRO, PROMPT_TEMPLATES } from "./prompt-templates";
 
 describe("prompt templates", () => {
   it("keeps the four requested shortcuts in workflow order", () => {
     expect(PROMPT_TEMPLATES.map((template) => template.title)).toEqual([
-      "完整流程",
+      "plan+generator+healer",
       "独立 Plan",
       "独立 Generator",
       "独立 Healer",
     ]);
+  });
+
+  it("keeps the start-page Agent introduction at 50 characters", () => {
+    expect(Array.from(AGENT_INTRO)).toHaveLength(50);
+    expect(AGENT_INTRO).toContain("网页测试智能体");
   });
 
   it("fills each shortcut with its complete workflow constraints", () => {
