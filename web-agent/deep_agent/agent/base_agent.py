@@ -18,6 +18,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from deep_agent.core.config import AppSettings
+from deep_agent.model import adapt_chat_model, resolve_model_capabilities, validate_tool_set
 from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.helpers.artifacts import (
     append_artifact_history,
@@ -221,6 +222,20 @@ class BaseSpecialistAgent(
             workspace_dir=workspace_dir,
             allowed_tool_ids=runtime_config.allowed_playwright_test_mcp_tools,
         )
+        if self._settings.model_adapter_v2_enabled:
+            model_connection = self._settings.resolve_model_connection("specialist")
+            model_capabilities = resolve_model_capabilities(model_connection)
+            tool_diagnostics = validate_tool_set(
+                tools,
+                model_capabilities,
+                model_connection,
+            )
+            model_family = model_connection.family
+            model_channel = model_connection.channel
+        else:
+            tool_diagnostics = None
+            model_family = "legacy"
+            model_channel = "legacy"
         # system prompt 放在工具之后再组装，是为了把 workspace / extracted_params 等运行时上下文
         # 一次性拼进去，避免 prompt 和实际执行环境脱节。
         system_prompt = await asyncio.to_thread(self._compose_system_prompt, state=state, workspace_dir=workspace_dir, runtime_config=runtime_config)
@@ -233,6 +248,9 @@ class BaseSpecialistAgent(
             "workspace_dir": str(workspace_dir) if workspace_dir is not None else None,
             "allowed_tool_ids": list(runtime_config.allowed_playwright_test_mcp_tools),
             "loaded_tools": serialize_tools_for_log(tools, max_text_length=debug_max_chars(self._settings)),
+            "model_family": model_family,
+            "model_channel": model_channel,
+            "tool_count": tool_diagnostics.count if tool_diagnostics is not None else len(tools),
             "system_prompt_length": len(system_prompt),
         }
         if debug_full_messages_enabled(self._settings):
@@ -255,11 +273,18 @@ class BaseSpecialistAgent(
 
         # 主链路：这里开始初始化当前 Specialist 的模型实例；后续写用例、写脚本、
         # 调试修复等阶段都会基于这一个模型对象继续进入 Deep Agent 编排。
-        model_kwargs = self._settings.build_model_kwargs(
-            self._settings.specialist_model,
-            role="specialist",
-        )
-        model = init_chat_model(**model_kwargs)
+        model_kwargs = self._settings.build_model_kwargs(role="specialist")
+        raw_model = init_chat_model(**model_kwargs)
+        if self._settings.model_adapter_v2_enabled:
+            model_connection = self._settings.resolve_model_connection("specialist")
+            model_capabilities = resolve_model_capabilities(model_connection)
+            model = adapt_chat_model(
+                raw_model,
+                connection=model_connection,
+                capabilities=model_capabilities,
+            )
+        else:
+            model = raw_model
         logger.info("%s %s 模型初始化完成 model_kwargs=%s",
             log_title("初始化", "模型初始化", node_name=f"{self.agent_type}_node"), self.display_name, summarize_model_kwargs(model_kwargs),)
 

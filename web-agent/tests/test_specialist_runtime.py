@@ -171,6 +171,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     def _build_settings(self) -> AppSettings:
         return AppSettings(
+            _env_file=None,
             default_automation_project_root=str(self.root_path / "projects"),
         )
 
@@ -184,6 +185,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     def test_openai_compatible_base_url_disables_responses_api(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             openai_api_key="test-key",
             openai_base_url=" https://open.bigmodel.cn/api/paas/v4/ ",
         )
@@ -196,6 +198,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     def test_specialist_agent_uses_configured_model_instance(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             specialist_model="openai:gpt-5.4",
             openai_api_key="test-key",
             openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
@@ -226,6 +229,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     def test_master_agent_uses_same_thinking_switch_as_specialist(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             master_model="openai:gpt-5.4",
             openai_api_key="test-key",
             openai_base_url="https://open.bigmodel.cn/api/paas/v4/",

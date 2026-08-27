@@ -9,6 +9,8 @@ from pathlib import Path
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from deep_agent.model.errors import ModelConfigurationError
+from deep_agent.model.settings import ModelConnectionSettings, ResolvedModelConnection
 from deep_agent.core.runtime_logging import (
     configure_logging,
     configure_logging_from_env,
@@ -124,6 +126,7 @@ class AppSettings(BaseSettings):
         env_file_encoding="utf-8-sig",
         case_sensitive=False,
         extra="ignore",
+        env_nested_delimiter="__",
     )
 
     master_model: str = Field(
@@ -133,6 +136,18 @@ class AppSettings(BaseSettings):
     specialist_model: str = Field(
         default="openai:gpt-5.4",
         description="Plan、Generator、Healer 等 Specialist Agent 默认使用的模型。",
+    )
+    master_llm: ModelConnectionSettings = Field(
+        default_factory=ModelConnectionSettings,
+        description="Master 的供应商、接入通道、凭证和模型能力覆盖。",
+    )
+    specialist_llm: ModelConnectionSettings = Field(
+        default_factory=ModelConnectionSettings,
+        description="Plan、Generator、Healer 共用的供应商、接入通道和凭证。",
+    )
+    model_adapter_v2_enabled: bool = Field(
+        default=True,
+        description="是否启用按模型家族和接入通道解析能力的新适配层。",
     )
     master_llm_model: str | None = Field(
         default=None,
@@ -320,7 +335,7 @@ class AppSettings(BaseSettings):
 
     def build_model_kwargs(
         self,
-        model_name: str,
+        model_name: str | None = None,
         *,
         role: str | None = None,
     ) -> dict[str, object]:
@@ -331,7 +346,7 @@ class AppSettings(BaseSettings):
 
         Args:
             model_name: 目标模型名，推荐使用 `provider:model` 格式。
-            role: 模型角色；传入 master 或 specialist 时读取对应的扁平配置。
+            role: 模型角色；传入时使用对应角色的新旧配置。
 
         Returns:
             dict[str, object]: 可以直接传给 `init_chat_model` 的关键字参数。
@@ -339,6 +354,164 @@ class AppSettings(BaseSettings):
         Raises:
             None.
         """
+
+        fallback_model = model_name or (
+            self.master_model if role == "master" else self.specialist_model
+        )
+        if not self.model_adapter_v2_enabled:
+            return self._build_legacy_model_kwargs(fallback_model, role=role)
+
+        resolved_role = role or (
+            "master" if fallback_model == self.master_model else "specialist"
+        )
+        connection = self.resolve_model_connection(
+            resolved_role,
+            model_override=model_name if role is None else None,
+        )
+        # Existing deployments retain their exact request shape until they opt into
+        # the nested provider configuration. The adapter can still normalize messages
+        # and tools based on the inferred connection profile.
+        if connection.legacy_config:
+            return self._build_legacy_model_kwargs(fallback_model, role=role)
+
+        kwargs: dict[str, object] = {
+            "model": connection.api_model_name,
+            "model_provider": connection.protocol,
+            "timeout": connection.timeout_seconds,
+            "max_retries": connection.max_retries,
+        }
+        if connection.api_key:
+            kwargs["api_key"] = connection.api_key
+        if connection.base_url:
+            kwargs["base_url"] = connection.base_url
+
+        if connection.protocol == "openai":
+            if connection.base_url or connection.family != "openai":
+                kwargs["use_responses_api"] = False
+            kwargs["stream_chunk_timeout"] = connection.stream_chunk_timeout_seconds
+            extra_body = _build_openai_extra_body(connection)
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+            disabled_params = _disabled_openai_params(connection)
+            if disabled_params:
+                kwargs["disabled_params"] = disabled_params
+            if connection.reasoning_effort:
+                kwargs["reasoning_effort"] = connection.reasoning_effort
+        elif connection.family == "minimax":
+            kwargs["max_tokens"] = connection.max_output_tokens or 131_072
+
+        return kwargs
+
+    def resolve_model_connection(
+        self,
+        role: str,
+        *,
+        model_override: str | None = None,
+    ) -> ResolvedModelConnection:
+        """Resolve a role's provider profile without discarding legacy settings."""
+
+        if role not in {"master", "specialist"}:
+            raise ValueError(f"未知模型角色：{role}")
+
+        role_settings = self.master_llm if role == "master" else self.specialist_llm
+        (
+            legacy_model,
+            legacy_api_key,
+            legacy_base_url,
+            legacy_thinking,
+        ) = self._legacy_role_connection_values(role)
+        legacy_config = not role_settings.has_explicit_configuration()
+        model = model_override or role_settings.model or legacy_model
+        provider_prefix = _model_provider_prefix(model)
+        api_model_name = _strip_model_provider_prefix(model)
+        family = _resolve_model_family(role_settings.family, api_model_name)
+        base_url = _normalize_optional_text(role_settings.base_url) or (
+            legacy_base_url if legacy_config else self._normalized_openai_base_url()
+        )
+        channel = _resolve_model_channel(
+            role_settings.channel,
+            family,
+            base_url,
+            provider_prefix=provider_prefix,
+        )
+        _validate_family_channel(family, channel)
+        protocol = (
+            "anthropic"
+            if channel in {"minimax_anthropic", "generic_anthropic"}
+            else "openai"
+        )
+        configured_api_key = _normalize_optional_text(role_settings.api_key)
+        api_key = configured_api_key or (legacy_api_key if legacy_config else None)
+        thinking = legacy_thinking if legacy_config else role_settings.thinking
+
+        if role_settings.stream_chunk_timeout_seconds is None:
+            stream_chunk_timeout_seconds = self.resolved_stream_chunk_timeout_seconds
+        elif role_settings.stream_chunk_timeout_seconds <= 0:
+            stream_chunk_timeout_seconds = None
+        else:
+            stream_chunk_timeout_seconds = role_settings.stream_chunk_timeout_seconds
+
+        return ResolvedModelConnection(
+            role=role,  # type: ignore[arg-type]
+            model=model,
+            api_model_name=api_model_name,
+            family=family,
+            channel=channel,
+            protocol=protocol,
+            api_key=api_key,
+            base_url=base_url,
+            thinking=thinking,
+            reasoning_effort=role_settings.reasoning_effort,
+            context_window=role_settings.context_window,
+            max_output_tokens=role_settings.max_output_tokens,
+            timeout_seconds=role_settings.timeout_seconds or self.llm_timeout_seconds,
+            max_retries=(
+                role_settings.max_retries
+                if role_settings.max_retries is not None
+                else 3
+            ),
+            stream_chunk_timeout_seconds=stream_chunk_timeout_seconds,
+            legacy_config=legacy_config,
+        )
+
+    def _legacy_role_connection_values(
+        self,
+        role: str,
+    ) -> tuple[str, str | None, str | None, str]:
+        """Return the current flat role settings in the v2 connection shape."""
+
+        model = self.master_model if role == "master" else self.specialist_model
+        api_key = self.openai_api_key
+        base_url = self._normalized_openai_base_url()
+        thinking = "enabled" if self.llm_enable_thinking else "disabled"
+
+        if role == "master" and any(
+            (self.master_llm_model, self.master_llm_api_key, self.master_llm_base_url)
+        ):
+            model = self.master_llm_model or model
+            api_key = self.master_llm_api_key or api_key
+            base_url = self.master_llm_base_url or base_url
+            thinking = "enabled" if self.master_llm_thinking else "disabled"
+        elif role == "specialist" and any(
+            (
+                self.specialist_llm_model,
+                self.specialist_llm_api_key,
+                self.specialist_llm_base_url,
+            )
+        ):
+            model = self.specialist_llm_model or model
+            api_key = self.specialist_llm_api_key or api_key
+            base_url = self.specialist_llm_base_url or base_url
+            thinking = "enabled" if self.specialist_llm_thinking else "disabled"
+        return model, api_key, base_url, thinking
+
+    def _build_legacy_model_kwargs(
+        self,
+        model_name: str,
+        *,
+        role: str | None = None,
+    ) -> dict[str, object]:
+        """Preserve the pre-adapter request contract for existing deployments."""
 
         api_key = self.openai_api_key
         base_url = self._normalized_openai_base_url()
@@ -363,39 +536,29 @@ class AppSettings(BaseSettings):
             base_url = self.specialist_llm_base_url or base_url
             enable_thinking = self.specialist_llm_thinking
 
-        # 先准备所有模型都共用的基础参数，目的是把“每个 Agent 都会重复写的初始化参数”收敛掉。
         kwargs: dict[str, object] = {
             "model": model_name,
             "timeout": self.llm_timeout_seconds,
             "max_retries": 3,
         }
-
-        # 如果用户只写了裸模型名，例如 `glm-4.5-air`，LangChain 无法自动判断 provider。
-        # 由于当前项目只暴露了 OpenAI 兼容接口配置，所以这里把“无 provider 前缀的模型”
-        # 统一按 OpenAI 兼容 provider 处理，便于接入智谱、代理网关等 OpenAI 风格接口。
+        if model_name.startswith("anthropic:"):
+            kwargs["model"] = model_name.removeprefix("anthropic:")
+            kwargs["model_provider"] = "anthropic"
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+            return kwargs
         if ":" not in model_name:
             kwargs["model_provider"] = "openai"
-
-        # 只有 OpenAI 兼容模型才需要额外拼接 API Key 和 base URL，
-        # 目的是让非 OpenAI provider 不被无关参数污染。
         if model_name.startswith("openai:") or ":" not in model_name:
             if api_key:
                 kwargs["api_key"] = api_key
             if base_url:
                 kwargs["base_url"] = base_url
-                # 大多数 OpenAI 兼容平台只实现 Chat Completions，不支持 OpenAI Responses API。
-                # 明确关闭后可以避免 gpt-5/codex 等模型名或 Deep Agents 默认策略把请求打到
-                # `{base_url}/responses`，导致兼容平台返回 404。
                 kwargs["use_responses_api"] = False
-            # DashScope 等 OpenAI 兼容平台会通过 `extra_body.enable_thinking` 控制混合思考模式；
-            # 这里统一收敛到一个全局开关，避免 Master / Specialist 分别维护不同默认值。
-            extra_body = kwargs.get("extra_body")
-            normalized_extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
-            normalized_extra_body["enable_thinking"] = enable_thinking
-            kwargs["extra_body"] = normalized_extra_body
-            # 显式覆盖 LangChain OpenAI 默认的 120s 流式静默超时，避免它先于总超时触发。
+            kwargs["extra_body"] = {"enable_thinking": enable_thinking}
             kwargs["stream_chunk_timeout"] = self.resolved_stream_chunk_timeout_seconds
-
         return kwargs
 
     def _normalized_openai_base_url(self) -> str | None:
@@ -425,6 +588,121 @@ class AppSettings(BaseSettings):
         return _PROJECT_ROOT / "scheduler_tasks.json"
 
 
+def _model_provider_prefix(model_name: str) -> str | None:
+    provider, separator, _ = model_name.strip().partition(":")
+    return provider.lower() if separator and provider.lower() in {"openai", "anthropic"} else None
+
+
+def _strip_model_provider_prefix(model_name: str) -> str:
+    normalized = model_name.strip()
+    provider, separator, model = normalized.partition(":")
+    if separator and provider.lower() in {"openai", "anthropic"}:
+        return model.strip()
+    return normalized
+
+
+def _resolve_model_family(configured_family: str, model_name: str) -> str:
+    if configured_family != "auto":
+        return configured_family
+    normalized = model_name.lower()
+    if "qwen" in normalized:
+        return "qwen"
+    if "minimax" in normalized:
+        return "minimax"
+    if normalized.startswith("glm") or "/glm" in normalized:
+        return "glm"
+    if normalized.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+        return "openai"
+    return "generic"
+
+
+def _resolve_model_channel(
+    configured_channel: str,
+    family: str,
+    base_url: str | None,
+    *,
+    provider_prefix: str | None,
+) -> str:
+    if configured_channel != "auto":
+        return configured_channel
+    if provider_prefix == "anthropic":
+        return "generic_anthropic"
+    normalized_url = (base_url or "").lower()
+    if family == "qwen":
+        return (
+            "dashscope_openai"
+            if any(token in normalized_url for token in ("dashscope", "aliyuncs"))
+            else "generic_openai"
+        )
+    if family == "minimax":
+        return "dashscope_openai" if "aliyuncs" in normalized_url else "minimax_openai"
+    if family == "glm":
+        return "dashscope_openai" if "aliyuncs" in normalized_url else "zhipu_openai"
+    if family == "openai":
+        return "openai"
+    return "generic_openai"
+
+
+def _validate_family_channel(family: str, channel: str) -> None:
+    required_family = {
+        "minimax_openai": "minimax",
+        "minimax_anthropic": "minimax",
+        "zhipu_openai": "glm",
+        "openai": "openai",
+        "generic_anthropic": "generic",
+    }.get(channel)
+    if required_family is not None and family != required_family:
+        raise ModelConfigurationError(
+            f"模型 family `{family}` 与接入通道 `{channel}` 不匹配；该通道要求 family `{required_family}`。",
+            context={"family": family, "channel": channel},
+        )
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _build_openai_extra_body(connection: ResolvedModelConnection) -> dict[str, object]:
+    extra_body: dict[str, object] = {}
+    thinking_enabled = connection.thinking == "enabled"
+    if connection.family == "qwen":
+        if connection.thinking != "auto":
+            extra_body["enable_thinking"] = thinking_enabled
+    elif connection.family == "minimax":
+        # Keep reasoning in content so tool turns can replay it faithfully.
+        extra_body["reasoning_split"] = False
+        if "m3" in connection.api_model_name.lower() and connection.thinking != "auto":
+            extra_body["thinking"] = {
+                "type": "adaptive" if thinking_enabled else "disabled"
+            }
+    elif connection.family == "glm":
+        if connection.thinking != "auto":
+            if connection.channel == "dashscope_openai":
+                extra_body["enable_thinking"] = thinking_enabled
+            else:
+                extra_body["thinking"] = {
+                    "type": "enabled" if thinking_enabled else "disabled"
+                }
+        if connection.channel == "dashscope_openai" and connection.role == "specialist":
+            extra_body["tool_stream"] = True
+    return extra_body
+
+
+def _disabled_openai_params(connection: ResolvedModelConnection) -> dict[str, None]:
+    if connection.family == "minimax" and connection.channel != "minimax_anthropic":
+        return {
+            "parallel_tool_calls": None,
+            "tool_choice": None,
+            "response_format": None,
+        }
+    if connection.family == "glm":
+        return {"parallel_tool_calls": None}
+    return {}
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     """返回全局单例配置对象。
@@ -449,4 +727,12 @@ def get_settings() -> AppSettings:
     configure_logging(settings.log_level)
     logger.info("%s 应用配置加载成功 settings=%s",
         log_title("初始化", "配置加载"), summarize_settings(settings),)
+    if settings.model_adapter_v2_enabled:
+        from deep_agent.model.diagnostics import collect_model_diagnostics
+
+        logger.info(
+            "%s 模型适配诊断 models=%s",
+            log_title("初始化", "模型诊断"),
+            collect_model_diagnostics(settings),
+        )
     return settings
