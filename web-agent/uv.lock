@@ -2311,6 +2311,7 @@ source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "langchain" },
+    { name = "langchain-anthropic" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph" },
@@ -2329,6 +2330,7 @@ dev = [
 requires-dist = [
     { name = "deepagents" },
     { name = "langchain" },
+    { name = "langchain-anthropic" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph" },
