@@ -5,12 +5,12 @@
 workspace 解析、MCP 工具准备、prompt 拼装和 Deep Agent 调用细节。
 """
 
-from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
@@ -18,7 +18,11 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from deep_agent.core.config import AppSettings
-from deep_agent.model import adapt_chat_model, resolve_model_capabilities, validate_tool_set
+from deep_agent.model import (
+    adapt_chat_model,
+    resolve_model_capabilities,
+    validate_tool_set,
+)
 from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.helpers.artifacts import (
     append_artifact_history,
@@ -69,7 +73,9 @@ class BaseAgent(ABC):
     """
 
     @abstractmethod
-    async def execute(self, state: WorkflowState, config: RunnableConfig | None = None) -> WorkflowState:
+    async def execute(
+        self, state: WorkflowState, config: RunnableConfig | None = None
+    ) -> WorkflowState:
         """执行当前 Agent 的核心逻辑。
 
         Args:
@@ -123,10 +129,15 @@ class BaseSpecialistAgent(
         # 这里优先允许测试注入自定义 MCP 管理器；生产场景下则复用全局单例，
         # 目的是避免每个 Specialist 都重复拉起一套 MCP 子进程。
         self._mcp_manager = mcp_manager or get_mcp_tools_manager(settings)
-        logger.info("%s Agent 初始化完成 display_name=%s",
-            log_title("初始化", "Agent初始化"), self.display_name,)
+        logger.info(
+            "%s Agent 初始化完成 display_name=%s",
+            log_title("初始化", "Agent初始化"),
+            self.display_name,
+        )
 
-    async def execute(self, state: WorkflowState, config: RunnableConfig | None = None) -> WorkflowState:
+    async def execute(
+        self, state: WorkflowState, config: RunnableConfig | None = None
+    ) -> WorkflowState:
         """执行 Specialist Agent。
 
         Args:
@@ -137,9 +148,16 @@ class BaseSpecialistAgent(
         """
 
         node_name = f"{self.agent_type}_node"
-        trace_context = build_trace_context(config, node_name=node_name, event_name="node_enter")
-        logger.info("%s event=node_enter trace=%s display_name=%s state=%s",
-            log_title("执行", "节点入参", node_name=node_name), trace_context, self.display_name, format_state_for_log(state, self._settings),)
+        trace_context = build_trace_context(
+            config, node_name=node_name, event_name="node_enter"
+        )
+        logger.info(
+            "%s event=node_enter trace=%s display_name=%s state=%s",
+            log_title("执行", "节点入参", node_name=node_name),
+            trace_context,
+            self.display_name,
+            format_state_for_log(state, self._settings),
+        )
 
         # 执行前先做业务侧必填校验，避免把明显缺参的请求直接交给大模型“猜”。
         validation_error = self._validate_extracted_params(state)
@@ -149,11 +167,19 @@ class BaseSpecialistAgent(
                 raw_result={"status": "validation_error", "message": validation_error},
                 config=config,
             )
-            logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
-                log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
+            logger.info(
+                "%s event=node_exit trace=%s display_name=%s messages=%s",
+                log_title("执行", "节点出参", node_name=node_name),
+                build_trace_context(
+                    config, node_name=node_name, event_name="node_exit"
+                ),
+                self.display_name,
+                format_messages_for_log(result["messages"], self._settings),
+            )
             return result
 
         stage_start_message: AIMessage | None = None
+        execution_context: SpecialistExecutionContext | None = None
         try:
             # 这里把“准备上下文”、“创建 Agent”、“执行 Agent”明确拆开，
             # 目的是让每一步职责稳定，后续子类要覆写某一步时不必复制整段流程。
@@ -164,30 +190,65 @@ class BaseSpecialistAgent(
             )
             emit_display_message_delta([stage_start_message])
             specialist_agent = self._create_specialist_agent(execution_context)
-            raw_result = await self._run_deep_agent(specialist_agent, state, execution_context, config=config)
+            raw_result = await self._run_deep_agent(
+                specialist_agent, state, execution_context, config=config
+            )
             result = await self._build_final_summary_result(
                 state=state,
                 raw_result=raw_result,
                 config=config,
                 preface_messages=[stage_start_message],
             )
-            logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
-                log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result.get("messages", []), self._settings),)
+            logger.info(
+                "%s event=node_exit trace=%s display_name=%s messages=%s",
+                log_title("执行", "节点出参", node_name=node_name),
+                build_trace_context(
+                    config, node_name=node_name, event_name="node_exit"
+                ),
+                self.display_name,
+                format_messages_for_log(result.get("messages", []), self._settings),
+            )
             return result
         except Exception as exc:  # noqa: BLE001
             if is_langgraph_user_cancellation(exc):
                 raise
-            logger.exception("%s event=node_error trace=%s %s 执行失败。",
-                log_title("执行", "节点异常", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_error"), self.display_name,)
+            logger.exception(
+                "%s event=node_error trace=%s %s 执行失败。",
+                log_title("执行", "节点异常", node_name=node_name),
+                build_trace_context(
+                    config, node_name=node_name, event_name="node_error"
+                ),
+                self.display_name,
+            )
             result = await self._build_final_summary_result(
                 state=state,
-                raw_result={"status": "exception", "message": self._build_unhandled_exception_message(exc)},
+                raw_result={
+                    "status": "exception",
+                    "message": self._build_unhandled_exception_message(exc),
+                },
                 config=config,
-                preface_messages=[stage_start_message] if stage_start_message is not None else (),
+                preface_messages=[stage_start_message]
+                if stage_start_message is not None
+                else (),
             )
-            logger.info("%s event=node_exit trace=%s display_name=%s messages=%s",
-                log_title("执行", "节点出参", node_name=node_name), build_trace_context(config, node_name=node_name, event_name="node_exit"), self.display_name, format_messages_for_log(result["messages"], self._settings),)
+            logger.info(
+                "%s event=node_exit trace=%s display_name=%s messages=%s",
+                log_title("执行", "节点出参", node_name=node_name),
+                build_trace_context(
+                    config, node_name=node_name, event_name="node_exit"
+                ),
+                self.display_name,
+                format_messages_for_log(result["messages"], self._settings),
+            )
             return result
+        finally:
+            if execution_context is not None:
+                await self._close_playwright_mcp_session(
+                    workspace_dir=execution_context.workspace_dir,
+                    mcp_session_id=execution_context.mcp_session_id,
+                    trace_context=execution_context.trace_context,
+                    reason="specialist_execute_finalize",
+                )
 
     def _validate_extracted_params(self, state: WorkflowState) -> str | None:
         """在真实执行前校验关键信息。"""
@@ -209,62 +270,116 @@ class BaseSpecialistAgent(
         # prompt 结构和项目规范加载策略都以它为准。
         runtime_config = self._get_runtime_config()
         node_name = f"{self.agent_type}_node"
-        trace_context = build_trace_context(config, node_name=node_name, event_name="specialist_context")
+        trace_context = build_trace_context(
+            config, node_name=node_name, event_name="specialist_context"
+        )
         if not any(section.strip() for section in runtime_config.system_prompt_parts):
-            raise RuntimeError(f"{self.display_name} 缺少 system prompt 配置，无法创建 Deep Agent。")
+            raise RuntimeError(
+                f"{self.display_name} 缺少 system prompt 配置，无法创建 Deep Agent。"
+            )
 
         # 先确定工作目录，再按目录维度请求工具，是为了让 MCP server 能拿到正确的项目上下文。
         workspace_dir = await asyncio.to_thread(self._resolve_workspace_dir, state)
+        mcp_session_id = self._build_mcp_session_id(trace_context)
         # 主链路：这里真正向 MCP 管理器申请当前 Specialist 可见的工具集合，
         # 工具白名单是否合理会直接决定模型后续能做什么、不能做什么。
-        tools = await self._mcp_manager.get_tools(
-            PLAYWRIGHT_TEST_MCP_SERVER_NAME,
-            workspace_dir=workspace_dir,
-            allowed_tool_ids=runtime_config.allowed_playwright_test_mcp_tools,
-        )
-        if self._settings.model_adapter_v2_enabled:
-            model_connection = self._settings.resolve_model_connection("specialist")
-            model_capabilities = resolve_model_capabilities(model_connection)
-            tool_diagnostics = validate_tool_set(
-                tools,
-                model_capabilities,
-                model_connection,
+        try:
+            tools = await self._mcp_manager.get_tools(
+                PLAYWRIGHT_TEST_MCP_SERVER_NAME,
+                workspace_dir=workspace_dir,
+                allowed_tool_ids=runtime_config.allowed_playwright_test_mcp_tools,
+                session_id=mcp_session_id,
             )
-            model_family = model_connection.family
-            model_channel = model_connection.channel
-        else:
-            tool_diagnostics = None
-            model_family = "legacy"
-            model_channel = "legacy"
-        # system prompt 放在工具之后再组装，是为了把 workspace / extracted_params 等运行时上下文
-        # 一次性拼进去，避免 prompt 和实际执行环境脱节。
-        system_prompt = await asyncio.to_thread(self._compose_system_prompt, state=state, workspace_dir=workspace_dir, runtime_config=runtime_config)
+            if self._settings.model_adapter_v2_enabled:
+                model_connection = self._settings.resolve_model_connection("specialist")
+                model_capabilities = resolve_model_capabilities(model_connection)
+                tool_diagnostics = validate_tool_set(
+                    tools,
+                    model_capabilities,
+                    model_connection,
+                )
+                model_family = model_connection.family
+                model_channel = model_connection.channel
+            else:
+                tool_diagnostics = None
+                model_family = "legacy"
+                model_channel = "legacy"
+            # system prompt 放在工具之后再组装，是为了把 workspace / extracted_params 等运行时上下文
+            # 一次性拼进去，避免 prompt 和实际执行环境脱节。
+            system_prompt = await asyncio.to_thread(
+                self._compose_system_prompt,
+                state=state,
+                workspace_dir=workspace_dir,
+                runtime_config=runtime_config,
+            )
 
-        allowed_tool_names = sorted(tool.name for tool in tools)
-        logger.info("%s event=specialist_context trace=%s display_name=%s workspace_dir=%s allowed_tool_names=%s",
-            log_title("初始化", "DeepAgent", node_name=node_name), trace_context, self.display_name, workspace_dir, allowed_tool_names,)
-        debug_payload: dict[str, Any] = {
-            "display_name": self.display_name,
-            "workspace_dir": str(workspace_dir) if workspace_dir is not None else None,
-            "allowed_tool_ids": list(runtime_config.allowed_playwright_test_mcp_tools),
-            "loaded_tools": serialize_tools_for_log(tools, max_text_length=debug_max_chars(self._settings)),
-            "model_family": model_family,
-            "model_channel": model_channel,
-            "tool_count": tool_diagnostics.count if tool_diagnostics is not None else len(tools),
-            "system_prompt_length": len(system_prompt),
-        }
-        if debug_full_messages_enabled(self._settings):
-            debug_payload["system_prompt"] = system_prompt
+            allowed_tool_names = sorted(tool.name for tool in tools)
+            logger.info(
+                "%s event=specialist_context trace=%s display_name=%s workspace_dir=%s allowed_tool_names=%s",
+                log_title("初始化", "DeepAgent", node_name=node_name),
+                trace_context,
+                self.display_name,
+                workspace_dir,
+                allowed_tool_names,
+            )
+            debug_payload: dict[str, Any] = {
+                "display_name": self.display_name,
+                "workspace_dir": str(workspace_dir)
+                if workspace_dir is not None
+                else None,
+                "allowed_tool_ids": list(
+                    runtime_config.allowed_playwright_test_mcp_tools
+                ),
+                "loaded_tools": serialize_tools_for_log(
+                    tools, max_text_length=debug_max_chars(self._settings)
+                ),
+                "model_family": model_family,
+                "model_channel": model_channel,
+                "tool_count": tool_diagnostics.count
+                if tool_diagnostics is not None
+                else len(tools),
+                "system_prompt_length": len(system_prompt),
+            }
+            if debug_full_messages_enabled(self._settings):
+                debug_payload["system_prompt"] = system_prompt
 
-        log_debug_event(logger, self._settings, log_title("初始化", "DeepAgent"), "specialist_context", trace_context, **debug_payload)
-        return SpecialistExecutionContext(
-            workspace_dir=workspace_dir,
-            system_prompt=system_prompt,
-            tools=tools,
-            trace_context=trace_context,
+            log_debug_event(
+                logger,
+                self._settings,
+                log_title("初始化", "DeepAgent"),
+                "specialist_context",
+                trace_context,
+                **debug_payload,
+            )
+            return SpecialistExecutionContext(
+                workspace_dir=workspace_dir,
+                system_prompt=system_prompt,
+                tools=tools,
+                trace_context=trace_context,
+                mcp_session_id=mcp_session_id,
+            )
+        except BaseException:
+            # `asyncio.CancelledError` 继承自 BaseException。若取消发生在工具已申请、
+            # execution_context 尚未返回的窗口，也必须先释放本次执行的 MCP 会话。
+            await self._close_playwright_mcp_session(
+                workspace_dir=workspace_dir,
+                mcp_session_id=mcp_session_id,
+                trace_context=trace_context,
+                reason="specialist_prepare_failed",
+            )
+            raise
+
+    def _build_mcp_session_id(self, trace_context: dict[str, Any]) -> str:
+        """为一次 Specialist 执行生成独立 MCP scope，避免同项目并发串会话。"""
+
+        trace_id = (
+            trace_context.get("run_id") or trace_context.get("thread_id") or "local"
         )
+        return f"{self.agent_type}:{trace_id}:{uuid4().hex}"
 
-    def _create_specialist_agent(self, execution_context: SpecialistExecutionContext) -> Any:
+    def _create_specialist_agent(
+        self, execution_context: SpecialistExecutionContext
+    ) -> Any:
         """创建单次执行使用的 Deep Agent。
 
         把 Agent 创建单独收敛成一个方法，是为了让子类在需要更换 middleware、
@@ -285,11 +400,17 @@ class BaseSpecialistAgent(
             )
         else:
             model = raw_model
-        logger.info("%s %s 模型初始化完成 model_kwargs=%s",
-            log_title("初始化", "模型初始化", node_name=f"{self.agent_type}_node"), self.display_name, summarize_model_kwargs(model_kwargs),)
+        logger.info(
+            "%s %s 模型初始化完成 model_kwargs=%s",
+            log_title("初始化", "模型初始化", node_name=f"{self.agent_type}_node"),
+            self.display_name,
+            summarize_model_kwargs(model_kwargs),
+        )
 
         backend = self._build_deep_agent_backend(execution_context.workspace_dir)
-        permissions = self._build_deep_agent_permissions(execution_context.workspace_dir)
+        permissions = self._build_deep_agent_permissions(
+            execution_context.workspace_dir
+        )
 
         # 主链路：这里完成 Deep Agent 实例化，后续所有工具调用和模型推理
         # 都会沿着这个 agent 的编排能力执行。
@@ -305,7 +426,9 @@ class BaseSpecialistAgent(
             name=f"{self.agent_type}-specialist",
         )
 
-    def _build_deep_agent_backend(self, workspace_dir: Path | None) -> FilesystemBackend | None:
+    def _build_deep_agent_backend(
+        self, workspace_dir: Path | None
+    ) -> FilesystemBackend | None:
         """为 Deep Agent 的内置文件工具绑定真实 workspace。
 
         按平台区分 `virtual_mode`：
@@ -324,13 +447,17 @@ class BaseSpecialistAgent(
             virtual_mode=is_windows_platform(),
         )
 
-    def _build_deep_agent_permissions(self, workspace_dir: Path | None) -> list[FilesystemPermission] | None:
+    def _build_deep_agent_permissions(
+        self, workspace_dir: Path | None
+    ) -> list[FilesystemPermission] | None:
         """约束 Deep Agent 内置文件工具只读当前项目目录。"""
 
         if workspace_dir is None:
             return None
 
-        return self._build_workspace_permissions(workspace_dir, allow_workspace_writes=False)
+        return self._build_workspace_permissions(
+            workspace_dir, allow_workspace_writes=False
+        )
 
     async def _run_deep_agent(
         self,
@@ -381,6 +508,7 @@ class BaseSpecialistAgent(
         self,
         *,
         workspace_dir: Path | None,
+        mcp_session_id: str | None = None,
         trace_context: dict[str, Any] | None = None,
         reason: str | None = None,
     ) -> None:
@@ -402,23 +530,26 @@ class BaseSpecialistAgent(
             closed = await self._mcp_manager.close_session(
                 PLAYWRIGHT_TEST_MCP_SERVER_NAME,
                 workspace_dir=workspace_dir,
+                session_id=mcp_session_id,
             )
         except Exception:  # noqa: BLE001
             # 关闭失败不应影响阶段已经确认的最终结果；只记录日志方便线上排查。
             logger.exception(
-                "%s event=playwright_mcp_close_failed trace=%s workspace_dir=%s reason=%s",
+                "%s event=playwright_mcp_close_failed trace=%s workspace_dir=%s mcp_session_id=%s reason=%s",
                 log_title("关闭", "MCP关闭", node_name=node_name),
                 resolved_trace,
                 workspace_dir,
+                mcp_session_id,
                 reason,
             )
             return
 
         logger.info(
-            "%s event=playwright_mcp_close trace=%s workspace_dir=%s closed=%s reason=%s",
+            "%s event=playwright_mcp_close trace=%s workspace_dir=%s mcp_session_id=%s closed=%s reason=%s",
             log_title("关闭", "MCP关闭", node_name=node_name),
             resolved_trace,
             workspace_dir,
+            mcp_session_id,
             closed,
             reason,
         )
@@ -436,10 +567,16 @@ class BaseSpecialistAgent(
         项目规范、运行时上下文”三类信息来源清晰分层，后续新增一段上下文时也更容易定位。
         """
 
-        prompt_sections = [section.strip() for section in runtime_config.system_prompt_parts if section.strip()]
+        prompt_sections = [
+            section.strip()
+            for section in runtime_config.system_prompt_parts
+            if section.strip()
+        ]
 
         # 项目规范是可选层：只有当前 Specialist 明确声明要加载，并且 workspace 下真的存在规范文件时才追加。
-        project_standard_prompt = self._load_project_standard_prompt(workspace_dir, runtime_config)
+        project_standard_prompt = self._load_project_standard_prompt(
+            workspace_dir, runtime_config
+        )
         if project_standard_prompt:
             prompt_sections.append(project_standard_prompt)
 
@@ -448,7 +585,9 @@ class BaseSpecialistAgent(
             prompt_sections.append(query_guard_prompt)
 
         # 运行时上下文放在最后追加，是为了保证前面的角色与规范先稳定，再补充本次调用的动态参数。
-        runtime_context_prompt = self._build_runtime_context_prompt(state=state, workspace_dir=workspace_dir)
+        runtime_context_prompt = self._build_runtime_context_prompt(
+            state=state, workspace_dir=workspace_dir
+        )
         if runtime_context_prompt:
             prompt_sections.append(runtime_context_prompt)
 
@@ -475,7 +614,9 @@ class BaseSpecialistAgent(
 
         return standard_file.read_text(encoding="utf-8").strip()
 
-    def _build_runtime_context_prompt(self, *, state: WorkflowState, workspace_dir: Path | None) -> str:
+    def _build_runtime_context_prompt(
+        self, *, state: WorkflowState, workspace_dir: Path | None
+    ) -> str:
         """构建与单次运行相关的额外上下文。
 
         这部分上下文承载的是“本次调用才知道的动态信息”，目的是让同一份基础 prompt
@@ -517,10 +658,17 @@ class BaseSpecialistAgent(
             artifact=artifact,
             fallback_message=fallback_message,
         )
-        artifact_history, latest_artifacts, current_turn_artifact_ids = append_artifact_history(dict(state), artifact)
+        artifact_history, latest_artifacts, current_turn_artifact_ids = (
+            append_artifact_history(dict(state), artifact)
+        )
         pending_stage_summaries = append_stage_summary(dict(state), stage_summary)
         result: WorkflowState = {
-            "stage_result": self._build_stage_result(raw_result, stage_status=stage_status, artifact=artifact, stage_summary=stage_summary),
+            "stage_result": self._build_stage_result(
+                raw_result,
+                stage_status=stage_status,
+                artifact=artifact,
+                stage_summary=stage_summary,
+            ),
             "final_summary": stage_summary["text"],
             "artifact_history": artifact_history,
             "latest_artifacts": latest_artifacts,

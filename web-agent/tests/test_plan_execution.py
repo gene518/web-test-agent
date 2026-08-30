@@ -32,12 +32,14 @@ class FakeMCPManager:
         self.requests: list[tuple[str, object, tuple[str, ...] | None]] = []
         self.closed_sessions: list[tuple[str, object]] = []
 
-    async def get_tools(self, server_name, workspace_dir=None, allowed_tool_ids=None):  # noqa: ANN001
+    async def get_tools(
+        self, server_name, workspace_dir=None, allowed_tool_ids=None, session_id=None
+    ):  # noqa: ANN001, ARG002
         normalized_ids = None if allowed_tool_ids is None else tuple(allowed_tool_ids)
         self.requests.append((server_name, workspace_dir, normalized_ids))
         return self.tools
 
-    async def close_session(self, server_name, workspace_dir=None):  # noqa: ANN001
+    async def close_session(self, server_name, workspace_dir=None, session_id=None):  # noqa: ANN001, ARG002
         """记录 Plan runtime 收尾时的关闭调用，供测试断言。"""
 
         self.closed_sessions.append((server_name, workspace_dir))
@@ -45,14 +47,37 @@ class FakeMCPManager:
 
 
 class FakeEventAgent:
-    def __init__(self, events: list[dict]) -> None:
+    def __init__(self, events: list[dict], *, before_event=None) -> None:  # noqa: ANN001
         self.events = events
+        self.before_event = before_event
         self.inputs: list[tuple[dict, dict | None, str]] = []
 
     async def astream_events(self, input_data, config=None, version="v2"):  # noqa: ANN001
         self.inputs.append((input_data, config, version))
         for event in self.events:
+            if self.before_event is not None:
+                self.before_event(event)
             yield event
+
+
+def _write_planner_payload(project_dir: Path, payload: dict) -> None:
+    """模拟 Playwright MCP 在成功事件前把 planner payload 写入工作区。"""
+
+    plan_file = project_dir / payload["fileName"]
+    lines = [f"# {payload['name']}", "", "## Test Scenarios"]
+    for suite_index, suite in enumerate(payload["suites"], start=1):
+        lines.extend(["", f"### {suite_index}. {suite['name']}"])
+        for case_index, test_case in enumerate(suite["tests"], start=1):
+            lines.extend(
+                [
+                    "",
+                    f"#### {suite_index}.{case_index}. {test_case['name']}",
+                    "",
+                    f"**File:** `{test_case['file']}`",
+                ]
+            )
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
@@ -74,6 +99,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_plan_execute_reads_events_and_requires_planner_save(self) -> None:
         fake_manager = FakeMCPManager(self.tools)
+        project_dir = self.root_path / "project"
         planner_payload = {
             "overview": "登录页测试概览",
             "name": "demo",
@@ -96,21 +122,53 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         }
         fake_agent = FakeEventAgent(
             [
-                {"event": "on_chat_model_start", "name": "model", "data": {"input": {"messages": []}}, "parent_ids": []},
-                {"event": "on_tool_start", "name": "planner_setup_page", "data": {"input": {}}, "parent_ids": ["root"]},
-                {"event": "on_tool_end", "name": "planner_setup_page", "data": {"output": "ok"}, "parent_ids": ["root"]},
-                {"event": "on_tool_start", "name": "planner_save_plan", "data": {"input": planner_payload}, "parent_ids": ["root"]},
-                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_chat_model_start",
+                    "name": "model",
+                    "data": {"input": {"messages": []}},
+                    "parent_ids": [],
+                },
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_setup_page",
+                    "data": {"input": {}},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_setup_page",
+                    "data": {"output": "ok"},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {"input": planner_payload},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": "saved"},
+                    "parent_ids": ["root"],
+                },
                 {
                     "event": "on_chain_end",
                     "name": "plan-specialist",
-                    "data": {"output": {"messages": [AIMessage(content="测试计划已保存")] }},
+                    "data": {
+                        "output": {"messages": [AIMessage(content="测试计划已保存")]}
+                    },
                     "parent_ids": [],
                 },
-            ]
+            ],
+            before_event=lambda event: (
+                _write_planner_payload(project_dir, planner_payload)
+                if event.get("name") == "planner_save_plan"
+                and event.get("event") == "on_tool_end"
+                else None
+            ),
         )
         agent = PlanAgent(self.settings, mcp_manager=fake_manager)
-        project_dir = self.root_path / "project"
         state = {
             "messages": [],
             "extracted_params": {
@@ -122,8 +180,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         fake_model = object()
         with (
-            patch("deep_agent.agent.base_agent.init_chat_model", return_value=fake_model),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent) as create_agent_mock,
+            patch(
+                "deep_agent.agent.base_agent.init_chat_model", return_value=fake_model
+            ),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ) as create_agent_mock,
         ):
             result = await agent.execute(state)
 
@@ -147,22 +209,34 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("a_login_success", result["messages"][0].content)
         self.assertIn("待生成脚本规划", result["messages"][0].content)
         self.assertIn("下一阶段建议输入", result["messages"][0].content)
-        self.assertEqual(result["artifact_history"][0]["output_files"], ["test_case/aaaplanning_demo/aaa_demo.md"])
+        self.assertEqual(
+            result["artifact_history"][0]["output_files"],
+            ["test_case/aaaplanning_demo/aaa_demo.md"],
+        )
         self.assertEqual(
             result["latest_artifacts"]["plan"]["planned_test_case_files"],
             ["test_case/aaaplanning_demo/a_login_success.spec.ts"],
         )
-        self.assertEqual(result["latest_artifacts"]["plan"]["saved_test_case_files"], [])
+        self.assertEqual(
+            result["latest_artifacts"]["plan"]["saved_test_case_files"], []
+        )
         self.assertEqual(create_agent_mock.call_args.kwargs["model"], fake_model)
         self.assertNotIn("middleware", create_agent_mock.call_args.kwargs)
         permissions = create_agent_mock.call_args.kwargs["permissions"]
-        write_allow_rules = [rule for rule in permissions if rule.operations == ["write"] and rule.mode == "allow"]
+        write_allow_rules = [
+            rule
+            for rule in permissions
+            if rule.operations == ["write"] and rule.mode == "allow"
+        ]
         # 期望路径按平台区分：Windows 走 `FilesystemBackend(virtual_mode=True)` + 虚拟路径命名空间 `/`，
         # mac/Linux 仍使用 workspace 真实绝对路径；断言同时覆盖两种分支，避免只在某一个平台通过。
         if sys.platform.startswith("win"):
             expected_write_allow_paths = ["/", "/**"]
         else:
-            expected_write_allow_paths = [str(project_dir.resolve()), f"{project_dir.resolve()}/**"]
+            expected_write_allow_paths = [
+                str(project_dir.resolve()),
+                f"{project_dir.resolve()}/**",
+            ]
         self.assertEqual(write_allow_rules[0].paths, expected_write_allow_paths)
         # 阶段结束后必须兜底关闭当前 workspace 的 Playwright MCP 会话，
         # 避免 Chromium 子进程驻留。
@@ -171,7 +245,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             [("playwright-test", project_dir.resolve())],
         )
 
-    async def test_plan_execute_accepts_write_file_when_markdown_exists_by_node_end(self) -> None:
+    async def test_plan_execute_accepts_write_file_when_markdown_exists_by_node_end(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
         project_dir = self.root_path / "write-file-project"
         relative_plan_path = "test_case/aaaplanning_demo/aaa_demo.md"
@@ -202,7 +278,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                 yield {
                     "event": "on_tool_start",
                     "name": "write_file",
-                    "data": {"input": {"file_path": str(plan_file.resolve()), "content": plan_markdown}},
+                    "data": {
+                        "input": {
+                            "file_path": str(plan_file.resolve()),
+                            "content": plan_markdown,
+                        }
+                    },
                     "parent_ids": ["root"],
                 }
                 plan_file.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +297,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                 yield {
                     "event": "on_chain_end",
                     "name": "plan-specialist",
-                    "data": {"output": {"messages": [AIMessage(content="测试计划已保存")] }},
+                    "data": {
+                        "output": {"messages": [AIMessage(content="测试计划已保存")]}
+                    },
                     "parent_ids": [],
                 }
 
@@ -232,7 +315,10 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=FakeWriteFilePlanAgent()),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent",
+                return_value=FakeWriteFilePlanAgent(),
+            ),
         ):
             result = await agent.execute(state)
 
@@ -247,8 +333,11 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             ["test_case/aaaplanning_demo/a_login_success.spec.ts"],
         )
 
-    async def test_plan_execute_preserves_streamed_messages_without_root_chain_output(self) -> None:
+    async def test_plan_execute_preserves_streamed_messages_without_root_chain_output(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
+        project_dir = self.root_path / "streamed-project"
         planner_payload = {
             "overview": "登录页测试概览",
             "name": "demo",
@@ -275,7 +364,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             tool_calls=[
                 {
                     "name": "write_todos",
-                    "args": {"todos": [{"content": "初始化页面", "status": "in_progress"}]},
+                    "args": {
+                        "todos": [{"content": "初始化页面", "status": "in_progress"}]
+                    },
                     "id": "call-write-todos",
                     "type": "tool_call",
                 }
@@ -310,7 +401,11 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                 {
                     "event": "on_tool_end",
                     "name": "write_todos",
-                    "data": {"output": SimpleNamespace(update={"messages": [streamed_tool_result]})},
+                    "data": {
+                        "output": SimpleNamespace(
+                            update={"messages": [streamed_tool_result]}
+                        )
+                    },
                     "parent_ids": ["root"],
                 },
                 {
@@ -337,10 +432,15 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     "data": {"output": "done"},
                     "parent_ids": [],
                 },
-            ]
+            ],
+            before_event=lambda event: (
+                _write_planner_payload(project_dir, planner_payload)
+                if event.get("name") == "planner_save_plan"
+                and event.get("event") == "on_tool_end"
+                else None
+            ),
         )
         agent = PlanAgent(self.settings, mcp_manager=fake_manager)
-        project_dir = self.root_path / "streamed-project"
         state = {
             "messages": [],
             "requested_pipeline": ["plan"],
@@ -354,7 +454,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
@@ -365,17 +467,22 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         display_ids = [message.id for message in result["display_messages"]]
         self.assertTrue(display_ids[0].startswith("display-plan-start-"))
         self.assertEqual(display_ids[1], "tool-write-todos")
-        self.assertTrue(display_ids[2].startswith("display-tool-start-planner_save_plan-"))
+        self.assertTrue(
+            display_ids[2].startswith("display-tool-start-planner_save_plan-")
+        )
         self.assertEqual(display_ids[3], "tool-save-plan")
         self.assertTrue(display_ids[4].startswith("display-plan-summary-"))
         self.assertNotIn("ai-tool-call", display_ids)
         self.assertEqual(result["display_messages"][1].name, "write_todos")
-        self.assertIn("正在调用工具 `planner_save_plan`", result["display_messages"][2].content)
+        self.assertIn(
+            "正在调用工具 `planner_save_plan`", result["display_messages"][2].content
+        )
         self.assertEqual(result["display_messages"][3].name, "planner_save_plan")
         self.assertIn("Plan 阶段", result["display_messages"][4].content)
 
     async def test_plan_execute_passes_custom_recursion_limit(self) -> None:
         fake_manager = FakeMCPManager(self.tools)
+        project_dir = self.root_path / "project-custom-limit"
         planner_payload = {
             "overview": "登录页测试概览",
             "name": "demo",
@@ -398,15 +505,33 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         }
         fake_agent = FakeEventAgent(
             [
-                {"event": "on_tool_start", "name": "planner_save_plan", "data": {"input": planner_payload}, "parent_ids": ["root"]},
-                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {"input": planner_payload},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": "saved"},
+                    "parent_ids": ["root"],
+                },
                 {
                     "event": "on_chain_end",
                     "name": "plan-specialist",
-                    "data": {"output": {"messages": [AIMessage(content="测试计划已保存")] }},
+                    "data": {
+                        "output": {"messages": [AIMessage(content="测试计划已保存")]}
+                    },
                     "parent_ids": [],
                 },
-            ]
+            ],
+            before_event=lambda event: (
+                _write_planner_payload(project_dir, planner_payload)
+                if event.get("name") == "planner_save_plan"
+                and event.get("event") == "on_tool_end"
+                else None
+            ),
         )
         settings = AppSettings(
             default_automation_project_root=str(self.root_path / "projects"),
@@ -418,29 +543,45 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             "extracted_params": {
                 "project_name": "project-custom-limit",
                 "url": "https://example.com",
-                "project_dir": str(self.root_path / "project-custom-limit"),
+                "project_dir": str(project_dir),
             },
         }
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
         self.assertIn("aaa_demo.md", result["messages"][0].content)
         self.assertEqual(fake_agent.inputs[0][1]["recursion_limit"], 123)
 
-    async def test_plan_execute_returns_failure_message_when_plan_was_not_saved(self) -> None:
+    async def test_plan_execute_returns_failure_message_when_plan_was_not_saved(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
         fake_agent = FakeEventAgent(
             [
-                {"event": "on_tool_start", "name": "planner_setup_page", "data": {"input": {}}, "parent_ids": ["root"]},
-                {"event": "on_tool_end", "name": "planner_setup_page", "data": {"output": "ok"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_setup_page",
+                    "data": {"input": {}},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_setup_page",
+                    "data": {"output": "ok"},
+                    "parent_ids": ["root"],
+                },
                 {
                     "event": "on_chain_end",
                     "name": "plan-specialist",
-                    "data": {"output": {"messages": [AIMessage(content="仅分析，没有保存")] }},
+                    "data": {
+                        "output": {"messages": [AIMessage(content="仅分析，没有保存")]}
+                    },
                     "parent_ids": [],
                 },
             ]
@@ -458,12 +599,16 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
         self.assertEqual(fake_manager.requests[0][0], PLAYWRIGHT_TEST_MCP_SERVER_NAME)
-        self.assertIn("Plan Agent 执行过程中遇到未处理异常", result["messages"][0].content)
+        self.assertIn(
+            "Plan Agent 执行过程中遇到未处理异常", result["messages"][0].content
+        )
         self.assertIn("planner_save_plan", result["messages"][0].content)
         # 失败路径同样要兜底关闭 Playwright MCP 会话，避免浏览器子进程残留。
         self.assertEqual(
@@ -471,7 +616,74 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             [("playwright-test", project_dir.resolve())],
         )
 
-    async def test_plan_execute_rejects_invalid_planner_payload_even_when_tool_succeeds(self) -> None:
+    async def test_plan_rejects_success_event_when_plan_file_was_not_written(
+        self,
+    ) -> None:
+        """MCP 的成功事件不能替代最终工作区文件校验。"""
+
+        project_dir = self.root_path / "plan-false-success"
+        planner_payload = {
+            "overview": "登录页测试概览",
+            "name": "demo",
+            "fileName": "test_case/aaaplanning_demo/aaa_demo.md",
+            "suites": [
+                {
+                    "name": "登录场景",
+                    "seedFile": "test_case/specs/seed.spec.ts",
+                    "tests": [
+                        {
+                            "name": "a_login_success",
+                            "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
+                            "steps": [
+                                {"perform": "打开登录页", "expect": ["显示登录表单"]}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        fake_agent = FakeEventAgent(
+            [
+                {
+                    "event": "on_tool_start",
+                    "name": "planner_save_plan",
+                    "data": {"input": planner_payload},
+                    "parent_ids": ["root"],
+                },
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": {"status": "success", "content": "saved"}},
+                    "parent_ids": ["root"],
+                },
+            ]
+        )
+        agent = PlanAgent(self.settings, mcp_manager=FakeMCPManager(self.tools))
+
+        with (
+            patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
+        ):
+            result = await agent.execute(
+                {
+                    "messages": [],
+                    "extracted_params": {
+                        "project_name": "plan-false-success",
+                        "url": "https://example.com",
+                        "project_dir": str(project_dir),
+                    },
+                }
+            )
+
+        self.assertIn("状态：exception", result["messages"][0].content)
+        self.assertIn("未真实写入工作区", result["messages"][0].content)
+        self.assertNotIn("plan", result.get("latest_artifacts", {}))
+
+    async def test_plan_execute_rejects_invalid_planner_payload_even_when_tool_succeeds(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
         fake_agent = FakeEventAgent(
             [
@@ -488,7 +700,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     },
                     "parent_ids": ["root"],
                 },
-                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": "saved"},
+                    "parent_ids": ["root"],
+                },
             ]
         )
         agent = PlanAgent(self.settings, mcp_manager=fake_manager)
@@ -503,7 +720,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
@@ -511,7 +730,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("状态：exception", result["messages"][0].content)
         self.assertIn("planner_save_plan.suites", result["messages"][0].content)
 
-    async def test_plan_execute_rejects_plan_markdown_outside_aaaplanning_directory(self) -> None:
+    async def test_plan_execute_rejects_plan_markdown_outside_aaaplanning_directory(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
         fake_agent = FakeEventAgent(
             [
@@ -531,7 +752,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                                         {
                                             "name": "a_login_success",
                                             "file": "test_case/aaaplanning_demo/a_login_success.spec.ts",
-                                            "steps": [{"perform": "打开登录页", "expect": ["显示登录表单"]}],
+                                            "steps": [
+                                                {
+                                                    "perform": "打开登录页",
+                                                    "expect": ["显示登录表单"],
+                                                }
+                                            ],
                                         }
                                     ],
                                 }
@@ -540,7 +766,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     },
                     "parent_ids": ["root"],
                 },
-                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": "saved"},
+                    "parent_ids": ["root"],
+                },
             ]
         )
         agent = PlanAgent(self.settings, mcp_manager=fake_manager)
@@ -555,14 +786,18 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
         self.assertIn("状态：exception", result["messages"][0].content)
         self.assertIn("aaaplanning_{plan-name}", result["messages"][0].content)
 
-    async def test_plan_execute_rejects_case_file_outside_matching_aaaplanning_directory(self) -> None:
+    async def test_plan_execute_rejects_case_file_outside_matching_aaaplanning_directory(
+        self,
+    ) -> None:
         fake_manager = FakeMCPManager(self.tools)
         fake_agent = FakeEventAgent(
             [
@@ -582,7 +817,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                                         {
                                             "name": "a_login_success",
                                             "file": "test_case/demo/a_login_success.spec.ts",
-                                            "steps": [{"perform": "打开登录页", "expect": ["显示登录表单"]}],
+                                            "steps": [
+                                                {
+                                                    "perform": "打开登录页",
+                                                    "expect": ["显示登录表单"],
+                                                }
+                                            ],
                                         }
                                     ],
                                 }
@@ -591,7 +831,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                     },
                     "parent_ids": ["root"],
                 },
-                {"event": "on_tool_end", "name": "planner_save_plan", "data": {"output": "saved"}, "parent_ids": ["root"]},
+                {
+                    "event": "on_tool_end",
+                    "name": "planner_save_plan",
+                    "data": {"output": "saved"},
+                    "parent_ids": ["root"],
+                },
             ]
         )
         agent = PlanAgent(self.settings, mcp_manager=fake_manager)
@@ -606,12 +851,17 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("deep_agent.agent.base_agent.init_chat_model", return_value=object()),
-            patch("deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent),
+            patch(
+                "deep_agent.agent.base_agent.create_deep_agent", return_value=fake_agent
+            ),
         ):
             result = await agent.execute(state)
 
         self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("test_case/aaaplanning_demo/a_login_success.spec.ts", result["messages"][0].content)
+        self.assertIn(
+            "test_case/aaaplanning_demo/a_login_success.spec.ts",
+            result["messages"][0].content,
+        )
 
     async def test_plan_event_truncation_uses_debug_max_chars(self) -> None:
         agent = PlanAgent(

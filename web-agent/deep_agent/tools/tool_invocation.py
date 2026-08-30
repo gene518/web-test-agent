@@ -30,18 +30,29 @@ def is_tool_error_output(output: Any) -> bool:
     if isinstance(output, dict):
         if output.get("status") == "error":
             return True
-        if output.get("ok") is False or output.get("type") == "tool_error":
+        if (
+            output.get("ok") is False
+            or output.get("type") == "tool_error"
+            or output.get("isError") is True
+        ):
             return True
 
     content = getattr(output, "content", output)
     if isinstance(content, str):
+        if content.lstrip().startswith("Error:"):
+            return True
         try:
             payload = json.loads(content)
         except json.JSONDecodeError:
             return False
         return isinstance(payload, dict) and (
-            payload.get("ok") is False or payload.get("type") == "tool_error"
+            payload.get("ok") is False
+            or payload.get("type") == "tool_error"
+            or payload.get("status") == "error"
+            or payload.get("isError") is True
         )
+    if isinstance(content, list):
+        return any(is_tool_error_output(item) for item in content)
     return False
 
 
@@ -95,11 +106,17 @@ async def invoke_tool_raw_result(tool: BaseTool, payload: dict[str, Any]) -> Any
         return await coroutine(**payload)
 
     arun_impl = getattr(tool, "_arun", None)
-    if arun_impl is not None and getattr(arun_impl, "__func__", None) is not BaseTool._arun:
+    if (
+        arun_impl is not None
+        and getattr(arun_impl, "__func__", None) is not BaseTool._arun
+    ):
         return await arun_impl(**payload)
 
     run_impl = getattr(tool, "_run", None)
-    if run_impl is not None and getattr(run_impl, "__func__", None) is not BaseTool._run:
+    if (
+        run_impl is not None
+        and getattr(run_impl, "__func__", None) is not BaseTool._run
+    ):
         return await asyncio.to_thread(run_impl, **payload)
 
     tool_call = {

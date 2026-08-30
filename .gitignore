@@ -71,7 +71,6 @@ node_modules/
 /web-agent/runtime/
 /web-agent/scheduler_tasks.json
 /web-agent/project_conversation.md
-/web-agent/README.md
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
 /output/

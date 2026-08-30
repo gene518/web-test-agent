@@ -45,6 +45,17 @@ _DEFAULT_ENV_FILE = _discover_default_env_file(
 )
 
 
+def _default_relative_path_root(project_root: Path, env_file: Path) -> Path:
+    """返回源码或便携布局中相对运行路径的稳定基准目录。"""
+
+    if (
+        project_root.parent.name.lower() == "runtime"
+        and env_file.parent.name.lower() == "config"
+    ):
+        return env_file.parent.parent.resolve()
+    return project_root.resolve()
+
+
 def load_project_env_file(env_file: str | Path | None = None) -> None:
     """用 UTF-8 把项目 `.env` 注入当前进程环境变量。
 
@@ -98,7 +109,9 @@ def _read_fallback_dotenv_values(env_file: Path) -> dict[str, str]:
             continue
 
         normalized_key = key.strip()
-        if not normalized_key or any(character.isspace() for character in normalized_key):
+        if not normalized_key or any(
+            character.isspace() for character in normalized_key
+        ):
             continue
 
         normalized_value = raw_value.strip()
@@ -273,12 +286,16 @@ class AppSettings(BaseSettings):
 
     @field_validator("master_model", "specialist_model", mode="before")
     @classmethod
-    def _empty_model_name_uses_default(cls, value: object, info: ValidationInfo) -> object:
+    def _empty_model_name_uses_default(
+        cls, value: object, info: ValidationInfo
+    ) -> object:
         """便携包模板中的空模型值不能覆盖字段默认值。"""
 
         if not isinstance(value, str) or value.strip():
             return value
-        return "openai:gpt-4.1" if info.field_name == "master_model" else "openai:gpt-5.4"
+        return (
+            "openai:gpt-4.1" if info.field_name == "master_model" else "openai:gpt-5.4"
+        )
 
     @field_validator(
         "master_llm_model",
@@ -572,9 +589,13 @@ class AppSettings(BaseSettings):
 
     @property
     def resolved_default_automation_project_root(self) -> Path:
-        """返回展开后的默认自动化项目根目录。"""
+        """返回不受进程工作目录影响的默认自动化项目根目录。"""
 
-        return Path(self.default_automation_project_root).expanduser()
+        automation_root = Path(self.default_automation_project_root).expanduser()
+        if automation_root.is_absolute():
+            return automation_root.resolve()
+        relative_root = _default_relative_path_root(_PROJECT_ROOT, _DEFAULT_ENV_FILE)
+        return (relative_root / automation_root).resolve()
 
     @property
     def resolved_scheduler_config_path(self) -> Path:
@@ -590,7 +611,11 @@ class AppSettings(BaseSettings):
 
 def _model_provider_prefix(model_name: str) -> str | None:
     provider, separator, _ = model_name.strip().partition(":")
-    return provider.lower() if separator and provider.lower() in {"openai", "anthropic"} else None
+    return (
+        provider.lower()
+        if separator and provider.lower() in {"openai", "anthropic"}
+        else None
+    )
 
 
 def _strip_model_provider_prefix(model_name: str) -> str:
@@ -725,8 +750,11 @@ def get_settings() -> AppSettings:
     # 主链路：这里完成全局配置对象创建，后续 Agent、MCP 和日志系统都会复用它。
     settings = AppSettings()
     configure_logging(settings.log_level)
-    logger.info("%s 应用配置加载成功 settings=%s",
-        log_title("初始化", "配置加载"), summarize_settings(settings),)
+    logger.info(
+        "%s 应用配置加载成功 settings=%s",
+        log_title("初始化", "配置加载"),
+        summarize_settings(settings),
+    )
     if settings.model_adapter_v2_enabled:
         from deep_agent.model.diagnostics import collect_model_diagnostics
 

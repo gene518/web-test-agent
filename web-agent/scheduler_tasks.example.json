@@ -1,6 +1,9 @@
 {
   "scheduler": {
-    "poll_interval_seconds": 30
+    "poll_interval_seconds": 30,
+    "task_timeout_seconds": 1800,
+    "max_pending_runs": 100,
+    "misfire_grace_seconds": 300
   },
   "projects": [
     {

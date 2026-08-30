@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.helpers.artifacts import summarize_latest_artifacts
@@ -21,13 +21,20 @@ from deep_agent.agent.master.models.intent import (
     compute_missing_params_for_intent,
     build_requested_pipeline,
 )
-from deep_agent.agent.master.prompts.complete_params import build_master_complete_params_prompt
+from deep_agent.agent.master.prompts.complete_params import (
+    build_master_complete_params_prompt,
+)
 from deep_agent.agent.master.prompts.general_test import GENERAL_TEST_SYSTEM_PROMPT
 from deep_agent.agent.master.prompts.intent_judge import INTENT_JUDGE_SYSTEM_PROMPT
 from deep_agent.agent.master.prompts.summary import FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import AppSettings
-from deep_agent.model import adapt_chat_model, invoke_structured, resolve_model_capabilities
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
+from deep_agent.model import (
+    adapt_chat_model,
+    invoke_structured,
+    resolve_model_capabilities,
+)
 from deep_agent.core.runtime_logging import (
     build_trace_context,
     debug_max_chars,
@@ -61,7 +68,9 @@ class MasterAgent:
         self._settings = settings
         self._adapter_enabled = settings.model_adapter_v2_enabled
         self._model_connection = (
-            settings.resolve_model_connection("master") if self._adapter_enabled else None
+            settings.resolve_model_connection("master")
+            if self._adapter_enabled
+            else None
         )
         self._model_capabilities = (
             resolve_model_capabilities(self._model_connection)
@@ -79,8 +88,11 @@ class MasterAgent:
             )
         else:
             self._model = raw_model
-        logger.info("%s Master 模型初始化完成 model_kwargs=%s",
-            log_title("初始化", "模型初始化"), summarize_model_kwargs(model_kwargs),)
+        logger.info(
+            "%s Master 模型初始化完成 model_kwargs=%s",
+            log_title("初始化", "模型初始化"),
+            summarize_model_kwargs(model_kwargs),
+        )
 
     async def classify_intent_and_params(
         self,
@@ -91,27 +103,62 @@ class MasterAgent:
 
         # 主链路：这里开始意图识别的结构化模型调用；输出会直接决定后续进入写用例、
         # 写脚本、调试修复还是仅做 general 问答。
-        state_with_summary = await self.ensure_conversation_summary(state, config=config)
+        state_with_summary = await self.ensure_conversation_summary(
+            state, config=config
+        )
         model_messages = self._build_classifier_messages(state_with_summary)
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="intent_judge_node", event_name="model_start"), model="master_classifier", messages=model_messages)
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_start",
+            build_trace_context(
+                config, node_name="intent_judge_node", event_name="model_start"
+            ),
+            model="master_classifier",
+            messages=model_messages,
+        )
         classification, strategy, attempts = await self._invoke_intent_classification(
             model_messages,
             config=config,
         )
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="intent_judge_node", event_name="model_end"), model="master_classifier", output={"parsed": classification.model_dump(), "strategy": strategy, "attempts": attempts})
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_end",
+            build_trace_context(
+                config, node_name="intent_judge_node", event_name="model_end"
+            ),
+            model="master_classifier",
+            output={
+                "parsed": classification.model_dump(),
+                "strategy": strategy,
+                "attempts": attempts,
+            },
+        )
 
         extracted_params = build_extracted_params(classification)
         latest_user_request = self.latest_human_message_text(state.get("messages", []))
-        requested_pipeline = build_requested_pipeline(classification, latest_user_request=latest_user_request)
-        resolved_agent_type = requested_pipeline[0] if requested_pipeline else classification.intent_type
-        missing_params = compute_missing_params_for_intent(resolved_agent_type, extracted_params)
+        requested_pipeline = build_requested_pipeline(
+            classification, latest_user_request=latest_user_request
+        )
+        resolved_agent_type = (
+            requested_pipeline[0] if requested_pipeline else classification.intent_type
+        )
+        missing_params = compute_missing_params_for_intent(
+            resolved_agent_type, extracted_params
+        )
         result: WorkflowState = {
             "agent_type": resolved_agent_type,
-            "pending_agent_type": resolved_agent_type if resolved_agent_type in ACTION_AGENT_TYPES else None,
+            "pending_agent_type": resolved_agent_type
+            if resolved_agent_type in ACTION_AGENT_TYPES
+            else None,
             "extracted_params": extracted_params,
             "missing_params": missing_params,
             "pending_missing_params": missing_params,
-            "routing_reason": classification.reasoning or "Master completed routing analysis.",
+            "routing_reason": classification.reasoning
+            or "Master completed routing analysis.",
             "requested_pipeline": requested_pipeline,
             "pipeline_cursor": 0,
             "pending_stage_summaries": [],
@@ -121,7 +168,9 @@ class MasterAgent:
         if "conversation_summary" in state_with_summary:
             result["conversation_summary"] = state_with_summary["conversation_summary"]
         if "summarized_message_count" in state_with_summary:
-            result["summarized_message_count"] = state_with_summary["summarized_message_count"]
+            result["summarized_message_count"] = state_with_summary[
+                "summarized_message_count"
+            ]
         return result
 
     async def extract_params_for_fixed_intent(
@@ -140,7 +189,9 @@ class MasterAgent:
         context_prompt = build_master_complete_params_prompt(
             agent_type=agent_type,
             extracted_params=existing_params,
-            missing_params=compute_missing_params_for_intent(agent_type, existing_params),
+            missing_params=compute_missing_params_for_intent(
+                agent_type, existing_params
+            ),
             routing_reason=routing_reason,
         )
         fixed_intent_prompt = (
@@ -154,12 +205,36 @@ class MasterAgent:
             SystemMessage(content=fixed_intent_prompt),
             HumanMessage(content=resume_text),
         ]
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="complete_params_node", event_name="model_start"), model="master_param_completion", messages=model_messages)
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_start",
+            build_trace_context(
+                config, node_name="complete_params_node", event_name="model_start"
+            ),
+            model="master_param_completion",
+            messages=model_messages,
+        )
         classification, strategy, attempts = await self._invoke_intent_classification(
             model_messages,
             config=config,
         )
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="complete_params_node", event_name="model_end"), model="master_param_completion", output={"parsed": classification.model_dump(), "strategy": strategy, "attempts": attempts})
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_end",
+            build_trace_context(
+                config, node_name="complete_params_node", event_name="model_end"
+            ),
+            model="master_param_completion",
+            output={
+                "parsed": classification.model_dump(),
+                "strategy": strategy,
+                "attempts": attempts,
+            },
+        )
         return build_extracted_params(classification)
 
     async def _invoke_intent_classification(
@@ -203,16 +278,38 @@ class MasterAgent:
     ) -> str:
         """按测试专家提示词回答 general 请求，并返回原始回答文本。"""
 
-        state_with_summary = await self.ensure_conversation_summary(state, config=config)
+        state_with_summary = await self.ensure_conversation_summary(
+            state, config=config
+        )
         # 主链路：这里开始 general 问答模型调用；只有不进入写用例、写脚本、
         # 调试修复等专项阶段时，才会走这条直接回答链路。
         model_messages = [
             SystemMessage(content=GENERAL_TEST_SYSTEM_PROMPT),
             *self._messages_for_model(state_with_summary),
         ]
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="general_test_node", event_name="model_start"), model="master_general", messages=model_messages)
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_start",
+            build_trace_context(
+                config, node_name="general_test_node", event_name="model_start"
+            ),
+            model="master_general",
+            messages=model_messages,
+        )
         response = await self._model.ainvoke(model_messages, config=config)
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="general_test_node", event_name="model_end"), model="master_general", messages=[response])
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_end",
+            build_trace_context(
+                config, node_name="general_test_node", event_name="model_end"
+            ),
+            model="master_general",
+            messages=[response],
+        )
         return self._message_to_text(response)
 
     async def summarize_final_response(
@@ -239,14 +336,35 @@ class MasterAgent:
         ]
         # 主链路：这里开始最终总结模型调用；它负责把写用例、写脚本、调试通过等
         # 阶段原始结果统一包装成用户最终可见的一条总结回复。
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_start", build_trace_context(config, node_name="summary", event_name="model_start"), model="master_summary", messages=model_messages)
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_start",
+            build_trace_context(config, node_name="summary", event_name="model_start"),
+            model="master_summary",
+            messages=model_messages,
+        )
         try:
             response = await self._model.ainvoke(model_messages, config=config)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("%s 总结模型调用失败，回退到阶段原始结果。error=%s",
-                log_title("模型", "总结兜底", node_name="summary"), exc,)
+            if is_langgraph_user_cancellation(exc):
+                raise
+            logger.warning(
+                "%s 总结模型调用失败，回退到阶段原始结果。error=%s",
+                log_title("模型", "总结兜底", node_name="summary"),
+                exc,
+            )
             return result_text
-        log_debug_event(logger, self._settings, log_title("模型", "调用"), "model_end", build_trace_context(config, node_name="summary", event_name="model_end"), model="master_summary", messages=[response])
+        log_debug_event(
+            logger,
+            self._settings,
+            log_title("模型", "调用"),
+            "model_end",
+            build_trace_context(config, node_name="summary", event_name="model_end"),
+            model="master_summary",
+            messages=[response],
+        )
         return self._message_to_text(response)
 
     async def ensure_conversation_summary(
@@ -266,11 +384,12 @@ class MasterAgent:
             return state
 
         existing_summary = state.get("conversation_summary") or ""
+        messages_to_summarize = messages[summarized_count:]
         prompt = (
             "请压缩以下长对话历史，保留用户目标、已确认参数、重要阶段结果、未解决问题。"
             "输出中文摘要，避免逐字复述。\n\n"
             f"已有摘要：\n{existing_summary or '暂无'}\n\n"
-            f"待压缩消息：\n{self._format_messages(messages)}"
+            f"待压缩消息：\n{self._format_messages(messages_to_summarize)}"
         )
         model_messages = [
             SystemMessage(content="你负责压缩 Web AutoTest Agent 的长对话历史。"),
@@ -298,7 +417,9 @@ class MasterAgent:
             "known_context": self.format_known_context(extracted_params),
         }
 
-    def merge_extracted_params(self, existing_params: dict[str, Any], new_params: dict[str, Any]) -> dict[str, Any]:
+    def merge_extracted_params(
+        self, existing_params: dict[str, Any], new_params: dict[str, Any]
+    ) -> dict[str, Any]:
         """合并参数补全结果，新识别出的非空字段覆盖旧值。"""
 
         merged_params = dict(existing_params)
@@ -343,10 +464,14 @@ class MasterAgent:
         """构造意图识别模型输入，始终显式携带 Master 系统提示词。"""
 
         # 确保所有 system messages 都在最前面，符合新版 OpenAI 模型要求
-        model_messages: list[BaseMessage] = [SystemMessage(content=INTENT_JUDGE_SYSTEM_PROMPT)]
+        model_messages: list[BaseMessage] = [
+            SystemMessage(content=INTENT_JUDGE_SYSTEM_PROMPT)
+        ]
         conversation_summary = state.get("conversation_summary")
         if conversation_summary:
-            model_messages.append(SystemMessage(content=f"## 历史摘要\n{conversation_summary}"))
+            model_messages.append(
+                SystemMessage(content=f"## 历史摘要\n{conversation_summary}")
+            )
         artifact_context = summarize_latest_artifacts(state.get("latest_artifacts"))
         if artifact_context:
             model_messages.append(SystemMessage(content=artifact_context))
@@ -358,7 +483,10 @@ class MasterAgent:
         """返回可安全送入模型的近期消息，并修复历史工具调用链。"""
 
         messages = list(state.get("messages", []))
-        if state.get("conversation_summary") and len(messages) > RECENT_MESSAGES_AFTER_SUMMARY_LIMIT:
+        if (
+            state.get("conversation_summary")
+            and len(messages) > RECENT_MESSAGES_AFTER_SUMMARY_LIMIT
+        ):
             messages = messages[-RECENT_MESSAGES_AFTER_SUMMARY_LIMIT:]
         return normalize_tool_message_history(messages)
 
@@ -377,7 +505,10 @@ class MasterAgent:
         """把消息列表压成摘要模型可读文本。"""
 
         max_chars = debug_max_chars(self._settings)
-        lines = [f"- {message.__class__.__name__}: {self._message_to_text(message)}" for message in messages]
+        lines = [
+            f"- {message.__class__.__name__}: {self._message_to_text(message)}"
+            for message in messages
+        ]
         text = "\n".join(lines)
         if len(text) <= max_chars:
             return text

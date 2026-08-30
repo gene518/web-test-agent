@@ -20,15 +20,29 @@ from deep_agent.config.specialist_file_filter import SpecialistFileFilter
 class SpecialistExecutionContext:
     """承接单次 Specialist 执行所需的完整运行上下文。"""
 
-    workspace_dir: Path | None = field(metadata={"description": "当前 Specialist 执行所在的项目目录；没有工作目录约束时为 None。"})
+    workspace_dir: Path | None = field(
+        metadata={
+            "description": "当前 Specialist 执行所在的项目目录；没有工作目录约束时为 None。"
+        }
+    )
     system_prompt: str = field(
-        metadata={"description": "本次执行最终拼装后的 system prompt，已经包含运行时上下文和规范补充。"}
+        metadata={
+            "description": "本次执行最终拼装后的 system prompt，已经包含运行时上下文和规范补充。"
+        }
     )
     tools: list[BaseTool] | tuple[BaseTool, ...] = field(
-        metadata={"description": "当前 Specialist 允许调用的工具集合，通常由 MCP 管理器按白名单过滤后返回。"}
+        metadata={
+            "description": "当前 Specialist 允许调用的工具集合，通常由 MCP 管理器按白名单过滤后返回。"
+        }
     )
     trace_context: dict[str, Any] = field(
-        metadata={"description": "本次 Specialist 执行对应的 session/thread/run 调试标识。"}
+        metadata={
+            "description": "本次 Specialist 执行对应的 session/thread/run 调试标识。"
+        }
+    )
+    mcp_session_id: str | None = field(
+        default=None,
+        metadata={"description": "当前 Specialist 执行独占的 MCP 会话作用域标识。"},
     )
 
 
@@ -40,4 +54,6 @@ class SpecialistRuntimeConfig:
     allowed_playwright_test_mcp_tools: tuple[str, ...] = field(default=())
     load_project_standard: bool = True
     project_standard_file_name: str = "web_standard.md"
-    query_filter_config: SpecialistFileFilter = field(default_factory=SpecialistFileFilter)
+    query_filter_config: SpecialistFileFilter = field(
+        default_factory=SpecialistFileFilter
+    )

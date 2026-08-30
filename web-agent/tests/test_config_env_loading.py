@@ -7,13 +7,16 @@ from pathlib import Path
 
 from deep_agent.core.config import (
     AppSettings,
+    _default_relative_path_root,
     _discover_default_env_file,
     load_project_env_file,
 )
 
 
 class ProjectEnvLoadingTestCase(unittest.TestCase):
-    def test_portable_layout_discovers_package_config_without_injected_env(self) -> None:
+    def test_portable_layout_discovers_package_config_without_injected_env(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             package_root = Path(temp_dir) / "Web-Test-Agent-Windows-x64"
             app_root = package_root / "runtime" / "app"
@@ -25,6 +28,25 @@ class ProjectEnvLoadingTestCase(unittest.TestCase):
             resolved = _discover_default_env_file(app_root, None)
 
         self.assertEqual(resolved, env_file.resolve())
+
+    def test_relative_path_root_uses_source_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir) / "web-agent"
+            env_file = project_root / ".env"
+
+            resolved = _default_relative_path_root(project_root, env_file)
+
+        self.assertEqual(resolved, project_root.resolve())
+
+    def test_relative_path_root_uses_portable_package_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "Web-Test-Agent-Windows-x64"
+            app_root = package_root / "runtime" / "app"
+            env_file = package_root / "config" / ".env"
+
+            resolved = _default_relative_path_root(app_root, env_file)
+
+        self.assertEqual(resolved, package_root.resolve())
 
     def test_empty_portable_template_model_names_use_defaults(self) -> None:
         settings = AppSettings(
@@ -52,7 +74,9 @@ class ProjectEnvLoadingTestCase(unittest.TestCase):
             )
 
             settings = AppSettings(_env_file=env_path)
-            master_kwargs = settings.build_model_kwargs(settings.master_model, role="master")
+            master_kwargs = settings.build_model_kwargs(
+                settings.master_model, role="master"
+            )
             specialist_kwargs = settings.build_model_kwargs(
                 settings.specialist_model,
                 role="specialist",
@@ -80,7 +104,7 @@ class ProjectEnvLoadingTestCase(unittest.TestCase):
                 "# 中文注释，回归 Windows 默认 GBK 读取失败场景\n"
                 "LOG_LEVEL=DEBUG\n"
                 "CUSTOM_LABEL=中文值\n"
-                "QUOTED_VALUE=\"kept\"\n",
+                'QUOTED_VALUE="kept"\n',
                 encoding="utf-8-sig",
             )
 

@@ -11,6 +11,7 @@ pub fn run() {
             backend::restart_backend,
             backend::stop_backend,
             backend::backend_log,
+            backend::reveal_path_in_file_manager,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

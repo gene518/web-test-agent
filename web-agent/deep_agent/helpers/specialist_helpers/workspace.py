@@ -15,6 +15,7 @@ from typing import Any
 from deepagents.middleware import FilesystemPermission
 
 from deep_agent.config.specialist_file_filter import SpecialistFileFilter
+from deep_agent.tools.tool_invocation import is_tool_error_output
 
 
 def is_windows_platform() -> bool:
@@ -122,7 +123,11 @@ class SpecialistWorkspaceMixin:
             query_filter_config=self._get_runtime_config().query_filter_config,
         )
         for denied_path in denied_read_paths:
-            permissions.append(FilesystemPermission(operations=["read"], paths=[denied_path], mode="deny"))
+            permissions.append(
+                FilesystemPermission(
+                    operations=["read"], paths=[denied_path], mode="deny"
+                )
+            )
 
         if workspace_path == "/":
             # Windows 虚拟路径模式：`/` 本身就是 workspace 根，`/` 和 `/**` 一起覆盖
@@ -144,7 +149,9 @@ class SpecialistWorkspaceMixin:
                     mode="allow",
                 )
             )
-            permissions.append(FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"))
+            permissions.append(
+                FilesystemPermission(operations=["read"], paths=["/**"], mode="deny")
+            )
 
         if allow_workspace_writes:
             if workspace_path == "/":
@@ -165,7 +172,9 @@ class SpecialistWorkspaceMixin:
                 )
         if workspace_path != "/":
             # 非 Windows 保持原行为：最后一条兜底，禁止工作目录外的写入。
-            permissions.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
+            permissions.append(
+                FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
+            )
         return permissions
 
     def _build_query_filter_read_paths(
@@ -178,12 +187,24 @@ class SpecialistWorkspaceMixin:
 
         blocked_paths: list[str] = []
         for pattern in query_filter_config.blocked_path_globs:
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, pattern))
+            blocked_paths.append(
+                self._resolve_workspace_query_glob(workspace_dir, pattern)
+            )
 
         for extension in query_filter_config.blocked_file_extensions:
-            normalized_extension = extension if extension.startswith(".") else f".{extension}"
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, f"*{normalized_extension}"))
-            blocked_paths.append(self._resolve_workspace_query_glob(workspace_dir, f"**/*{normalized_extension}"))
+            normalized_extension = (
+                extension if extension.startswith(".") else f".{extension}"
+            )
+            blocked_paths.append(
+                self._resolve_workspace_query_glob(
+                    workspace_dir, f"*{normalized_extension}"
+                )
+            )
+            blocked_paths.append(
+                self._resolve_workspace_query_glob(
+                    workspace_dir, f"**/*{normalized_extension}"
+                )
+            )
 
         deduplicated_paths: list[str] = []
         seen: set[str] = set()
@@ -208,7 +229,11 @@ class SpecialistWorkspaceMixin:
         if normalized_pattern.startswith("/"):
             return normalized_pattern
 
-        normalized_pattern = normalized_pattern[2:] if normalized_pattern.startswith("./") else normalized_pattern
+        normalized_pattern = (
+            normalized_pattern[2:]
+            if normalized_pattern.startswith("./")
+            else normalized_pattern
+        )
 
         if is_windows_platform():
             workspace_path = virtual_workspace_root_path()
@@ -226,37 +251,26 @@ class SpecialistWorkspaceMixin:
 
         guidance_lines = [
             "- 如果需要查询文件，先使用 `ls` 观察候选目录结构，再把范围缩小到最小必要的单个子目录或单个文件。",
-            "- 不要直接对 `project_dir`、`workspace_dir` 或其他大目录执行 `glob=\"**/*\"`、递归 `grep` 或无范围全量搜索。",
-            "- `grep` 首次检索优先使用默认的 `files_with_matches`；只有缩小到少量候选文件后，才使用 `output_mode=\"content\"` 查看正文。",
+            '- 不要直接对 `project_dir`、`workspace_dir` 或其他大目录执行 `glob="**/*"`、递归 `grep` 或无范围全量搜索。',
+            '- `grep` 首次检索优先使用默认的 `files_with_matches`；只有缩小到少量候选文件后，才使用 `output_mode="content"` 查看正文。',
         ]
         query_filter_config = runtime_config.query_filter_config
         if query_filter_config.blocked_path_globs:
-            blocked_paths = ", ".join(f"`{pattern}`" for pattern in query_filter_config.blocked_path_globs)
+            blocked_paths = ", ".join(
+                f"`{pattern}`" for pattern in query_filter_config.blocked_path_globs
+            )
             guidance_lines.append(f"- 禁止查询这些路径模式：{blocked_paths}")
         if query_filter_config.blocked_file_extensions:
-            blocked_types = ", ".join(f"`{suffix}`" for suffix in query_filter_config.blocked_file_extensions)
+            blocked_types = ", ".join(
+                f"`{suffix}`" for suffix in query_filter_config.blocked_file_extensions
+            )
             guidance_lines.append(f"- 禁止查询这些文件类型：{blocked_types}")
         return "## 文件查询约束\n" + "\n".join(guidance_lines)
 
     def _tool_output_is_error(self, output: Any) -> bool:
         """判断工具输出是否表示失败。"""
 
-        status = getattr(output, "status", None)
-        if status == "error":
-            return True
-
-        if isinstance(output, dict):
-            if output.get("status") == "error":
-                return True
-            content = output.get("content")
-            if isinstance(content, str) and content.lstrip().startswith("Error:"):
-                return True
-
-        content = getattr(output, "content", None)
-        if isinstance(content, str) and content.lstrip().startswith("Error:"):
-            return True
-
-        return False
+        return is_tool_error_output(output)
 
     def _collect_workspace_write_start(
         self,
@@ -269,7 +283,10 @@ class SpecialistWorkspaceMixin:
 
         if workspace_dir is None:
             return
-        if event.get("name") not in {"write_file", "edit_file"} or event.get("event") != "on_tool_start":
+        if (
+            event.get("name") not in {"write_file", "edit_file"}
+            or event.get("event") != "on_tool_start"
+        ):
             return
 
         payload = event.get("data", {}).get("input")
@@ -311,7 +328,9 @@ class SpecialistWorkspaceMixin:
         if not self._tool_output_is_error(output):
             successful_write_paths.add(relative_path)
 
-    def _normalize_workspace_relative_path(self, workspace_dir: Path, value: Any) -> str | None:
+    def _normalize_workspace_relative_path(
+        self, workspace_dir: Path, value: Any
+    ) -> str | None:
         """把绝对或相对路径归一化为 workspace 内的相对路径。"""
 
         if value is None:

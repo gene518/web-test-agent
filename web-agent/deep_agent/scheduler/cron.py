@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-
 CRON_FIELD_RANGES: dict[str, tuple[int, int]] = {
     "minute": (0, 59),
     "hour": (0, 23),
@@ -144,11 +143,32 @@ def _expand_token(
             raise ValueError(f"Cron 字段 `{field_name}` 的范围非法：`{token}`。")
     else:
         value = _parse_int(base_text, field_name=field_name, token=token)
-        _validate_range(value, minimum_value=minimum_value, maximum_value=maximum_value, field_name=field_name, token=token)
-        return {value}
+        _validate_range(
+            value,
+            minimum_value=minimum_value,
+            maximum_value=maximum_value,
+            field_name=field_name,
+            token=token,
+        )
+        if "/" not in token:
+            return {value}
+        start = value
+        end = maximum_value
 
-    _validate_range(start, minimum_value=minimum_value, maximum_value=maximum_value, field_name=field_name, token=token)
-    _validate_range(end, minimum_value=minimum_value, maximum_value=maximum_value, field_name=field_name, token=token)
+    _validate_range(
+        start,
+        minimum_value=minimum_value,
+        maximum_value=maximum_value,
+        field_name=field_name,
+        token=token,
+    )
+    _validate_range(
+        end,
+        minimum_value=minimum_value,
+        maximum_value=maximum_value,
+        field_name=field_name,
+        token=token,
+    )
     return set(range(start, end + 1, step))
 
 

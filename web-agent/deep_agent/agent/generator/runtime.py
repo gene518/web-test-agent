@@ -18,7 +18,6 @@ from langchain_core.runnables import RunnableConfig
 
 from deep_agent.helpers.artifacts import (
     diff_workspace_manifest,
-    extract_expected_generator_test_scripts_from_plan_files,
     extract_generator_artifact_from_writes_and_snapshot,
     snapshot_workspace_manifest_async,
 )
@@ -34,7 +33,11 @@ from deep_agent.core.display_message import (
     build_runtime_message_result,
     emit_display_message_delta,
 )
-from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
+from deep_agent.core.runtime_logging import (
+    log_debug_event,
+    log_title,
+    with_trace_context,
+)
 
 
 class GeneratorRuntimeHelper:
@@ -53,7 +56,9 @@ class GeneratorRuntimeHelper:
     """
 
     @classmethod
-    def from_agent(cls, *, agent: Any, settings: AppSettings) -> "GeneratorRuntimeHelper":
+    def from_agent(
+        cls, *, agent: Any, settings: AppSettings
+    ) -> "GeneratorRuntimeHelper":
         """基于 Agent 的 mixin 能力构造 helper，省去手动注入回调。"""
 
         helper = cls(
@@ -88,11 +93,10 @@ class GeneratorRuntimeHelper:
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """使用事件流执行 Generator，并确保期望脚本全部落盘。
+        """消费 Generator 事件流，并确保期望脚本全部真实落盘。
 
-        主体事件循环放在 `_run_event_loop` 里；外层 `run(...)` 在 `finally` 中兜底
-        关闭当前 Playwright MCP 会话，避免 Chromium 子进程残留，
-        与 Plan / Healer runtime 的收尾策略保持一致。
+        Playwright MCP 会话由 `BaseSpecialistAgent.execute()` 在整个阶段结束时统一关闭，
+        因此准备上下文或最终汇总失败时也能覆盖到同一套清理逻辑。
         """
 
         if self._agent is None or self._settings is None:
@@ -100,21 +104,12 @@ class GeneratorRuntimeHelper:
                 "GeneratorRuntimeHelper.run 只能在 `from_agent(...)` 构造的实例上调用。"
             )
 
-        agent = self._agent
-        workspace_dir = execution_context.workspace_dir
-        try:
-            return await self._run_event_loop(
-                specialist_agent=specialist_agent,
-                state=state,
-                execution_context=execution_context,
-                config=config,
-            )
-        finally:
-            await agent._close_playwright_mcp_session(
-                workspace_dir=workspace_dir,
-                trace_context=execution_context.trace_context,
-                reason="generator_runtime_finalize",
-            )
+        return await self._run_event_loop(
+            specialist_agent=specialist_agent,
+            state=state,
+            execution_context=execution_context,
+            config=config,
+        )
 
     async def _run_event_loop(
         self,
@@ -124,7 +119,7 @@ class GeneratorRuntimeHelper:
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """真正的事件流循环，关闭由外层 `run(...)` 的 finally 兜底。"""
+        """消费事件流并生成 Generator 阶段结果；MCP 生命周期由 Base Agent 托管。"""
 
         agent = self._agent
         settings = self._settings
@@ -138,10 +133,12 @@ class GeneratorRuntimeHelper:
         successful_workspace_write_paths: set[str] = set()
         workspace_dir = execution_context.workspace_dir
         extracted_params = state.get("extracted_params", {})
-        project_name = agent._normalized_project_name(extracted_params.get("project_name")) or (
-            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        project_name = agent._normalized_project_name(
+            extracted_params.get("project_name")
+        ) or (workspace_dir.name if workspace_dir is not None else "unknown-project")
+        input_plan_files = agent._normalized_test_plan_files(
+            extracted_params.get("test_plan_files")
         )
-        input_plan_files = agent._normalized_test_plan_files(extracted_params.get("test_plan_files"))
         expected_test_scripts: list[str] = []
         if workspace_dir is not None:
             _, _, expected_test_scripts = agent._resolve_generation_targets(
@@ -172,19 +169,28 @@ class GeneratorRuntimeHelper:
                 )
                 # 监听 `generator_write_test`：它是当前阶段最直接的写脚本信号，
                 # 后续还会结合工作区快照校验预期脚本是否全部落盘。
-                if event.get("name") == "generator_write_test" and event.get("event") == "on_tool_start":
+                if (
+                    event.get("name") == "generator_write_test"
+                    and event.get("event") == "on_tool_start"
+                ):
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
-                        file_name = agent._normalized_runtime_text(payload.get("fileName"))
+                        file_name = agent._normalized_runtime_text(
+                            payload.get("fileName")
+                        )
                         code = payload.get("code")
                         if file_name and isinstance(code, str):
-                            pending_write_payloads.append({"fileName": file_name, "code": code})
-                generator_write_succeeded, generator_write_error = self.update_generator_write_state(
-                    generator_write_succeeded,
-                    generator_write_error,
-                    pending_write_payloads,
-                    successful_write_payloads,
-                    event,
+                            pending_write_payloads.append(
+                                {"fileName": file_name, "code": code}
+                            )
+                generator_write_succeeded, generator_write_error = (
+                    self.update_generator_write_state(
+                        generator_write_succeeded,
+                        generator_write_error,
+                        pending_write_payloads,
+                        successful_write_payloads,
+                        event,
+                    )
                 )
                 agent._collect_workspace_write_result(
                     event=event,
@@ -240,7 +246,9 @@ class GeneratorRuntimeHelper:
             settings,
             log_title("执行", "事件流"),
             "generator_final_output",
-            agent.log_event_trace_context(execution_context.trace_context, "generator_final_output"),
+            agent.log_event_trace_context(
+                execution_context.trace_context, "generator_final_output"
+            ),
             generator_write_succeeded=generator_write_succeeded,
             generator_write_error=generator_write_error,
             final_output=collector.final_output,
@@ -261,7 +269,11 @@ class GeneratorRuntimeHelper:
                     expected_test_scripts=expected_test_scripts,
                 )
             except Exception as exc:  # noqa: BLE001
-                error_suffix = f" 最近一次错误：{generator_write_error}" if generator_write_error else ""
+                error_suffix = (
+                    f" 最近一次错误：{generator_write_error}"
+                    if generator_write_error
+                    else ""
+                )
                 return agent._build_runtime_exception_result(
                     collector=collector,
                     existing_messages=existing_messages,
@@ -302,13 +314,18 @@ class GeneratorRuntimeHelper:
         if event.get("event") != "on_tool_end":
             return generator_write_succeeded, generator_write_error
 
-        pending_payload = pending_write_payloads.pop(0) if pending_write_payloads else None
+        pending_payload = (
+            pending_write_payloads.pop(0) if pending_write_payloads else None
+        )
         output = event.get("data", {}).get("output")
         if self._tool_output_is_error(output):
             return False, self._log_truncate(output)
 
         if pending_payload is None:
-            return False, "`generator_write_test` 未捕获到输入 payload，无法确认写入文件。"
+            return (
+                False,
+                "`generator_write_test` 未捕获到输入 payload，无法确认写入文件。",
+            )
 
         successful_write_payloads.append(pending_payload)
         return True, None
@@ -333,7 +350,9 @@ class GeneratorRuntimeHelper:
         try:
             self._assert_expected_test_scripts_written(
                 expected_test_scripts=expected_test_scripts,
-                actual_test_scripts=[payload.get("fileName", "") for payload in successful_write_payloads],
+                actual_test_scripts=[
+                    payload.get("fileName", "") for payload in successful_write_payloads
+                ],
             )
             stage_artifact = extract_generator_artifact_from_writes_and_snapshot(
                 writes=successful_write_payloads,
@@ -366,7 +385,9 @@ class GeneratorRuntimeHelper:
             except Exception as exc:  # noqa: BLE001
                 if payload_error is None:
                     raise
-                raise RuntimeError(f"{payload_error} 回退到最终文件落盘校验后仍失败：{exc}") from exc
+                raise RuntimeError(
+                    f"{payload_error} 回退到最终文件落盘校验后仍失败：{exc}"
+                ) from exc
 
         # 只有脚本集合与落盘产物都校验成功后，才把 planning 目录迁移为正式目录。
         # 失败路径必须保留原计划，确保同一对话可以修复环境后继续 Generator。
@@ -390,7 +411,10 @@ class GeneratorRuntimeHelper:
     ) -> None:
         """记录 `generator_write_test` 的成功/失败状态，方便按 session grep。"""
 
-        if event.get("name") != "generator_write_test" or event.get("event") not in {"on_tool_end", "on_tool_error"}:
+        if event.get("name") != "generator_write_test" or event.get("event") not in {
+            "on_tool_end",
+            "on_tool_error",
+        }:
             return
 
         status = "success" if generator_write_succeeded else "error"
@@ -416,7 +440,9 @@ class GeneratorRuntimeHelper:
 
         finalized_files: list[str] = []
         for input_file in input_files:
-            relative_plan_file = self._resolve_relative_plan_file(workspace_dir, input_file)
+            relative_plan_file = self._resolve_relative_plan_file(
+                workspace_dir, input_file
+            )
             finalized_files.append(
                 self._finalize_single_generated_plan_file(
                     workspace_dir=workspace_dir,
@@ -446,7 +472,11 @@ class GeneratorRuntimeHelper:
         relative_plan_file: Path,
     ) -> str:
         parts = relative_plan_file.parts
-        if len(parts) != 3 or parts[0] != "test_case" or not parts[1].startswith("aaaplanning_"):
+        if (
+            len(parts) != 3
+            or parts[0] != "test_case"
+            or not parts[1].startswith("aaaplanning_")
+        ):
             return relative_plan_file.as_posix()
 
         plan_name = parts[1].removeprefix("aaaplanning_")
@@ -547,7 +577,15 @@ class GeneratorRuntimeHelper:
 
         detail_parts: list[str] = []
         if missing_files:
-            detail_parts.append("缺失脚本：" + "、".join(f"`{path}`" for path in missing_files))
+            detail_parts.append(
+                "缺失脚本：" + "、".join(f"`{path}`" for path in missing_files)
+            )
         if untouched_files:
-            detail_parts.append("未观测到本轮新增或更新：" + "、".join(f"`{path}`" for path in untouched_files))
-        raise RuntimeError("Generator Agent 未在节点结束前完成全部脚本落盘。 " + "；".join(detail_parts))
+            detail_parts.append(
+                "未观测到本轮新增或更新："
+                + "、".join(f"`{path}`" for path in untouched_files)
+            )
+        raise RuntimeError(
+            "Generator Agent 未在节点结束前完成全部脚本落盘。 "
+            + "；".join(detail_parts)
+        )

@@ -1,7 +1,27 @@
 version: 2
+# This repository intentionally publishes only `main`. Dependabot version-update
+# pull requests require temporary branches, so automated PR creation is disabled.
+# Dependabot security-update PRs are controlled separately in GitHub repository
+# settings and must remain disabled. Dependency updates are reviewed directly on
+# `main`, while CI keeps production dependency auditing enabled.
 updates:
+  - package-ecosystem: "pip"
+    directory: "/web-agent"
+    open-pull-requests-limit: 0
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: "npm"
     directory: "/web-agent-client"
+    open-pull-requests-limit: 0
     schedule:
       interval: "weekly"
       day: "monday"
@@ -20,12 +40,14 @@ updates:
 
   - package-ecosystem: "cargo"
     directory: "/web-agent-client/src-tauri"
+    open-pull-requests-limit: 0
     schedule:
       interval: "weekly"
       day: "monday"
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    open-pull-requests-limit: 0
     schedule:
       interval: "weekly"
       day: "monday"

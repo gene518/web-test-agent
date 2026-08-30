@@ -1,63 +1,60 @@
 import {
-  type FormEvent,
-  type KeyboardEvent,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { useStream } from "@langchain/langgraph-sdk/react";
-import type { Message, Thread } from "@langchain/langgraph-sdk";
-import Ansi from "ansi-to-react";
+import type { Message } from "@langchain/langgraph-sdk";
 import {
-  Activity,
   AlertTriangle,
-  Bot,
-  Check,
-  ChevronDown,
   CircleStop,
-  Clock3,
-  FolderOpen,
   Menu,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
-  Palette,
-  Plus,
-  RefreshCw,
-  Send,
-  Settings,
-  TerminalSquare,
-  UserRound,
-  Wrench,
   X,
 } from "lucide-react";
 import "./App.css";
+import {
+  LOG_THEME_STORAGE_KEY,
+  LogModal,
+  SettingsModal,
+  loadLogTheme,
+  type LogTheme,
+} from "./components/AppModals";
+import { BackendBadge, BackendBanner } from "./components/BackendStatus";
+import { Composer } from "./components/Composer";
+import { MessageTimeline } from "./components/MessageTimeline";
+import { Sidebar } from "./components/Sidebar";
+import { useThreadHistory } from "./hooks/use-thread-history";
 import {
   chooseProjectRoot,
   createAgentClient,
   getBackendStatus,
   loadClientConfig,
   readBackendLog,
+  revealPathInFileManager,
   restartBackend,
   saveClientConfig,
 } from "./lib/backend";
 import {
-  buildToolInvocations,
-  extractInterruptQuestion,
   historicalConversationMessages,
   mergeMessages,
-  messageText,
   threadTitle,
-  toolsForMessage,
-  type CanonicalMessage,
-  type ToolInvocation,
 } from "./lib/message-utils";
+import {
+  activeRunIdForThread,
+  backendPortError,
+  cancellationFailureMessages,
+  configDraft,
+  configFromDraft,
+  type ActiveRun,
+  type ClientConfigDraft,
+} from "./lib/client-state";
+import { errorMessage } from "./lib/errors";
 import { activeRunIds, buildSubmitRequest } from "./lib/session-actions";
-import { AGENT_INTRO, PROMPT_TEMPLATES } from "./lib/prompt-templates";
 import {
   ASSISTANT_ID,
   STREAM_MODES,
@@ -67,15 +64,10 @@ import {
 } from "./lib/types";
 
 type DisplayMessagesEvent = { type: "display_messages"; messages: unknown[] };
-type LogTheme = "macos" | "dark" | "light";
-
-const LOG_THEME_STORAGE_KEY = "web-test-agent.log-theme.v1";
-const MAX_COMPOSER_ROWS = 5;
-const LOG_THEME_OPTIONS: readonly { value: LogTheme; label: string }[] = [
-  { value: "macos", label: "macOS 控制台" },
-  { value: "dark", label: "深色" },
-  { value: "light", label: "浅色" },
-];
+type PendingSubmit = {
+  threadId: string | null;
+  selectionRevision: number;
+};
 
 const INITIAL_STATUS: BackendStatus = {
   state: "checking",
@@ -94,139 +86,16 @@ function isDisplayMessagesEvent(value: unknown): value is DisplayMessagesEvent {
   );
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function loadLogTheme(): LogTheme {
-  try {
-    const stored = localStorage.getItem(LOG_THEME_STORAGE_KEY);
-    return LOG_THEME_OPTIONS.some((theme) => theme.value === stored)
-      ? (stored as LogTheme)
-      : "macos";
-  } catch {
-    return "macos";
-  }
-}
-
-function formatTime(value?: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const today = new Date();
-  if (date.toDateString() === today.toDateString()) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  }
-  return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
-}
-
-function stringify(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function ToolRow({ item }: { item: ToolInvocation }) {
-  return (
-    <details className="tool-row">
-      <summary>
-        <span className={`tool-status tool-status-${item.status}`} aria-hidden="true">
-          {item.status === "running" ? <Activity size={14} /> : <Check size={14} />}
-        </span>
-        <span className="tool-name">{item.name}</span>
-        <span className="tool-state">
-          {item.status === "running" ? "执行中" : item.status === "error" ? "失败" : "已完成"}
-        </span>
-        <ChevronDown className="tool-chevron" size={15} aria-hidden="true" />
-      </summary>
-      <div className="tool-detail">
-        <div>
-          <span>参数</span>
-          <pre>{stringify(item.args)}</pre>
-        </div>
-        {item.result !== undefined && (
-          <div>
-            <span>结果</span>
-            <pre>{item.result || "(空结果)"}</pre>
-          </div>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function TimelineMessage({
-  message,
-  tools,
-}: {
-  message: CanonicalMessage;
-  tools: ToolInvocation[];
-}) {
-  if (message.type === "tool") {
-    if (tools.length === 0) return null;
-    return (
-      <article className="timeline-message timeline-tool">
-        <div className="message-avatar" aria-hidden="true"><Wrench size={16} /></div>
-        <div className="message-body">
-          <div className="message-role">工具</div>
-          <div className="tool-list standalone-tool">
-            {tools.map((tool) => <ToolRow item={tool} key={tool.id} />)}
-          </div>
-        </div>
-      </article>
-    );
-  }
-  const text = messageText(message).trim();
-
-  return (
-    <article className={`timeline-message timeline-${message.type}`}>
-      <div className="message-avatar" aria-hidden="true">
-        {message.type === "human" ? <UserRound size={16} /> : <Bot size={17} />}
-      </div>
-      <div className="message-body">
-        <div className="message-role">{message.type === "human" ? "你" : "Agent"}</div>
-        {text && <div className="message-content">{text}</div>}
-        {tools.length > 0 && (
-          <div className="tool-list">
-            {tools.map((tool) => (
-              <ToolRow item={tool} key={tool.id} />
-            ))}
-          </div>
-        )}
-      </div>
-    </article>
-  );
-}
-
-function BackendBadge({ status }: { status: BackendStatus }) {
-  const label = {
-    checking: "检查中",
-    starting: "启动中",
-    running: "已连接",
-    stopped: "未启动",
-    conflict: "端口冲突",
-    error: "异常",
-  }[status.state];
-  return (
-    <span className={`backend-badge backend-${status.state}`} title={status.message}>
-      <span />
-      {label}
-    </span>
-  );
-}
-
 function App() {
   const [config, setConfig] = useState<ClientConfig>(() => loadClientConfig());
+  const [settingsDraft, setSettingsDraft] = useState<ClientConfigDraft>(() => configDraft(config));
   const [backend, setBackend] = useState<BackendStatus>(INITIAL_STATUS);
-  const [threads, setThreads] = useState<Thread<AgentState>[]>([]);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [backendBusy, setBackendBusy] = useState(false);
-  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancellingThreadIds, setCancellingThreadIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -234,36 +103,42 @@ function App() {
   const [backendLog, setBackendLog] = useState("");
   const [logTheme, setLogTheme] = useState<LogTheme>(loadLogTheme);
   const [notice, setNotice] = useState<string | null>(null);
-  const [activeRunId, setActiveRunId] = useState<string | undefined>();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [activeRun, setActiveRun] = useState<ActiveRun | undefined>();
+  const [reconnectRevision, setReconnectRevision] = useState(0);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const joinedRunsRef = useRef(new Set<string>());
+  const threadIdRef = useRef<string | null>(null);
+  const selectionRevisionRef = useRef(0);
+  const joiningRunsRef = useRef(new Map<string, ActiveRun>());
+  const pendingSubmitsRef = useRef(new Set<PendingSubmit>());
+  const reconnectAttemptsRef = useRef(new Map<string, number>());
+  const reconnectTimersRef = useRef(new Map<string, number>());
 
   const client = useMemo(() => createAgentClient(backend.apiUrl), [backend.apiUrl]);
+  const handleHistoryError = useCallback((message: string) => setNotice(message), []);
+  const {
+    threads,
+    loading: historyLoading,
+    hasMore: hasMoreThreads,
+    refresh: refreshThreads,
+    loadMore: loadMoreThreads,
+  } = useThreadHistory({
+    client,
+    enabled: backend.state === "running",
+    onError: handleHistoryError,
+  });
 
-  const refreshThreads = useCallback(async () => {
-    if (backend.state !== "running") return;
-    setHistoryLoading(true);
-    try {
-      const result = await client.threads.search<AgentState>({
-        limit: 100,
-        sortBy: "updated_at",
-        sortOrder: "desc",
-        select: ["thread_id", "created_at", "updated_at", "metadata", "status", "values", "interrupts"],
-      });
-      const filtered = result
-        .filter((thread) => {
-          const graphId = thread.metadata?.graph_id ?? thread.metadata?.assistant_id;
-          return !graphId || graphId === ASSISTANT_ID;
-        })
-        .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-      setThreads(filtered);
-    } catch (error) {
-      setNotice(`读取历史对话失败：${errorMessage(error)}`);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [backend.state, client]);
+  const scheduleStreamReconnect = useCallback((targetThreadId: string) => {
+    if (reconnectTimersRef.current.has(targetThreadId)) return;
+    const attempt = reconnectAttemptsRef.current.get(targetThreadId) ?? 0;
+    reconnectAttemptsRef.current.set(targetThreadId, attempt + 1);
+    const timer = window.setTimeout(() => {
+      reconnectTimersRef.current.delete(targetThreadId);
+      if (threadIdRef.current === targetThreadId) {
+        setReconnectRevision((current) => current + 1);
+      }
+    }, Math.min(1_000 * 2 ** attempt, 8_000));
+    reconnectTimersRef.current.set(targetThreadId, timer);
+  }, []);
 
   const stream = useStream<
     AgentState,
@@ -280,17 +155,82 @@ function App() {
     // history 接口，某些本地 LangGraph 运行时会因此出现列表可见但详情为空。
     fetchStateHistory: false,
     onThreadId: (id) => {
-      setThreadId(id);
+      const unboundSubmits = [...pendingSubmitsRef.current].filter(
+        (pending) => pending.threadId === null,
+      );
+      const pendingSubmit = unboundSubmits.length === 1 ? unboundSubmits[0] : undefined;
+      if (pendingSubmit) pendingSubmit.threadId = id;
+      if (
+        !pendingSubmit ||
+        pendingSubmit.selectionRevision === selectionRevisionRef.current
+      ) {
+        threadIdRef.current = id;
+        setThreadId(id);
+      }
       window.setTimeout(() => void refreshThreads(), 700);
     },
-    onCreated: (run) => setActiveRunId(run.run_id),
-    onFinish: () => {
-      setActiveRunId(undefined);
+    onCreated: (run) => {
+      setActiveRun({ threadId: run.thread_id, runId: run.run_id });
+    },
+    onFinish: (...args) => {
+      const run = args[1];
+      if (run) {
+        joiningRunsRef.current.delete(`${run.thread_id}:${run.run_id}`);
+        const timer = reconnectTimersRef.current.get(run.thread_id);
+        if (timer !== undefined) window.clearTimeout(timer);
+        reconnectTimersRef.current.delete(run.thread_id);
+        reconnectAttemptsRef.current.delete(run.thread_id);
+        setActiveRun((current) =>
+          current?.threadId === run.thread_id && current.runId === run.run_id
+            ? undefined
+            : current,
+        );
+        setNotice((current) =>
+          threadIdRef.current === run.thread_id && current?.startsWith("恢复执行流失败")
+            ? null
+            : current,
+        );
+      }
       window.setTimeout(() => void refreshThreads(), 300);
     },
-    onError: (error) => {
-      setActiveRunId(undefined);
-      setNotice(`Agent 执行失败：${errorMessage(error)}`);
+    onError: (error, run) => {
+      const runKey = run ? `${run.thread_id}:${run.run_id}` : undefined;
+      const joiningRun =
+        runKey
+          ? joiningRunsRef.current.get(runKey)
+          : joiningRunsRef.current.size === 1
+            ? joiningRunsRef.current.values().next().value
+            : undefined;
+      const pendingSubmit =
+        !run && !joiningRun && pendingSubmitsRef.current.size === 1
+          ? pendingSubmitsRef.current.values().next().value
+          : undefined;
+      if (run || joiningRun) {
+        const failedRun = joiningRun ?? {
+          threadId: run!.thread_id,
+          runId: run!.run_id,
+        };
+        setActiveRun((current) =>
+          current?.threadId === failedRun.threadId && current.runId === failedRun.runId
+            ? undefined
+            : current,
+        );
+      }
+      if (joiningRun) {
+        joiningRunsRef.current.delete(`${joiningRun.threadId}:${joiningRun.runId}`);
+        if (threadIdRef.current === joiningRun.threadId) {
+          setNotice(`恢复执行流失败，将自动重试：${errorMessage(error)}`);
+        }
+        scheduleStreamReconnect(joiningRun.threadId);
+      } else {
+        const failedThreadId = run?.thread_id ?? pendingSubmit?.threadId;
+        if (
+          failedThreadId !== undefined &&
+          threadIdRef.current === failedThreadId
+        ) {
+          setNotice(`Agent 执行失败：${errorMessage(error)}`);
+        }
+      }
     },
     onCustomEvent: (event, options) => {
       if (!isDisplayMessagesEvent(event)) return;
@@ -309,38 +249,13 @@ function App() {
     () => historicalConversationMessages(selectedThread?.values, stream.values, stream.messages),
     [selectedThread?.values, stream.messages, stream.values],
   );
-  const toolInvocations = useMemo(() => buildToolInvocations(messages), [messages]);
-  const linkedToolIds = useMemo(
-    () =>
-      new Set(
-        messages
-          .filter((message) => message.type === "ai")
-          .flatMap((message) => toolsForMessage(message, toolInvocations).map((tool) => tool.id)),
-      ),
-    [messages, toolInvocations],
-  );
   const interrupt = stream.interrupt ?? stream.values.__interrupt__;
-  const isRunning = stream.isLoading || Boolean(activeRunId);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, stream.isLoading, interrupt]);
-
-  useLayoutEffect(() => {
-    const textarea = composerInputRef.current;
-    if (!textarea) return;
-
-    textarea.style.height = "auto";
-    textarea.style.overflowY = "hidden";
-    const style = window.getComputedStyle(textarea);
-    const lineHeight = Number.parseFloat(style.lineHeight) || 20;
-    const verticalPadding =
-      (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
-    const maxHeight = lineHeight * MAX_COMPOSER_ROWS + verticalPadding;
-    const contentHeight = textarea.scrollHeight;
-    textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`;
-    textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
-  }, [input]);
+  const selectedRunId = activeRunIdForThread(activeRun, threadId);
+  const selectedThreadBusy = selectedThread?.status === "busy";
+  const isRunning = stream.isLoading || Boolean(selectedRunId) || selectedThreadBusy;
+  const composerDisabled = backend.state !== "running" || isRunning || stream.isThreadLoading;
+  const cancelBusy = threadId ? cancellingThreadIds.has(threadId) : false;
+  const settingsPortError = backendPortError(settingsDraft.backendPort);
 
   useEffect(() => {
     let cancelled = false;
@@ -380,13 +295,28 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (backend.state === "running") void refreshThreads();
-  }, [backend.state, refreshThreads]);
+  useEffect(
+    () => () => {
+      for (const timer of reconnectTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      reconnectTimersRef.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!threadId || backend.state !== "running" || stream.isLoading) return;
+    if (
+      !threadId ||
+      backend.state !== "running" ||
+      stream.isLoading ||
+      stream.isThreadLoading
+    ) {
+      return;
+    }
     let cancelled = false;
+    let joiningRunKey: string | undefined;
+
     const reconnect = async () => {
       try {
         const [running, pending] = await Promise.all([
@@ -394,34 +324,59 @@ function App() {
           client.runs.list(threadId, { limit: 1, status: "pending" }),
         ]);
         const run = running[0] ?? pending[0];
-        if (!run || cancelled || joinedRunsRef.current.has(run.run_id)) return;
-        joinedRunsRef.current.add(run.run_id);
-        setActiveRunId(run.run_id);
+        if (!run || cancelled) return;
+        const runKey = `${threadId}:${run.run_id}`;
+        if (joiningRunsRef.current.has(runKey)) {
+          scheduleStreamReconnect(threadId);
+          return;
+        }
+
+        joiningRunKey = runKey;
+        joiningRunsRef.current.set(runKey, { threadId, runId: run.run_id });
+        setActiveRun({ threadId, runId: run.run_id });
         await stream.joinStream(run.run_id, undefined, { streamMode: [...STREAM_MODES] });
       } catch (error) {
-        if (!cancelled) setNotice(`恢复执行流失败：${errorMessage(error)}`);
+        if (joiningRunKey) joiningRunsRef.current.delete(joiningRunKey);
+        setActiveRun((current) =>
+          current?.threadId === threadId ? undefined : current,
+        );
+        if (!cancelled) {
+          setNotice(`恢复执行流失败，将自动重试：${errorMessage(error)}`);
+          scheduleStreamReconnect(threadId);
+        }
       }
     };
-    const timeout = window.setTimeout(() => void reconnect(), 0);
+    void reconnect();
     return () => {
       cancelled = true;
-      window.clearTimeout(timeout);
+      if (joiningRunKey) joiningRunsRef.current.delete(joiningRunKey);
     };
-  }, [backend.state, client, threadId]);
+  }, [
+    backend.state,
+    client,
+    reconnectRevision,
+    scheduleStreamReconnect,
+    stream.isThreadLoading,
+    threadId,
+  ]);
 
-  const handleRestart = async (nextConfig = config) => {
+  const handleRestart = async (nextConfig = config): Promise<boolean> => {
     setBackendBusy(true);
     setNotice(null);
     setBackend((previous) => ({ ...previous, state: "starting", message: "正在重启本地后端..." }));
     try {
       const status = await restartBackend(nextConfig);
       setBackend(status);
-      if (status.projectRoot) {
-        const saved = { ...nextConfig, projectRoot: status.projectRoot };
+      if (status.state === "running") {
+        const saved = {
+          ...nextConfig,
+          projectRoot: status.projectRoot || nextConfig.projectRoot,
+        };
         setConfig(saved);
         saveClientConfig(saved);
+        return true;
       }
-      if (status.state === "running") await refreshThreads();
+      return false;
     } catch (error) {
       setBackend({
         state: "error",
@@ -429,6 +384,7 @@ function App() {
         projectRoot: nextConfig.projectRoot,
         message: errorMessage(error),
       });
+      return false;
     } finally {
       setBackendBusy(false);
     }
@@ -438,20 +394,39 @@ function App() {
     const root = await chooseProjectRoot(config.projectRoot);
     if (!root) return;
     const next = { ...config, projectRoot: root };
-    setConfig(next);
-    saveClientConfig(next);
     await handleRestart(next);
   };
 
-  const handleSubmit = async (event?: FormEvent) => {
-    event?.preventDefault();
+  const handleChooseSettingsRoot = async () => {
+    const root = await chooseProjectRoot(settingsDraft.projectRoot);
+    if (!root) return;
+    setSettingsDraft((current) => ({ ...current, projectRoot: root }));
+  };
+
+  const handleOpenSettings = () => {
+    setSettingsDraft(configDraft(config));
+    setSettingsOpen(true);
+  };
+
+  const handleSaveSettings = async () => {
+    const nextConfig = configFromDraft(settingsDraft);
+    if (!nextConfig || !nextConfig.projectRoot) return;
+    if (await handleRestart(nextConfig)) setSettingsOpen(false);
+  };
+
+  const handleSubmit = async () => {
     const text = input.trim();
-    if (!text || isRunning || backend.state !== "running") return;
+    if (!text || composerDisabled) return;
     setNotice(null);
     const request = buildSubmitRequest(text, {
       interrupted: Boolean(interrupt),
       newThread: !threadId,
     });
+    const pendingSubmit: PendingSubmit = {
+      threadId,
+      selectionRevision: selectionRevisionRef.current,
+    };
+    pendingSubmitsRef.current.add(pendingSubmit);
     setInput("");
     try {
       await stream.submit(request.values as AgentState, {
@@ -466,15 +441,12 @@ function App() {
         }),
       });
     } catch (error) {
-      setInput(text);
-      setNotice(`发送失败：${errorMessage(error)}`);
-    }
-  };
-
-  const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void handleSubmit();
+      if (threadIdRef.current === pendingSubmit.threadId) {
+        setInput(text);
+        setNotice(`发送失败：${errorMessage(error)}`);
+      }
+    } finally {
+      pendingSubmitsRef.current.delete(pendingSubmit);
     }
   };
 
@@ -486,32 +458,48 @@ function App() {
   };
 
   const handleCancel = async () => {
-    if (!threadId || cancelBusy) {
-      await stream.stop();
-      return;
-    }
-    setCancelBusy(true);
+    if (!threadId || cancelBusy) return;
+    const targetThreadId = threadId;
+    const targetRunId = activeRunIdForThread(activeRun, targetThreadId);
+    setCancellingThreadIds((current) => new Set(current).add(targetThreadId));
     try {
       const [running, pending] = await Promise.all([
-        client.runs.list(threadId, { limit: 20, status: "running" }),
-        client.runs.list(threadId, { limit: 20, status: "pending" }),
+        client.runs.list(targetThreadId, { limit: 20, status: "running" }),
+        client.runs.list(targetThreadId, { limit: 20, status: "pending" }),
       ]);
-      const ids = activeRunIds(running, pending, activeRunId);
-      await Promise.allSettled(
-        ids.map((runId) => client.runs.cancel(threadId, runId, true, "interrupt")),
+      const ids = activeRunIds(running, pending, targetRunId);
+      const results = await Promise.allSettled(
+        ids.map((runId) =>
+          client.runs.cancel(targetThreadId, runId, true, "interrupt"),
+        ),
       );
-      setActiveRunId(undefined);
-      await stream.stop();
+      const failures = cancellationFailureMessages(results);
+      if (failures.length > 0) {
+        throw new Error(
+          `${failures.length}/${ids.length} 个运行取消失败：${failures.join("；")}`,
+        );
+      }
+      setActiveRun((current) =>
+        current?.threadId === targetThreadId ? undefined : current,
+      );
+      if (threadIdRef.current === targetThreadId) await stream.stop();
       await refreshThreads();
     } catch (error) {
-      setNotice(`取消任务失败：${errorMessage(error)}`);
-      await stream.stop();
+      if (threadIdRef.current === targetThreadId) {
+        setNotice(`取消任务失败：${errorMessage(error)}`);
+      }
     } finally {
-      setCancelBusy(false);
+      setCancellingThreadIds((current) => {
+        const next = new Set(current);
+        next.delete(targetThreadId);
+        return next;
+      });
     }
   };
 
   const handleNewThread = () => {
+    selectionRevisionRef.current += 1;
+    threadIdRef.current = null;
     stream.switchThread(null);
     setThreadId(null);
     setInput("");
@@ -520,6 +508,8 @@ function App() {
   };
 
   const handleSelectThread = (id: string) => {
+    selectionRevisionRef.current += 1;
+    threadIdRef.current = id;
     stream.switchThread(id);
     setThreadId(id);
     setNotice(null);
@@ -536,6 +526,19 @@ function App() {
     }
   };
 
+  const handleOpenArtifactPath = async (path: string, baseDir?: string) => {
+    setNotice(null);
+    try {
+      await revealPathInFileManager(
+        backend.projectRoot || config.projectRoot,
+        baseDir,
+        path,
+      );
+    } catch (error) {
+      setNotice(`无法打开路径：${errorMessage(error)}`);
+    }
+  };
+
   const handleLogThemeChange = (theme: LogTheme) => {
     setLogTheme(theme);
     try {
@@ -547,71 +550,21 @@ function App() {
 
   return (
     <main className="app-shell">
-      <aside className={`sidebar ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobileSidebarOpen ? "sidebar-mobile-open" : ""}`}>
-        <div className="sidebar-brand">
-          <div className="brand-mark"><Activity size={19} /></div>
-          {sidebarOpen && (
-            <div>
-              <strong>Web Test Agent</strong>
-              <span>Desktop</span>
-            </div>
-          )}
-          <button className="icon-button mobile-close" onClick={() => setMobileSidebarOpen(false)} title="关闭会话列表">
-            <X size={18} />
-          </button>
-        </div>
-
-        <button
-          className="new-chat-button"
-          onClick={handleNewThread}
-          title="新建对话"
-        >
-          <Plus size={18} />
-          {sidebarOpen && <span>新建对话</span>}
-        </button>
-
-        {sidebarOpen && (
-          <div className="history-section">
-            <div className="section-label">
-              <span>历史对话</span>
-              <button className={`icon-button small ${historyLoading ? "spin" : ""}`} onClick={() => void refreshThreads()} title="刷新历史对话">
-                <RefreshCw size={14} />
-              </button>
-            </div>
-            <div className="thread-list">
-              {threads.map((thread) => (
-                <button
-                  className={`thread-item ${thread.thread_id === threadId ? "selected" : ""}`}
-                  key={thread.thread_id}
-                  onClick={() => handleSelectThread(thread.thread_id)}
-                >
-                  <MessageSquare size={15} />
-                  <span className="thread-copy">
-                    <strong>{threadTitle(thread)}</strong>
-                    <span>{thread.status === "busy" ? "正在运行" : formatTime(thread.updated_at)}</span>
-                  </span>
-                  {thread.status === "busy" && <span className="busy-dot" title="正在运行" />}
-                </button>
-              ))}
-              {!historyLoading && threads.length === 0 && (
-                <div className="history-empty">暂无历史对话</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="sidebar-footer">
-          <button className="sidebar-action" onClick={() => setSettingsOpen(true)} title="客户端设置">
-            <Settings size={17} />
-            {sidebarOpen && <span>设置</span>}
-          </button>
-          <button className="sidebar-action" onClick={() => void handleShowLog()} title="查看后端日志">
-            <TerminalSquare size={17} />
-            {sidebarOpen && <span>后端日志</span>}
-          </button>
-        </div>
-      </aside>
-      {mobileSidebarOpen && <button className="sidebar-scrim" onClick={() => setMobileSidebarOpen(false)} aria-label="关闭会话列表" />}
+      <Sidebar
+        threads={threads}
+        selectedThreadId={threadId}
+        open={sidebarOpen}
+        mobileOpen={mobileSidebarOpen}
+        historyLoading={historyLoading}
+        hasMoreThreads={hasMoreThreads}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
+        onNewThread={handleNewThread}
+        onSelectThread={handleSelectThread}
+        onRefreshThreads={refreshThreads}
+        onLoadMoreThreads={loadMoreThreads}
+        onOpenSettings={handleOpenSettings}
+        onShowLog={handleShowLog}
+      />
 
       <section className="workspace">
         <header className="workspace-header">
@@ -624,7 +577,7 @@ function App() {
             </button>
             <div className="conversation-heading">
               <strong>{selectedThread ? threadTitle(selectedThread) : "新对话"}</strong>
-              <span>{isRunning ? "Agent 正在执行任务" : interrupt ? "等待补充信息" : "Web 自动化测试 Agent"}</span>
+              <span>{stream.isThreadLoading ? "正在加载对话" : isRunning ? "Agent 正在执行任务" : interrupt ? "等待补充信息" : "Web 自动化测试 Agent"}</span>
             </div>
           </div>
           <div className="header-actions">
@@ -638,24 +591,12 @@ function App() {
           </div>
         </header>
 
-        {backend.state !== "running" && (
-          <div className={`backend-banner banner-${backend.state}`}>
-            <div>
-              {backend.state === "starting" || backend.state === "checking" ? <RefreshCw className="spin" size={18} /> : <AlertTriangle size={18} />}
-              <span>{backend.message || "本地后端尚未就绪。"}</span>
-            </div>
-            {isTauri() && !backend.projectRoot && (
-              <button onClick={() => void handleChooseRoot()} disabled={backendBusy}>
-                <FolderOpen size={16} />选择项目目录
-              </button>
-            )}
-            {backend.projectRoot && backend.state !== "starting" && backend.state !== "checking" && (
-              <button onClick={() => void handleRestart()} disabled={backendBusy}>
-                <RefreshCw size={16} />重新启动
-              </button>
-            )}
-          </div>
-        )}
+        <BackendBanner
+          status={backend}
+          busy={backendBusy}
+          onChooseRoot={handleChooseRoot}
+          onRestart={handleRestart}
+        />
 
         {notice && (
           <div className="notice" role="alert">
@@ -665,153 +606,46 @@ function App() {
           </div>
         )}
 
-        <div className="message-viewport">
-          <div className="message-column">
-            {messages.length === 0 && !interrupt ? (
-              <div className="empty-state">
-                <div className="empty-icon"><Bot size={25} /></div>
-                <h1>开始一个测试任务</h1>
-                <p>{AGENT_INTRO}</p>
-                <div className="prompt-examples">
-                  {PROMPT_TEMPLATES.map((template) => (
-                    <button
-                      key={template.id}
-                      type="button"
-                      onClick={() => handlePromptTemplate(template.content)}
-                    >
-                      {template.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <>
-                {messages.map((message, index) => (
-                  <TimelineMessage
-                    key={message.id ?? `${message.type}-${index}`}
-                    message={message}
-                    tools={
-                      message.type === "tool"
-                        ? linkedToolIds.has(message.tool_call_id)
-                          ? []
-                          : toolInvocations.filter((tool) => tool.id === message.tool_call_id)
-                        : toolsForMessage(message, toolInvocations)
-                    }
-                  />
-                ))}
-                {interrupt && (
-                  <div className="interrupt-panel">
-                    <div className="interrupt-icon"><Clock3 size={18} /></div>
-                    <div>
-                      <strong>需要补充信息</strong>
-                      <p>{extractInterruptQuestion(interrupt)}</p>
-                    </div>
-                  </div>
-                )}
-                {stream.isLoading && (
-                  <div className="running-indicator">
-                    <span /><span /><span />
-                    Agent 正在处理
-                  </div>
-                )}
-              </>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
+        <MessageTimeline
+          messages={messages}
+          interrupt={interrupt}
+          isLoading={stream.isLoading}
+          isThreadLoading={stream.isThreadLoading}
+          onPromptTemplate={handlePromptTemplate}
+          onOpenPath={(path, baseDir) => void handleOpenArtifactPath(path, baseDir)}
+        />
 
-        <footer className="composer-area">
-          <form className="composer" onSubmit={(event) => void handleSubmit(event)}>
-            <textarea
-              ref={composerInputRef}
-              aria-label="对话输入框"
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder={interrupt ? "输入补充信息并继续..." : "向 Agent 描述测试任务..."}
-              rows={1}
-              disabled={backend.state !== "running" || isRunning}
-            />
-            <button className="send-button" type="submit" disabled={!input.trim() || isRunning || backend.state !== "running"} title="发送">
-              <Send size={18} />
-            </button>
-          </form>
-          <div className="composer-meta">
-            <span>{interrupt ? "回复将恢复当前任务" : "Enter 发送，Shift + Enter 换行"}</span>
-            <span>{backend.apiUrl}</span>
-          </div>
-        </footer>
+        <Composer
+          value={input}
+          disabled={composerDisabled}
+          threadLoading={stream.isThreadLoading}
+          interrupted={Boolean(interrupt)}
+          apiUrl={backend.apiUrl}
+          inputRef={composerInputRef}
+          onChange={setInput}
+          onSubmit={handleSubmit}
+        />
       </section>
 
-      {settingsOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div><Settings size={19} /><h2 id="settings-title">客户端设置</h2></div>
-              <button className="icon-button" onClick={() => setSettingsOpen(false)} title="关闭设置"><X size={18} /></button>
-            </header>
-            <div className="settings-content">
-              <label>
-                <span>项目根目录</span>
-                <div className="path-input">
-                  <input value={config.projectRoot} readOnly placeholder="请选择仓库根目录" />
-                  <button className="icon-button" onClick={() => void handleChooseRoot()} title="选择项目根目录"><FolderOpen size={18} /></button>
-                </div>
-              </label>
-              <label>
-                <span>后端端口</span>
-                <input
-                  type="number"
-                  min={1024}
-                  max={65535}
-                  value={config.backendPort}
-                  onChange={(event) => setConfig((current) => ({ ...current, backendPort: Number(event.target.value) }))}
-                />
-              </label>
-              <div className="settings-status">
-                <BackendBadge status={backend} />
-                <span>{backend.message || backend.apiUrl}</span>
-              </div>
-            </div>
-            <footer>
-              <button className="secondary-button" onClick={() => setSettingsOpen(false)}>取消</button>
-              <button className="primary-button" onClick={() => { saveClientConfig(config); void handleRestart(); }} disabled={backendBusy || !config.projectRoot}>
-                <RefreshCw size={16} className={backendBusy ? "spin" : ""} />
-                {backendBusy ? "启动中" : "保存并重启"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
-
-      {logOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setLogOpen(false)}>
-          <section className="modal log-modal" role="dialog" aria-modal="true" aria-labelledby="log-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div><TerminalSquare size={19} /><h2 id="log-title">后端日志</h2></div>
-              <div className="modal-header-actions">
-                <label className="log-theme-picker">
-                  <Palette size={15} aria-hidden="true" />
-                  <select
-                    aria-label="日志颜色主题"
-                    value={logTheme}
-                    onChange={(event) => handleLogThemeChange(event.target.value as LogTheme)}
-                  >
-                    {LOG_THEME_OPTIONS.map((theme) => (
-                      <option key={theme.value} value={theme.value}>{theme.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <button className="icon-button" onClick={() => void handleShowLog()} title="刷新日志"><RefreshCw size={17} /></button>
-                <button className="icon-button" onClick={() => setLogOpen(false)} title="关闭日志"><X size={18} /></button>
-              </div>
-            </header>
-            <div className={`log-content log-theme-${logTheme}`} role="log" aria-label="后端日志内容">
-              <Ansi useClasses>{backendLog}</Ansi>
-            </div>
-          </section>
-        </div>
-      )}
+      <SettingsModal
+        open={settingsOpen}
+        draft={settingsDraft}
+        portError={settingsPortError}
+        backend={backend}
+        busy={backendBusy}
+        onDraftChange={setSettingsDraft}
+        onChooseRoot={handleChooseSettingsRoot}
+        onSave={handleSaveSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
+      <LogModal
+        open={logOpen}
+        content={backendLog}
+        theme={logTheme}
+        onThemeChange={handleLogThemeChange}
+        onRefresh={handleShowLog}
+        onClose={() => setLogOpen(false)}
+      />
     </main>
   );
 }

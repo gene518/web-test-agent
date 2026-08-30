@@ -40,6 +40,8 @@ button:disabled { cursor: default; opacity: .5; }
 .thread-copy span { color: #7f8882; font-size: 10px; }
 .busy-dot { width: 7px; height: 7px; flex: 0 0 7px; background: #96e0b1; border-radius: 50%; box-shadow: 0 0 0 3px rgba(150, 224, 177, .12); }
 .history-empty { padding: 22px 8px; color: #7f8882; font-size: 12px; text-align: center; }
+.history-more { width: 100%; height: 34px; margin-top: 4px; color: #9da59f; font-size: 11px; background: transparent; border: 0; border-radius: 5px; }
+.history-more:hover:not(:disabled) { color: #f2f4f2; background: #2d3230; }
 .sidebar-footer { padding-top: 10px; border-top: 1px solid #393e3c; }
 .sidebar-action { width: 100%; height: 36px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 0 9px; color: #aeb4b0; font-size: 12px; background: transparent; border: 0; border-radius: 6px; }
 .sidebar-action:hover { color: #f4f5f4; background: #2d3230; }
@@ -75,6 +77,11 @@ button:disabled { cursor: default; opacity: .5; }
 .message-body { min-width: 0; padding-top: 1px; }
 .message-role { margin-bottom: 7px; color: #747c77; font-size: 11px; font-weight: 600; }
 .message-content { color: #262a28; font-size: 14px; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifact-path-link { max-width: 100%; display: inline-flex; align-items: baseline; gap: 4px; margin: 0 1px; padding: 0 3px; color: #1f6f43; font: inherit; line-height: inherit; vertical-align: baseline; text-align: left; background: #edf6f0; border: 0; border-radius: 3px; cursor: pointer; }
+.artifact-path-link:hover { color: #155b35; background: #dceee2; text-decoration: underline; }
+.artifact-path-link:focus-visible { outline: 2px solid #75ad89; outline-offset: 1px; }
+.artifact-path-link svg { flex: 0 0 auto; transform: translateY(1px); }
+.artifact-path-link span { min-width: 0; overflow-wrap: anywhere; }
 .timeline-human .message-content { display: inline-block; padding: 10px 13px; background: #fff; border: 1px solid #e0e3df; border-radius: 7px; }
 .tool-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 .standalone-tool { margin-top: 0; }
@@ -103,6 +110,7 @@ button:disabled { cursor: default; opacity: .5; }
 .empty-icon { width: 50px; height: 50px; display: grid; place-items: center; color: #286943; background: #dff2e6; border: 1px solid #cce6d5; border-radius: 8px; }
 .empty-state h1 { margin: 17px 0 6px; font-size: 20px; font-weight: 600; }
 .empty-state > p { max-width: 560px; margin: 0; color: #7c847f; font-size: 13px; line-height: 1.7; }
+.history-hydrating { gap: 12px; color: #568068; }
 .prompt-examples { width: min(680px, 100%); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 26px; overflow-x: auto; scrollbar-width: thin; }
 .prompt-examples button { height: 42px; min-width: 0; overflow: hidden; padding: 0 10px; color: #4e5651; font-size: 11px; font-weight: 600; line-height: 1; text-overflow: ellipsis; white-space: nowrap; background: #fafbf9; border: 1px solid #dde1dc; border-radius: 6px; }
 .prompt-examples button:hover { color: #245e3c; background: #fff; border-color: #a9cdb6; }
@@ -125,6 +133,8 @@ button:disabled { cursor: default; opacity: .5; }
 .settings-content label { display: grid; gap: 7px; color: #5f6762; font-size: 11px; font-weight: 500; }
 .settings-content input { width: 100%; height: 38px; min-width: 0; padding: 0 11px; color: #2c312e; background: #fafbfa; border: 1px solid #dce0dc; border-radius: 5px; outline: 0; }
 .settings-content input:focus { border-color: #84b496; box-shadow: 0 0 0 3px rgba(83,152,108,.09); }
+.settings-content input[aria-invalid="true"] { border-color: #cf7777; }
+.field-error { color: #a03d3d; font-size: 10px; font-weight: 400; }
 .path-input { display: flex; gap: 6px; }
 .path-input .icon-button { color: #5c6761; background: #f5f7f4; border: 1px solid #dce0dc; }
 .settings-status { display: flex; align-items: center; gap: 9px; min-width: 0; color: #7b827e; font-size: 11px; }
@@ -194,6 +204,7 @@ button:disabled { cursor: default; opacity: .5; }
   .conversation-heading span { display: none; }
   .header-actions { gap: 6px; }
   .message-column { width: calc(100% - 20px); }
+  .prompt-examples { grid-template-columns: repeat(2, minmax(0, 1fr)); overflow-x: visible; padding-bottom: 0; }
   .timeline-message { grid-template-columns: 30px minmax(0, 1fr); gap: 9px; }
   .message-avatar { width: 28px; height: 28px; }
   .interrupt-panel, .running-indicator { margin-left: 39px; }

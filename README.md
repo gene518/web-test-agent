@@ -113,8 +113,14 @@ web-test-agent/  # 仓库根目录。
 │   │   │   ├── cli.py  # 定时服务命令行入口。
 │   │   │   ├── cron.py  # `CronField` 与 `CronExpression`，解析和匹配 Cron 表达式。
 │   │   │   ├── models.py  # `SchedulerRuntimeConfig` 等调度配置模型。
-│   │   │   ├── service.py  # `PendingScheduledRun`、`ScheduledRunResult`、`PlaywrightTaskRunner`、`SchedulerService`。
-│   │   │   └── store.py  # 调度配置文件读写与项目路径解析。
+│   │   │   ├── analysis.py  # Playwright 输出解析、失败/重试原因归类。
+│   │   │   ├── report_models.py  # Scheduler 总结报告的结构化数据契约。
+│   │   │   ├── runner.py  # Playwright 子进程执行、超时与进程树清理。
+│   │   │   ├── service.py  # Cron 扫描、misfire 补偿、队列治理与服务生命周期。
+│   │   │   ├── summary.py  # 执行后总结、历史聚合及 JSON/Markdown 报告落盘。
+│   │   │   ├── logs.py  # 项目级 Scheduler 运行日志写入。
+│   │   │   ├── paths.py  # 项目、测试目标与日志路径的边界校验。
+│   │   │   └── store.py  # 调度配置原子读写与任务更新。
 │   │   ├── tools/  # MCP 与 Playwright 工具接入。
 │   │   │   ├── mcp_manager.py  # `MCPServerProvider`、`_CachedToolsSession`、`MCPToolsManager`（通用编排，无业务特例）。
 │   │   │   ├── tool_error_handling.py  # `GenericMCPToolErrorPolicy`，统一工具错误包装。
@@ -192,3 +198,162 @@ flowchart TD
 5. 阶段执行：Plan、Generator、Healer 通过 `BaseSpecialistAgent` 准备工作目录、加载提示词、获取 MCP 工具并执行 Deep Agent。
 6. 产物回流：阶段完成后写入 `artifact_history`、`latest_artifacts` 和 `pending_stage_summaries`，多阶段链路继续回到 Master。
 7. 汇总结束：`FinalizeTurnNode` 将当前轮所有阶段摘要合成用户可见结论，随后进入下一轮等待。
+
+## 5. 环境要求
+
+源码开发需要以下工具：
+
+- Git。
+- Node.js 22 LTS 或更高版本。
+- pnpm 10.5.1。
+- Python 3.11 或更高版本。
+- uv。
+- Rust 1.88 或更高版本。
+- macOS 需要 Xcode Command Line Tools；Windows 需要 Microsoft C++ Build Tools 和 WebView2 Runtime。
+
+Windows x64 便携包已包含后端运行时、Node.js 和 Playwright Chromium，不需要上述源码开发环境；便携配置位于解压目录的 `config/.env`。
+
+## 6. 快速启动
+
+### 6.1 准备配置
+
+```bash
+cp web-agent/.env.example web-agent/.env
+```
+
+至少根据实际模型服务填写 API Key、Base URL 和模型名。不要把 `web-agent/.env` 提交到 Git。完整字段说明见 [后端 README](web-agent/README.md)。
+
+### 6.2 一键启动桌面客户端和后端
+
+```bash
+# macOS
+bash start/macos-start.command start
+```
+
+```powershell
+# Windows PowerShell
+.\start\windows-start.ps1 -Mode start
+```
+
+启动脚本会检查工具链、同步依赖、准备 Playwright Chromium，然后运行 Tauri 开发客户端。客户端会管理自己在 `127.0.0.1:2024` 上启动的本地 LangGraph 后端；如端口已被任何外部服务占用（包括其他 LangGraph 实例），会拒绝接管或终止该进程并报告冲突。
+
+停止或查看日志：
+
+```bash
+bash start/macos-start.command end
+bash start/macos-start.command logs
+```
+
+```powershell
+.\start\windows-start.ps1 -Mode end
+.\start\windows-start.ps1 -Mode logs
+```
+
+也可分别启动后端和客户端，详见 [后端 README](web-agent/README.md) 和 [客户端 README](web-agent-client/README.md)。
+
+## 7. 配置和运行目录
+
+- 后端源码配置：`web-agent/.env`。
+- Windows 便携包配置：`config/.env`。
+- 默认自动化工程根目录：`~/webautotest`，可通过 `DEFAULT_AUTOMATION_PROJECT_ROOT` 修改。
+- 单个自动化工程：`<DEFAULT_AUTOMATION_PROJECT_ROOT>/<project_name>/`。
+- Plan 计划：`test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`。
+- Generator 脚本：`test_case/{plan-name}/*.spec.ts`，同目录保留测试计划。
+- 后端日志：源码启动时为 `start/backend.log`；Windows 便携包为 `data/logs/backend.log`。
+- Scheduler 默认配置：`web-agent/scheduler_tasks.json`。
+
+当参数中使用相对 `project_dir` 时，后端会相对自动化根目录解析；`project_name` 只允许单个安全目录名。Scheduler 的 `test_root_dir` 和 `locations` 必须是项目内相对路径，不允许 `..`、符号链接逃逸或 glob。
+
+## 8. Scheduler 执行和总结报告
+
+Scheduler Agent 负责把自然语言需求写入 JSON 配置；真正的定时执行由独立常驻进程负责，不会随桌面客户端自动启动。
+
+```bash
+cp web-agent/scheduler_tasks.example.json web-agent/scheduler_tasks.json
+cd web-agent
+uv run web-agent-scheduler
+
+# 或显式指定配置
+uv run web-agent-scheduler --config ./scheduler_tasks.json
+```
+
+调度器使用五段 Cron，支持项目时区、misfire 补偿、有界等待队列和任务超时。Playwright 进程结束后，无论成功、失败、超时、取消还是执行器异常，都会进入总结阶段。总结会：
+
+- 结合进程退出码和 Playwright 真实输出判定最终状态。
+- 提取失败、重试、flaky、跳过、中断、超时和未执行用例。
+- 保留失败与重试原因，归类当前问题，并聚合同一任务最近 20 份历史报告计算成功率、重试率和重复问题。
+- 同时生成适合机器处理的 JSON 和便于人阅读的 Markdown。
+
+报告和日志位于自动化项目内：
+
+```text
+<project_dir>/<test_root_dir>/
+├── scheduler-service.log
+└── scheduler-reports/
+    └── <task-id>-<digest>/
+        ├── <scheduled-time>-<run-id>.json
+        ├── <scheduled-time>-<run-id>.md
+        ├── latest.json
+        └── latest.md
+```
+
+JSON 报告包含任务元数据、进程结果、用例统计、失败用例、重试用例、共性问题、历史稳定性、诊断摘录、分析警告和产物路径。控制台输出最多保留 5000 行用于分析；超限时报告会显式标记截断，完整输出仍可在 `scheduler-service.log` 中查看。
+
+## 9. 阶段总结和本地产物打开
+
+Plan、Generator、Healer 和 Scheduler 配置阶段都会输出结构稳定的阶段总结。Plan / Generator / Healer 总结包括项目目录、输入文件、实际落盘文件和验证结果；Scheduler 总结的成功和失败分支都固定包含状态和配置文件，成功时还包含项目目录、配置操作、任务 ID、Cron、执行模式、测试范围和 Scheduler 日志。桌面客户端会把规范阶段总结中可识别的本地文件和目录显示为可点击项：macOS 使用 Finder，Windows 使用文件资源管理器。
+
+Scheduler 的对话阶段总结只表示定时任务配置已成功写入或写入失败，不表示测试已执行。真正的定时运行由独立 `web-agent-scheduler` 进程完成，执行结束后另行生成第 8 节所述 JSON / Markdown 分析报告。
+
+该功能仅在 Tauri 桌面客户端可用，`pnpm dev` 的浏览器预览不能打开本地路径。原生端只允许两类可信根：已验证的仓库根目录，以及源码 `web-agent/.env` 或便携包 `config/.env` 中 `DEFAULT_AUTOMATION_PROJECT_ROOT` 指向的目录；未配置时后者默认为 `~/webautotest`。基准目录必须是某个可信根中的真实目录，目标必须已存在；规范化后会拒绝 `..`、NUL、符号链接逃逸和模型输出的任意系统路径。
+
+## 10. 验证
+
+提交集成改动前，按 CI 使用的参数运行以下检查。
+
+```bash
+cd web-agent
+uv sync --frozen --extra dev
+uv run pytest -q --cov=deep_agent --cov-report=term-missing
+uv run ruff check deep_agent tests
+uv build
+```
+
+```bash
+cd web-agent-client
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm audit --prod
+pnpm exec playwright install --with-deps chromium
+pnpm test:e2e
+
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo check --locked
+```
+
+平台构建命令和真实后端 E2E 方式见 [客户端 README](web-agent-client/README.md)。
+
+## 11. Git 工作流
+
+本仓库只长期保留和发布 `main` 分支。不使用功能分支保存关键节点，关键节点使用 `main` 上的 annotated tag。
+
+```bash
+git switch main
+git pull --ff-only origin main
+
+# 完成修改和验证后在 main 提交
+git add <files>
+git commit -m "<message>"
+git push origin main
+
+# 需要记录关键节点时
+git tag -a <tag-name> -m "<milestone description>"
+git push origin <tag-name>
+```
+
+Codex 管理的 worktree 保持 detached HEAD，完成后通过 Handoff 回到本地 `main`，不点击 "Create branch here"。未经用户明确允许，不创建或推送其他分支；不强制推送 `main`，不改写已发布 tag。详细约束见 [AGENTS.md](AGENTS.md)。

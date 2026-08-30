@@ -1,10 +1,9 @@
-import { existsSync } from 'fs';
 import { defineConfig } from '@playwright/test';
 import process from 'process';
 
 // 获取报告名称（时间戳+用例路径）
 const reportName = getReportName();
-const chromeExecutablePath = resolveChromeExecutablePath();
+const browserExecutablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH?.trim();
 const headed = process.env.PWTEST_HEADED === '1';
 
 export default defineConfig({
@@ -42,7 +41,7 @@ export default defineConfig({
         headless: !headed,
         video: 'on',
         launchOptions: {
-          executablePath: chromeExecutablePath,
+          ...(browserExecutablePath ? { executablePath: browserExecutablePath } : {}),
           slowMo: headed ? 1000 : 0,
         },
       },
@@ -83,26 +82,4 @@ function getReportName() {
   const generatedName = `${ts}-${testPath}`;
   process.env.PW_TEST_REPORT_NAME = generatedName;
   return generatedName;
-}
-
-function resolveChromeExecutablePath() {
-  const chromePathByPlatform: Record<string, string> = {
-    darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  };
-
-  const executablePath = chromePathByPlatform[process.platform];
-  if (!executablePath) {
-    throw new Error(
-      `当前 demo 仅内置 darwin/win32 的 Chrome 路径，当前平台为 ${process.platform}。请按本机 Chrome 安装位置调整 playwright.config.ts。`
-    );
-  }
-
-  if (!existsSync(executablePath)) {
-    throw new Error(
-      `未找到本地 Chrome 可执行文件：${executablePath}。请按本机 Chrome 安装位置调整 playwright.config.ts。`
-    );
-  }
-
-  return executablePath;
 }

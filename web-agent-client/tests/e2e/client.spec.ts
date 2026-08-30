@@ -120,8 +120,71 @@ test("ANSI backend logs render with selectable persistent themes", async ({ page
   await theme.selectOption("macos");
 });
 
-test("historical details stay visible while the latest checkpoint hydrates", async ({ page }) => {
+test("browser preview rejects a non-LangGraph service on the configured port", async ({ page }) => {
+  await page.route("http://127.0.0.1:2024/info", async (route) => {
+    await route.fulfill({
+      json: { status: "ok", flags: {} },
+      headers: { "access-control-allow-origin": "*" },
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByText("端口冲突", { exact: true })).toBeVisible();
+  await expect(page.getByText("端口 2024 上的服务不是 LangGraph 后端。", { exact: true })).toBeVisible();
+});
+
+test("settings edits stay in a draft until a successful save", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "web-test-agent.client-config.v1",
+      JSON.stringify({ projectRoot: "/repo", backendPort: 2024 }),
+    );
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (command: string) => {
+          if (command === "backend_status" || command === "restart_backend") {
+            return {
+              state: "running",
+              apiUrl: "http://127.0.0.1:2024",
+              projectRoot: "/repo",
+              message: "UI 验证模式",
+            };
+          }
+          throw new Error(`未模拟 Tauri 命令：${command}`);
+        },
+        transformCallback: () => 0,
+        unregisterCallback: () => undefined,
+        convertFileSrc: (path: string) => path,
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByTitle("客户端设置").click();
+
+  const port = page.getByLabel("后端端口");
+  const save = page.getByRole("button", { name: "保存并重启" });
+  await expect(port).toHaveValue("2024");
+  await port.fill("70000");
+  await expect(page.getByText("端口必须是 1024 到 65535 之间的整数")).toBeVisible();
+  await expect(save).toBeDisabled();
+
+  await port.fill("3030");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByTitle("客户端设置").click();
+  await expect(page.getByLabel("后端端口")).toHaveValue("2024");
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem("web-test-agent.client-config.v1")),
+    )
+    .toBe(JSON.stringify({ projectRoot: "/repo", backendPort: 2024 }));
+});
+
+test("history titles fall back to messages and hydrate the selected conversation on demand", async ({ page }) => {
   let stateRequests = 0;
+  let searchSelect: string[] = [];
   const threadId = "history-detail-regression";
   const headers = {
     "access-control-allow-origin": "*",
@@ -142,6 +205,7 @@ test("historical details stay visible while the latest checkpoint hydrates", asy
       return;
     }
     if (url.pathname === "/threads/search") {
+      searchSelect = (route.request().postDataJSON() as { select?: string[] }).select ?? [];
       await route.fulfill({
         headers,
         json: [
@@ -149,15 +213,11 @@ test("historical details stay visible while the latest checkpoint hydrates", asy
             thread_id: threadId,
             created_at: "2026-07-17T08:00:00Z",
             updated_at: "2026-07-17T08:01:00Z",
-            metadata: { graph_id: "web-autotest-agent", thread_title: "历史详情回归" },
+            metadata: { graph_id: "web-autotest-agent" },
             status: "idle",
             values: {
-              display_messages: [
-                { id: "human-history", type: "human", content: "历史问题正文" },
-                { id: "ai-history", type: "ai", content: "历史回答正文" },
-              ],
+              messages: [{ id: "history-title", type: "human", content: "历史详情回归" }],
             },
-            interrupts: {},
           },
         ],
       });
@@ -169,7 +229,12 @@ test("historical details stay visible while the latest checkpoint hydrates", asy
       await route.fulfill({
         headers,
         json: {
-          values: {},
+          values: {
+            display_messages: [
+              { id: "human-history", type: "human", content: "历史问题正文" },
+              { id: "ai-history", type: "ai", content: "历史回答正文" },
+            ],
+          },
           next: [],
           tasks: [],
           checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
@@ -190,10 +255,456 @@ test("historical details stay visible while the latest checkpoint hydrates", asy
   await page.goto("/");
   await page.getByRole("button", { name: /历史详情回归/ }).click();
 
+  await expect(page.getByLabel("正在加载对话")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "对话输入框" })).toBeDisabled();
   await expect(page.getByText("历史问题正文", { exact: true })).toBeVisible();
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "对话输入框" })).toBeEnabled();
   await expect.poll(() => stateRequests).toBe(1);
+  expect(searchSelect).toContain("values");
+  expect(searchSelect).not.toContain("interrupts");
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
+});
+
+test("stage summary paths are clickable and browser preview explains the limitation", async ({
+  page,
+}) => {
+  const threadId = "artifact-path-links";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  const summary = `**Plan 阶段**
+- 状态：成功
+- 项目目录：\`/repo/web-agent/demo\`
+- 产物目录：\`test-results\`
+- 已保存测试计划：\`test_case/aaaplanning_login/aaa_login.md\`
+- 待生成脚本规划：\`test_case/aaaplanning_login/a_login.spec.ts\``;
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: threadId,
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "产物链接验证" },
+            status: "idle",
+            values: { display_messages: [{ id: "summary", type: "ai", content: summary }] },
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/state`) {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [{ id: "summary", type: "ai", content: summary }] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs`) {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /产物链接验证/ }).click();
+
+  const links = page.locator(".artifact-path-link");
+  await expect(links).toHaveCount(4);
+  await expect(
+    page.getByRole("button", {
+      name: "在文件管理器中打开 test_case/aaaplanning_login/aaa_login.md",
+    }),
+  ).toBeVisible();
+
+  await links.nth(1).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "浏览器预览模式无法打开本地路径，请在桌面客户端中使用此功能。",
+  );
+});
+
+test("a partial cancellation failure remains visible and keeps the run active", async ({ page }) => {
+  const threadId = "cancel-failure-thread";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  const cancellationTargets: string[] = [];
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: threadId,
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "取消失败回归" },
+            status: "busy",
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/state`) {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs` && request.method() === "GET") {
+      await route.fulfill({
+        headers,
+        json: url.searchParams.get("status") === "running"
+          ? [{ run_id: "run-ok" }, { run_id: "run-fail" }]
+          : [],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs/run-ok/stream`) {
+      await route.fulfill({
+        headers: {
+          "access-control-allow-origin": "*",
+          "content-type": "text/event-stream",
+        },
+        body: "",
+      });
+      return;
+    }
+    if (url.pathname.endsWith("/cancel") && request.method() === "POST") {
+      cancellationTargets.push(url.pathname);
+      if (url.pathname.includes("run-fail")) {
+        await route.fulfill({ status: 500, headers, json: { detail: "取消被拒绝" } });
+      } else {
+        await route.fulfill({ headers, json: null });
+      }
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /取消失败回归/ }).click();
+  const cancel = page.getByRole("button", { name: "取消任务" });
+  await expect(cancel).toBeVisible();
+  await cancel.click();
+
+  await expect(page.getByRole("alert")).toContainText("1/2 个运行取消失败");
+  await expect(cancel).toBeVisible();
+  expect([...new Set(cancellationTargets)].sort()).toEqual([
+    `/threads/${threadId}/runs/run-fail/cancel`,
+    `/threads/${threadId}/runs/run-ok/cancel`,
+  ]);
+});
+
+test("a failed stream rejoin is retried and clears its recovery notice", async ({ page }) => {
+  const threadId = "reconnect-retry-thread";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  let joinAttempts = 0;
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: threadId,
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "恢复重试回归" },
+            status: "busy",
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/state`) {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs` && request.method() === "GET") {
+      await route.fulfill({
+        headers,
+        json: url.searchParams.get("status") === "running" ? [{ run_id: "run-retry" }] : [],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs/run-retry/stream`) {
+      joinAttempts += 1;
+      if (joinAttempts <= 2) {
+        await route.fulfill({ status: 500, headers, json: { detail: "temporary failure" } });
+      } else {
+        await route.fulfill({
+          headers: {
+            "access-control-allow-origin": "*",
+            "content-type": "text/event-stream",
+          },
+          body: "",
+        });
+      }
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /恢复重试回归/ }).click();
+
+  await expect(page.getByRole("alert")).toContainText("恢复执行流失败，将自动重试", {
+    timeout: 10_000,
+  });
+  await expect.poll(() => joinAttempts, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a late error from thread A does not leak into selected thread B", async ({ page }) => {
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  let joinStarted = false;
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: "thread-a",
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:02:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "会话 A" },
+            status: "busy",
+          },
+          {
+            thread_id: "thread-b",
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "会话 B" },
+            status: "idle",
+          },
+        ],
+      });
+      return;
+    }
+    if (/\/threads\/thread-[ab]\/state$/.test(url.pathname)) {
+      const selectedId = url.pathname.includes("thread-a") ? "thread-a" : "thread-b";
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: selectedId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/thread-a/runs" && request.method() === "GET") {
+      await route.fulfill({
+        headers,
+        json: url.searchParams.get("status") === "running" ? [{ run_id: "run-a" }] : [],
+      });
+      return;
+    }
+    if (url.pathname === "/threads/thread-b/runs" && request.method() === "GET") {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    if (url.pathname === "/threads/thread-a/runs/run-a/stream") {
+      joinStarted = true;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await route.fulfill({ status: 500, headers, json: { detail: "late A failure" } });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /会话 A/ }).click();
+  await expect.poll(() => joinStarted).toBe(true);
+  await page.getByRole("button", { name: /会话 B/ }).click();
+
+  await expect(page.locator(".conversation-heading strong")).toHaveText("会话 B");
+  await expect(page.getByRole("button", { name: "取消任务" })).toHaveCount(0);
+  await page.waitForTimeout(1_000);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.locator(".conversation-heading span")).toHaveText("Web 自动化测试 Agent");
+});
+
+test("a late new-thread submit failure does not pull thread B back into thread A", async ({ page }) => {
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  let threadCreateStarted = false;
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: "thread-b",
+            created_at: "2026-07-17T08:00:00Z",
+            updated_at: "2026-07-17T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "提交会话 B" },
+            status: "idle",
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === "/threads/thread-b/state") {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: "thread-b", checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
+          metadata: {},
+          created_at: "2026-07-17T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/thread-b/runs" && request.method() === "GET") {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    if (url.pathname === "/threads" && request.method() === "POST") {
+      threadCreateStarted = true;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await route.fulfill({ headers, json: { thread_id: "thread-a" } });
+      return;
+    }
+    if (url.pathname === "/threads/thread-a/runs/stream" && request.method() === "POST") {
+      await route.fulfill({ status: 400, headers, json: { detail: "late A submit failure" } });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  const composer = page.getByRole("textbox", { name: "对话输入框" });
+  await composer.fill("只属于新会话 A 的失败输入");
+  await page.getByTitle("发送").click();
+  await expect.poll(() => threadCreateStarted).toBe(true);
+  await page.getByRole("button", { name: /提交会话 B/ }).click();
+
+  await expect(page.locator(".conversation-heading strong")).toHaveText("提交会话 B");
+  await page.waitForTimeout(1_200);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(composer).toHaveValue("");
+  await expect(page.locator(".conversation-heading span")).toHaveText("Web 自动化测试 Agent");
 });
 
 historyTest("a selected historical conversation can continue", async ({ page }) => {

@@ -33,7 +33,17 @@ jobs:
         run: uv sync --frozen --extra dev
       - name: 运行后端测试
         working-directory: web-agent
-        run: uv run pytest -q
+        run: uv run pytest -q --cov=deep_agent --cov-report=term-missing
+      - name: 检查后端静态质量
+        working-directory: web-agent
+        run: uv run ruff check deep_agent tests
+      - name: 验证 Python 发布包包含运行资源
+        working-directory: web-agent
+        run: |
+          uv build
+          unzip -l dist/*.whl | grep -q "deep_agent/assets/demo/package.json"
+          unzip -l dist/*.whl | grep -q "deep_agent/assets/demo/playwright.config.ts"
+          unzip -l dist/*.whl | grep -q "deep_agent/assets/demo/test_case/shared/base-test.ts"
 
   client-frontend:
     name: 桌面客户端前端检查
@@ -57,6 +67,13 @@ jobs:
           pnpm typecheck
           pnpm test
           pnpm build
+          pnpm audit --prod
+      - name: 安装 E2E 浏览器
+        working-directory: web-agent-client
+        run: pnpm exec playwright install --with-deps chromium
+      - name: 运行客户端 E2E
+        working-directory: web-agent-client
+        run: pnpm test:e2e
 
   windows-startup-check:
     name: 检查 Windows 启动脚本
@@ -107,6 +124,8 @@ jobs:
       - name: 检查 Rust
         working-directory: web-agent-client/src-tauri
         run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
           cargo check --locked
       - name: 构建未签名 NSIS 安装包

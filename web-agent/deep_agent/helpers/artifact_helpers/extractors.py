@@ -47,8 +47,10 @@ def extract_plan_artifact_from_planner_payload(
         plan_file,
         field_name="planner_save_plan.fileName",
     )
-    overview = require_non_empty_text(payload.get("overview"), field_name="planner_save_plan.overview")
-    plan_name = require_non_empty_text(payload.get("name"), field_name="planner_save_plan.name")
+    overview = require_non_empty_text(
+        payload.get("overview"), field_name="planner_save_plan.overview"
+    )
+    require_non_empty_text(payload.get("name"), field_name="planner_save_plan.name")
 
     suites = payload.get("suites")
     if not isinstance(suites, list) or not suites:
@@ -59,15 +61,22 @@ def extract_plan_artifact_from_planner_payload(
     for suite in suites:
         if not isinstance(suite, dict):
             raise RuntimeError("`planner_save_plan.suites[]` 必须是对象。")
-        suite_name = require_non_empty_text(suite.get("name"), field_name="planner_save_plan.suites[].name")
-        seed_file = require_non_empty_text(suite.get("seedFile"), field_name="planner_save_plan.suites[].seedFile")
+        suite_name = require_non_empty_text(
+            suite.get("name"), field_name="planner_save_plan.suites[].name"
+        )
+        seed_file = require_non_empty_text(
+            suite.get("seedFile"), field_name="planner_save_plan.suites[].seedFile"
+        )
         tests = suite.get("tests")
         if not isinstance(tests, list) or not tests:
             raise RuntimeError(f"`planner_save_plan` suite `{suite_name}` 缺少 tests。")
         for test_case in tests:
             if not isinstance(test_case, dict):
                 raise RuntimeError("`planner_save_plan.suites[].tests[]` 必须是对象。")
-            case_name = require_non_empty_text(test_case.get("name"), field_name="planner_save_plan.suites[].tests[].name")
+            case_name = require_non_empty_text(
+                test_case.get("name"),
+                field_name="planner_save_plan.suites[].tests[].name",
+            )
             target_file = validate_relative_workspace_path(
                 test_case.get("file"),
                 project_dir=project_dir,
@@ -82,14 +91,21 @@ def extract_plan_artifact_from_planner_payload(
             )
             steps = test_case.get("steps")
             if not isinstance(steps, list) or not steps:
-                raise RuntimeError(f"`planner_save_plan` case `{case_name}` 缺少 steps。")
+                raise RuntimeError(
+                    f"`planner_save_plan` case `{case_name}` 缺少 steps。"
+                )
             step_count = 0
             for step in steps:
                 if not isinstance(step, dict):
-                    raise RuntimeError("`planner_save_plan.suites[].tests[].steps[]` 必须是对象。")
+                    raise RuntimeError(
+                        "`planner_save_plan.suites[].tests[].steps[]` 必须是对象。"
+                    )
                 expect = step.get("expect")
                 if not isinstance(expect, list) or not [
-                    require_non_empty_text(item, field_name="planner_save_plan.suites[].tests[].steps[].expect[]")
+                    require_non_empty_text(
+                        item,
+                        field_name="planner_save_plan.suites[].tests[].steps[].expect[]",
+                    )
                     for item in expect
                 ]:
                     raise RuntimeError(
@@ -110,6 +126,23 @@ def extract_plan_artifact_from_planner_payload(
             planned_test_case_files.append(target_file)
 
     deduplicated_case_files = dedupe(planned_test_case_files)
+    plan_path = project_dir / plan_file
+    if not plan_path.is_file():
+        raise RuntimeError(
+            f"`planner_save_plan` 返回成功，但测试计划 `{plan_file}` 未真实写入工作区。"
+        )
+    saved_plan_entries = extract_plan_case_targets_from_markdown(
+        plan_text=plan_path.read_text(encoding="utf-8"),
+        plan_file=plan_file,
+        project_dir=project_dir,
+    )
+    saved_case_files = dedupe(target_file for _, target_file in saved_plan_entries)
+    if saved_case_files != deduplicated_case_files:
+        raise RuntimeError(
+            f"测试计划 `{plan_file}` 的落盘内容与 `planner_save_plan` 输入不一致："
+            f"期望脚本 {deduplicated_case_files}，实际解析为 {saved_case_files}。"
+        )
+
     return ArtifactHistoryEntry(
         artifact_id=build_artifact_id("plan"),
         stage="plan",
@@ -149,7 +182,9 @@ def extract_plan_artifact_from_saved_markdown(
     )
     plan_path = project_dir / relative_plan_file
     if not plan_path.is_file():
-        raise RuntimeError(f"测试计划 `{relative_plan_file}` 不存在，无法构建 Plan 阶段产物。")
+        raise RuntimeError(
+            f"测试计划 `{relative_plan_file}` 不存在，无法构建 Plan 阶段产物。"
+        )
 
     plan_entries = extract_plan_case_targets_from_markdown(
         plan_text=plan_path.read_text(encoding="utf-8"),
@@ -157,7 +192,9 @@ def extract_plan_artifact_from_saved_markdown(
         project_dir=project_dir,
     )
     if not plan_entries:
-        raise RuntimeError(f"测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。")
+        raise RuntimeError(
+            f"测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。"
+        )
 
     items = [
         ArtifactItem(
@@ -198,10 +235,15 @@ def extract_generator_artifact_from_writes_and_snapshot(
     """根据写入工具输入和工作区差异构建 Generator 阶段产物。"""
 
     if not writes:
-        raise RuntimeError("Generator 阶段没有观测到 `generator_write_test` 写文件输入。")
+        raise RuntimeError(
+            "Generator 阶段没有观测到 `generator_write_test` 写文件输入。"
+        )
 
     diff = diff_workspace_manifest(before_manifest, after_manifest)
-    output_files = dedupe(write.get("fileName", "") for write in writes if write.get("fileName"))
+    changed_files = set(diff["added"]) | set(diff["modified"])
+    output_files = dedupe(
+        write.get("fileName", "") for write in writes if write.get("fileName")
+    )
     touched_files = dedupe([*output_files, *diff["touched"]])
     items: list[ArtifactItem] = []
     for write in writes:
@@ -216,8 +258,28 @@ def extract_generator_artifact_from_writes_and_snapshot(
             field_name="generator_write_test.fileName",
         )
         file_path = workspace_dir / output_file
-        code_text = file_path.read_text(encoding="utf-8") if file_path.is_file() else code
+        if not file_path.is_file():
+            raise RuntimeError(
+                f"`generator_write_test` 返回成功，但脚本 `{output_file}` 未真实写入工作区。"
+            )
+        if output_file not in changed_files:
+            raise RuntimeError(
+                f"Generator 脚本 `{output_file}` 本轮没有新增或修改，不能仅凭工具成功事件生成产物。"
+            )
+        code_text = file_path.read_text(encoding="utf-8")
+        if not code_text.strip():
+            raise RuntimeError(
+                f"Generator 落盘脚本 `{output_file}` 为空，不能作为成功产物。"
+            )
+        if code and code_text != code:
+            raise RuntimeError(
+                f"Generator 落盘脚本 `{output_file}` 与 `generator_write_test` 提交内容不一致。"
+            )
         titles = extract_test_titles_from_code(code_text)
+        if not titles:
+            raise RuntimeError(
+                f"Generator 落盘脚本 `{output_file}` 未识别到 Playwright `test` 用例。"
+            )
         source_plan = extract_spec_source_from_code(code_text)
         items.append(
             ArtifactItem(
@@ -256,6 +318,12 @@ def extract_healer_artifact_from_snapshot_and_runs(
 ) -> ArtifactHistoryEntry:
     """根据前后快照和校验运行结果构建 Healer 阶段产物。"""
 
+    successful_validation_runs = dedupe(validation_runs)
+    if not successful_validation_runs:
+        raise RuntimeError(
+            "Healer 阶段没有观测到成功完成的 `test_run`，不能生成成功产物。"
+        )
+
     diff = diff_workspace_manifest(before_manifest, after_manifest)
     touched_files = dedupe([*input_files, *diff["touched"]])
     output_files = dedupe([*diff["added"], *diff["modified"]])
@@ -287,7 +355,7 @@ def extract_healer_artifact_from_snapshot_and_runs(
         items=items,
         message=f"共处理 {len(input_files)} 个脚本，实际变更 {len(output_files)} 个文件。",
         test_scripts=dedupe(input_files),
-        validation_runs=dedupe(validation_runs),
+        validation_runs=successful_validation_runs,
     )
 
 
@@ -339,14 +407,18 @@ def extract_expected_generator_test_scripts_from_plan_files(
     for plan_file in plan_files:
         resolved_plan_file = plan_file.resolve()
         try:
-            relative_plan_file = resolved_plan_file.relative_to(resolved_project_dir).as_posix()
+            relative_plan_file = resolved_plan_file.relative_to(
+                resolved_project_dir
+            ).as_posix()
         except ValueError as exc:
             raise RuntimeError(
                 f"Generator 模式测试计划文件 `{resolved_plan_file}` 不在项目目录 `{resolved_project_dir}` 下，无法继续。"
             ) from exc
 
         if not resolved_plan_file.is_file():
-            raise RuntimeError(f"Generator 模式测试计划文件 `{relative_plan_file}` 不存在，无法继续。")
+            raise RuntimeError(
+                f"Generator 模式测试计划文件 `{relative_plan_file}` 不存在，无法继续。"
+            )
 
         plan_entries = extract_plan_case_targets_from_markdown(
             plan_text=resolved_plan_file.read_text(encoding="utf-8"),
@@ -354,20 +426,34 @@ def extract_expected_generator_test_scripts_from_plan_files(
             project_dir=project_dir,
         )
         if not plan_entries:
-            raise RuntimeError(f"Generator 模式测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。")
+            raise RuntimeError(
+                f"Generator 模式测试计划 `{relative_plan_file}` 未解析出任何 `**File:**` 目标脚本。"
+            )
 
         for case_name, planned_script in plan_entries:
             candidate_case_names = {case_name, Path(planned_script).stem}
-            if requested_case_set and candidate_case_names.isdisjoint(requested_case_set):
+            if requested_case_set and candidate_case_names.isdisjoint(
+                requested_case_set
+            ):
                 continue
             matched_requested_cases.update(candidate_case_names & requested_case_set)
-            expected_output_files.append(normalize_generator_output_file_from_plan_target(planned_script))
+            expected_output_files.append(
+                normalize_generator_output_file_from_plan_target(planned_script)
+            )
 
     if requested_case_set:
-        missing_requested_cases = [case_name for case_name in requested_test_cases if case_name not in matched_requested_cases]
+        missing_requested_cases = [
+            case_name
+            for case_name in requested_test_cases
+            if case_name not in matched_requested_cases
+        ]
         if missing_requested_cases:
-            missing_case_text = "、".join(f"`{case_name}`" for case_name in missing_requested_cases)
-            raise RuntimeError(f"Generator 模式在测试计划中未找到指定的 `test_cases`：{missing_case_text}。")
+            missing_case_text = "、".join(
+                f"`{case_name}`" for case_name in missing_requested_cases
+            )
+            raise RuntimeError(
+                f"Generator 模式在测试计划中未找到指定的 `test_cases`：{missing_case_text}。"
+            )
 
     deduplicated_output_files = dedupe(expected_output_files)
     if not deduplicated_output_files:

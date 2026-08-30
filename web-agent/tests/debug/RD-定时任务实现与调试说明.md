@@ -67,7 +67,10 @@ SCHEDULER_CONFIG_PATH 为空时：使用服务端 web-agent/scheduler_tasks.json
 ```json
 {
   "scheduler": {
-    "poll_interval_seconds": 30
+    "poll_interval_seconds": 30,
+    "task_timeout_seconds": 1800,
+    "max_pending_runs": 100,
+    "misfire_grace_seconds": 300
   },
   "projects": [
     {
@@ -93,6 +96,9 @@ SCHEDULER_CONFIG_PATH 为空时：使用服务端 web-agent/scheduler_tasks.json
 字段说明：
 
 - `scheduler.poll_interval_seconds`：轮询配置文件和检查到点任务的间隔，单位秒，最小值为 5。
+- `scheduler.task_timeout_seconds`：单次 Playwright 任务的最大执行时间，超时后会结束完整进程树。
+- `scheduler.max_pending_runs`：串行队列的最大待执行任务数；同一个任务积压时只保留最新一次。
+- `scheduler.misfire_grace_seconds`：轮询延迟时向前补偿检查 Cron 命中窗口的最长时间。
 - `projects[].project_name`：自动化项目名。未配置 `project_dir` 时，会解析为 `DEFAULT_AUTOMATION_PROJECT_ROOT/project_name`。
 - `projects[].project_dir`：自动化项目目录。相对路径会相对 `DEFAULT_AUTOMATION_PROJECT_ROOT` 解析；绝对路径按原样解析。
 - `projects[].test_root_dir`：测试根目录，默认是 `test_case`。调度日志会写到这个目录下。

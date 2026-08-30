@@ -15,6 +15,7 @@ from deep_agent.model.errors import ModelInvocationError, StructuredOutputError
 from deep_agent.model.messages import append_system_instruction, normalize_messages
 from deep_agent.model.reasoning import sanitize_reasoning_for_display
 from deep_agent.model.settings import ResolvedModelConnection
+from deep_agent.core.cancellation import is_langgraph_user_cancellation
 
 
 StructuredModel = TypeVar("StructuredModel", bound=BaseModel)
@@ -47,7 +48,9 @@ async def invoke_structured(
     schema_instruction = _build_schema_instruction(schema)
     request_messages = normalize_messages(messages, capabilities)
     if strategy in {"json_mode", "prompted_json"}:
-        request_messages = append_system_instruction(request_messages, schema_instruction, capabilities)
+        request_messages = append_system_instruction(
+            request_messages, schema_instruction, capabilities
+        )
 
     last_raw: Any = None
     last_error: Exception | None = None
@@ -64,9 +67,13 @@ async def invoke_structured(
                     include_raw=True,
                 )
                 response = await runnable.ainvoke(request_messages, config=config)
-                last_raw, parsed, parsing_error = _unpack_structured_response(response, schema)
+                last_raw, parsed, parsing_error = _unpack_structured_response(
+                    response, schema
+                )
                 if parsed is None:
-                    raise ValueError(parsing_error or "模型没有返回可解析的结构化结果。")
+                    raise ValueError(
+                        parsing_error or "模型没有返回可解析的结构化结果。"
+                    )
             return StructuredResult(
                 raw=last_raw,
                 parsed=parsed,
@@ -89,6 +96,8 @@ async def invoke_structured(
                 ),
             ]
         except Exception as exc:  # noqa: BLE001
+            if is_langgraph_user_cancellation(exc):
+                raise
             raise ModelInvocationError(
                 "模型请求失败，请检查模型通道、认证信息和接口参数。",
                 context=_model_context(connection, strategy),
@@ -99,7 +108,9 @@ async def invoke_structured(
         f"模型连续 {max_parse_attempts} 次未返回符合约定的结构化结果，请检查模型结构化输出能力或切换接入通道。",
         context={
             **_model_context(connection, strategy),
-            "parse_error": _safe_error_text(last_error) if last_error else "empty_result",
+            "parse_error": _safe_error_text(last_error)
+            if last_error
+            else "empty_result",
             "has_raw_response": last_raw is not None,
         },
         cause=last_error,
@@ -107,7 +118,9 @@ async def invoke_structured(
 
 
 def _build_schema_instruction(schema: type[BaseModel]) -> str:
-    schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+    schema_json = json.dumps(
+        schema.model_json_schema(), ensure_ascii=False, separators=(",", ":")
+    )
     return (
         "## JSON 输出契约\n"
         "你必须只返回一个可被标准 JSON 解析器读取的对象，不要添加解释或 Markdown。\n"
@@ -123,18 +136,26 @@ def _unpack_structured_response(
         raw = response.get("raw")
         parsed_value = response.get("parsed")
         parsing_error = response.get("parsing_error")
-        parsed = _validate_parsed_value(parsed_value, schema) if parsed_value is not None else None
+        parsed = (
+            _validate_parsed_value(parsed_value, schema)
+            if parsed_value is not None
+            else None
+        )
         return raw, parsed, _safe_error_text(parsing_error) if parsing_error else None
     return response, _validate_parsed_value(response, schema), None
 
 
-def _validate_parsed_value(value: Any, schema: type[StructuredModel]) -> StructuredModel:
+def _validate_parsed_value(
+    value: Any, schema: type[StructuredModel]
+) -> StructuredModel:
     if isinstance(value, schema):
         return value
     return schema.model_validate(value)
 
 
-def _parse_message_as_schema(message: Any, schema: type[StructuredModel]) -> StructuredModel:
+def _parse_message_as_schema(
+    message: Any, schema: type[StructuredModel]
+) -> StructuredModel:
     content = getattr(message, "content", message)
     if isinstance(content, list):
         content = "\n".join(
@@ -156,7 +177,9 @@ def _parse_message_as_schema(message: Any, schema: type[StructuredModel]) -> Str
         except (json.JSONDecodeError, ValidationError) as exc:
             validation_errors.append(exc)
     if validation_errors:
-        raise ValueError(_safe_error_text(validation_errors[-1])) from validation_errors[-1]
+        raise ValueError(
+            _safe_error_text(validation_errors[-1])
+        ) from validation_errors[-1]
     raise json.JSONDecodeError("响应中没有 JSON 对象", content, 0)
 
 

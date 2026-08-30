@@ -34,7 +34,11 @@ from deep_agent.core.display_message import (
     build_runtime_message_result,
     emit_display_message_delta,
 )
-from deep_agent.core.runtime_logging import log_debug_event, log_title, with_trace_context
+from deep_agent.core.runtime_logging import (
+    log_debug_event,
+    log_title,
+    with_trace_context,
+)
 
 
 class PlanRuntimeHelper:
@@ -64,30 +68,18 @@ class PlanRuntimeHelper:
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """使用事件流执行 Plan，并强制校验 `planner_save_plan`。
+        """消费 Plan 事件流，并强制校验 `planner_save_plan` 的真实落盘结果。
 
-        该方法只做三件事：
-        1. 调用内部 `_run_event_loop` 消费事件流并产出阶段结果；
-        2. 无论成功或失败，都在 `finally` 里关闭本轮 Playwright MCP 会话，
-           避免 Chromium 子进程驻留；
-        3. 把内部结果原样返回给外层 Agent。
+        Playwright MCP 会话由 `BaseSpecialistAgent.execute()` 在整个阶段结束时统一关闭，
+        因此准备上下文或最终汇总失败时也能覆盖到同一套清理逻辑。
         """
 
-        agent = self._agent
-        workspace_dir = execution_context.workspace_dir
-        try:
-            return await self._run_event_loop(
-                specialist_agent=specialist_agent,
-                state=state,
-                execution_context=execution_context,
-                config=config,
-            )
-        finally:
-            await agent._close_playwright_mcp_session(
-                workspace_dir=workspace_dir,
-                trace_context=execution_context.trace_context,
-                reason="plan_runtime_finalize",
-            )
+        return await self._run_event_loop(
+            specialist_agent=specialist_agent,
+            state=state,
+            execution_context=execution_context,
+            config=config,
+        )
 
     async def _run_event_loop(
         self,
@@ -97,7 +89,7 @@ class PlanRuntimeHelper:
         execution_context: SpecialistExecutionContext,
         config: RunnableConfig | None = None,
     ) -> WorkflowState:
-        """真正的事件流循环，主动关闭由外层 `run(...)` 在 finally 中兜底。"""
+        """消费事件流并生成 Plan 阶段结果；MCP 生命周期由 Base Agent 托管。"""
 
         agent = self._agent
         existing_messages = state.get("messages", [])
@@ -112,10 +104,12 @@ class PlanRuntimeHelper:
         successful_workspace_write_paths: set[str] = set()
         extracted_params = state.get("extracted_params", {})
         workspace_dir = execution_context.workspace_dir
-        project_name = agent._normalized_project_name(extracted_params.get("project_name")) or (
-            workspace_dir.name if workspace_dir is not None else "unknown-project"
+        project_name = agent._normalized_project_name(
+            extracted_params.get("project_name")
+        ) or (workspace_dir.name if workspace_dir is not None else "unknown-project")
+        input_plan_files = agent._normalized_test_plan_files(
+            extracted_params.get("test_plan_files")
         )
-        input_plan_files = agent._normalized_test_plan_files(extracted_params.get("test_plan_files"))
         before_manifest = await snapshot_workspace_manifest_async(workspace_dir)
 
         try:
@@ -137,26 +131,37 @@ class PlanRuntimeHelper:
                 )
                 # 监听 `planner_save_plan`：它是"写用例并真正落盘"的唯一硬完成信号，
                 # 不能只看模型自然语言里说自己已经完成。
-                if event.get("name") == "planner_save_plan" and event.get("event") == "on_tool_start":
+                if (
+                    event.get("name") == "planner_save_plan"
+                    and event.get("event") == "on_tool_start"
+                ):
                     payload = event.get("data", {}).get("input")
                     if isinstance(payload, dict):
                         planner_save_payload = payload
-                planner_save_succeeded, planner_save_error, stage_artifact = self._update_planner_save_state(
-                    planner_save_succeeded,
-                    planner_save_error,
-                    stage_artifact,
-                    planner_save_payload,
-                    workspace_dir,
-                    project_name,
-                    input_plan_files,
-                    event,
+                planner_save_succeeded, planner_save_error, stage_artifact = (
+                    self._update_planner_save_state(
+                        planner_save_succeeded,
+                        planner_save_error,
+                        stage_artifact,
+                        planner_save_payload,
+                        workspace_dir,
+                        project_name,
+                        input_plan_files,
+                        before_manifest,
+                        event,
+                    )
                 )
                 agent._collect_workspace_write_result(
                     event=event,
                     pending_write_paths=pending_workspace_write_paths,
                     successful_write_paths=successful_workspace_write_paths,
                 )
-                self._log_planner_save_state(event, planner_save_succeeded, planner_save_error, execution_context.trace_context)
+                self._log_planner_save_state(
+                    event,
+                    planner_save_succeeded,
+                    planner_save_error,
+                    execution_context.trace_context,
+                )
                 if planner_save_succeeded:
                     # 一旦确认测试计划已保存成功，就立刻结束本阶段，
                     # 避免后续无关输出覆盖"写用例已完成"的稳定结果。
@@ -187,7 +192,9 @@ class PlanRuntimeHelper:
                 if planner_save_succeeded or fallback_artifact is not None:
                     # 浏览器关闭后的预期异常不应打断"写用例成功"；
                     # 只要计划文件已经落盘，就把它当作正常收尾。
-                    agent.log_browser_close_expected(execution_context.trace_context, exc)
+                    agent.log_browser_close_expected(
+                        execution_context.trace_context, exc
+                    )
                     result = build_runtime_message_result(
                         collector=collector,
                         existing_messages=existing_messages,
@@ -196,7 +203,9 @@ class PlanRuntimeHelper:
                     result["artifact"] = fallback_artifact
                     return result
                 if fallback_error:
-                    exc = RuntimeError(f"{exc} 最近一次文件落盘校验失败：{fallback_error}")
+                    exc = RuntimeError(
+                        f"{exc} 最近一次文件落盘校验失败：{fallback_error}"
+                    )
             return agent._build_runtime_exception_result(
                 collector=collector,
                 existing_messages=existing_messages,
@@ -208,7 +217,9 @@ class PlanRuntimeHelper:
             self._settings,
             log_title("执行", "事件流"),
             "plan_final_output",
-            agent.log_event_trace_context(execution_context.trace_context, "plan_final_output"),
+            agent.log_event_trace_context(
+                execution_context.trace_context, "plan_final_output"
+            ),
             planner_save_succeeded=planner_save_succeeded,
             planner_save_error=planner_save_error,
             final_output=collector.final_output,
@@ -226,7 +237,11 @@ class PlanRuntimeHelper:
                         before_manifest=before_manifest,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
+                    error_suffix = (
+                        f" 最近一次错误：{planner_save_error}"
+                        if planner_save_error
+                        else ""
+                    )
                     return agent._build_runtime_exception_result(
                         collector=collector,
                         existing_messages=existing_messages,
@@ -236,11 +251,15 @@ class PlanRuntimeHelper:
                         ),
                     )
             else:
-                error_suffix = f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
+                error_suffix = (
+                    f" 最近一次错误：{planner_save_error}" if planner_save_error else ""
+                )
                 return agent._build_runtime_exception_result(
                     collector=collector,
                     existing_messages=existing_messages,
-                    exc=RuntimeError(f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"),
+                    exc=RuntimeError(
+                        f"Plan Agent 未成功调用 `planner_save_plan` 保存用例。{error_suffix}"
+                    ),
                 )
 
         result = build_runtime_message_result(
@@ -260,6 +279,7 @@ class PlanRuntimeHelper:
         workspace_dir: Path | None,
         project_name: str,
         input_plan_files: list[str],
+        before_manifest: dict[str, Any],
         event: dict[str, Any],
     ) -> tuple[bool, str | None, dict[str, Any] | None]:
         """根据工具事件更新 `planner_save_plan` 的成功状态。
@@ -274,7 +294,11 @@ class PlanRuntimeHelper:
 
         # 这里只关注 `planner_save_plan`，其他工具无论成功失败都不改变最终完成判定。
         if event.get("event") == "on_tool_error":
-            return False, agent.log_truncate(event.get("data", {}).get("error")), current_artifact
+            return (
+                False,
+                agent.log_truncate(event.get("data", {}).get("error")),
+                current_artifact,
+            )
 
         if event.get("event") != "on_tool_end":
             return planner_save_succeeded, planner_save_error, current_artifact
@@ -284,7 +308,11 @@ class PlanRuntimeHelper:
             return False, agent.log_truncate(output), current_artifact
 
         if planner_save_payload is None:
-            return False, "`planner_save_plan` 未捕获到输入 payload，无法提取计划产物。", current_artifact
+            return (
+                False,
+                "`planner_save_plan` 未捕获到输入 payload，无法提取计划产物。",
+                current_artifact,
+            )
         if workspace_dir is None:
             return False, "Plan 阶段缺少工作目录，无法验证保存产物。", current_artifact
 
@@ -295,6 +323,16 @@ class PlanRuntimeHelper:
                 project_name=project_name,
                 input_files=input_plan_files,
             )
+            plan_file = artifact["output_files"][0]
+            current_stat = (workspace_dir / plan_file).stat()
+            previous_stat = before_manifest.get(plan_file)
+            if previous_stat is not None and (
+                previous_stat.get("mtime_ns") == current_stat.st_mtime_ns
+                and previous_stat.get("size") == current_stat.st_size
+            ):
+                raise RuntimeError(
+                    f"测试计划 `{plan_file}` 本轮没有新增或修改，不能仅凭工具成功事件判定已保存。"
+                )
         except Exception as exc:  # noqa: BLE001
             return False, agent.log_truncate(str(exc)), current_artifact
 
@@ -309,7 +347,10 @@ class PlanRuntimeHelper:
     ) -> None:
         """记录 `planner_save_plan` 的成功/失败状态，方便按 session grep。"""
 
-        if event.get("name") != "planner_save_plan" or event.get("event") not in {"on_tool_end", "on_tool_error"}:
+        if event.get("name") != "planner_save_plan" or event.get("event") not in {
+            "on_tool_end",
+            "on_tool_error",
+        }:
             return
 
         status = "success" if planner_save_succeeded else "error"
@@ -345,7 +386,9 @@ class PlanRuntimeHelper:
             raise RuntimeError("节点结束时未识别到新建或更新的规范测试计划 Markdown。")
         if len(candidate_plan_files) > 1:
             candidate_text = "、".join(f"`{path}`" for path in candidate_plan_files)
-            raise RuntimeError(f"节点结束时识别到多个候选测试计划，无法唯一确定：{candidate_text}")
+            raise RuntimeError(
+                f"节点结束时识别到多个候选测试计划，无法唯一确定：{candidate_text}"
+            )
 
         return extract_plan_artifact_from_saved_markdown(
             plan_file=candidate_plan_files[0],
@@ -366,13 +409,19 @@ class PlanRuntimeHelper:
         candidate_files: list[str] = []
         seen: set[str] = set()
         for touched_path in touched_paths:
-            normalized_path = agent._normalize_workspace_relative_path(workspace_dir, touched_path)
+            normalized_path = agent._normalize_workspace_relative_path(
+                workspace_dir, touched_path
+            )
             if not normalized_path or normalized_path in seen:
                 continue
             path = Path(normalized_path)
             if len(path.parts) != 3 or path.parts[0] != "test_case":
                 continue
-            if not path.parts[1].startswith("aaaplanning_") or not path.name.startswith("aaa_") or path.suffix != ".md":
+            if (
+                not path.parts[1].startswith("aaaplanning_")
+                or not path.name.startswith("aaa_")
+                or path.suffix != ".md"
+            ):
                 continue
             if not (workspace_dir / normalized_path).is_file():
                 continue

@@ -44,6 +44,20 @@ describe("thread titles", () => {
     } as unknown as Thread<AgentState>;
     expect(threadTitle(thread)).toBe("登录测试");
   });
+
+  it("falls back to the first human message for legacy thread titles", () => {
+    const thread = {
+      metadata: {},
+      values: {
+        messages: [
+          { type: "ai", content: "先前回答" },
+          { type: "human", content: "  生成   旧会话测试  " },
+        ],
+      },
+    } as unknown as Thread<AgentState>;
+
+    expect(threadTitle(thread)).toBe("生成 旧会话测试");
+  });
 });
 
 describe("tool rendering data", () => {

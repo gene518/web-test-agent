@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 from deepagents import create_deep_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph_api.errors import UserInterrupt
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -65,6 +66,14 @@ class FakeLegacyStructuredModel:
         return IntentClassification(intent_type="general", reasoning="legacy")
 
 
+class CancellingStructuredModel:
+    def with_structured_output(self, schema, **kwargs):  # noqa: ANN001
+        return self
+
+    async def ainvoke(self, messages, config=None):  # noqa: ANN001
+        raise UserInterrupt()
+
+
 class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     def _chat_completion_response(self, content: str, *, model: str) -> httpx.Response:
         return httpx.Response(
@@ -81,7 +90,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
             },
         )
 
@@ -98,14 +111,18 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
 
         async def handler(request: httpx.Request) -> httpx.Response:
             requests.append(json.loads(request.content))
-            return self._chat_completion_response(response_content, model=connection.api_model_name)
+            return self._chat_completion_response(
+                response_content, model=connection.api_model_name
+            )
 
         async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         kwargs = settings.build_model_kwargs(role=role)
         kwargs.pop("model_provider", None)
         raw_model = ChatOpenAI(**kwargs, http_async_client=async_client)
         return (
-            adapt_chat_model(raw_model, connection=connection, capabilities=capabilities),
+            adapt_chat_model(
+                raw_model, connection=connection, capabilities=capabilities
+            ),
             requests,
             async_client,
         )
@@ -131,8 +148,13 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         )
         master = settings.resolve_model_connection("master")
         specialist = settings.resolve_model_connection("specialist")
-        self.assertEqual((master.family, master.channel, master.api_key), ("qwen", "dashscope_openai", "qwen-key"))
-        self.assertEqual((specialist.protocol, specialist.api_key), ("anthropic", "minimax-key"))
+        self.assertEqual(
+            (master.family, master.channel, master.api_key),
+            ("qwen", "dashscope_openai", "qwen-key"),
+        )
+        self.assertEqual(
+            (specialist.protocol, specialist.api_key), ("anthropic", "minimax-key")
+        )
 
     def test_nested_role_config_loads_from_environment(self) -> None:
         env = {
@@ -185,7 +207,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     def test_rejects_mismatched_family_and_channel(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "qwen", "channel": "minimax_anthropic", "model": "qwen3.5-plus"},
+            master_llm={
+                "family": "qwen",
+                "channel": "minimax_anthropic",
+                "model": "qwen3.5-plus",
+            },
         )
 
         with self.assertRaises(ModelConfigurationError):
@@ -201,7 +227,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "key",
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "thinking": "disabled",
-            }
+            },
         ).build_model_kwargs(role="master")
         minimax = AppSettings(
             _env_file=None,
@@ -211,7 +237,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "model": "MiniMax-M2.7",
                 "api_key": "key",
                 "base_url": "https://api.minimax.io/v1",
-            }
+            },
         ).build_model_kwargs(role="master")
         glm = AppSettings(
             _env_file=None,
@@ -223,7 +249,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "base_url": "https://open.bigmodel.cn/api/paas/v4/",
                 "thinking": "enabled",
                 "reasoning_effort": "max",
-            }
+            },
         ).build_model_kwargs(role="specialist")
         glm_dashscope = AppSettings(
             _env_file=None,
@@ -234,7 +260,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "key",
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "thinking": "enabled",
-            }
+            },
         ).build_model_kwargs(role="specialist")
         minimax_anthropic = AppSettings(
             _env_file=None,
@@ -244,7 +270,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "model": "MiniMax-M2.7",
                 "api_key": "key",
                 "base_url": "https://api.minimax.io/anthropic",
-            }
+            },
         ).build_model_kwargs(role="specialist")
 
         self.assertEqual(qwen["extra_body"], {"enable_thinking": False})
@@ -258,7 +284,9 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(glm["reasoning_effort"], "max")
         self.assertEqual(glm["disabled_params"], {"parallel_tool_calls": None})
         self.assertNotIn("enable_thinking", glm["extra_body"])
-        self.assertEqual(glm_dashscope["extra_body"], {"enable_thinking": True, "tool_stream": True})
+        self.assertEqual(
+            glm_dashscope["extra_body"], {"enable_thinking": True, "tool_stream": True}
+        )
         self.assertEqual(minimax_anthropic["model_provider"], "anthropic")
         self.assertEqual(minimax_anthropic["max_tokens"], 131_072)
         self.assertNotIn("extra_body", minimax_anthropic)
@@ -266,8 +294,16 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     def test_model_diagnostics_do_not_expose_api_keys(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "qwen", "model": "qwen3.5-plus", "api_key": "top-secret"},
-            specialist_llm={"family": "glm", "model": "glm-5.2", "api_key": "another-secret"},
+            master_llm={
+                "family": "qwen",
+                "model": "qwen3.5-plus",
+                "api_key": "top-secret",
+            },
+            specialist_llm={
+                "family": "glm",
+                "model": "glm-5.2",
+                "api_key": "another-secret",
+            },
         )
 
         serialized = json.dumps(collect_model_diagnostics(settings), ensure_ascii=False)
@@ -286,7 +322,10 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             llm_enable_thinking=False,
         )
         fake_model = FakeLegacyStructuredModel()
-        with patch("deep_agent.agent.master.master_agent.init_chat_model", return_value=fake_model) as init_model:
+        with patch(
+            "deep_agent.agent.master.master_agent.init_chat_model",
+            return_value=fake_model,
+        ) as init_model:
             master = MasterAgent(settings)
 
         classification, strategy, attempts = await master._invoke_intent_classification(  # noqa: SLF001
@@ -296,7 +335,9 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(master._model, fake_model)  # noqa: SLF001
         self.assertEqual(init_model.call_args.kwargs["model"], "openai:qwen3.5-plus")
-        self.assertEqual(init_model.call_args.kwargs["extra_body"], {"enable_thinking": False})
+        self.assertEqual(
+            init_model.call_args.kwargs["extra_body"], {"enable_thinking": False}
+        )
         self.assertEqual(fake_model.structured_kwargs["method"], "function_calling")
         self.assertNotIn("include_raw", fake_model.structured_kwargs)
         self.assertEqual(classification.intent_type, "general")
@@ -314,22 +355,39 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "channel": "minimax_openai",
                 "model": "MiniMax-M2.7",
                 "base_url": "https://api.minimax.io/v1",
-            }
+            },
         )
         glm_settings = AppSettings(
             _env_file=None,
             master_llm={"family": "glm", "model": "glm-5.2"},
         )
 
-        self.assertEqual(resolve_model_capabilities(qwen_settings.resolve_model_connection("master")).max_input_tokens, 1_000_000)
-        self.assertEqual(resolve_model_capabilities(minimax_settings.resolve_model_connection("master")).max_input_tokens, 204_800)
-        self.assertEqual(resolve_model_capabilities(glm_settings.resolve_model_connection("master")).max_input_tokens, 1_000_000)
+        self.assertEqual(
+            resolve_model_capabilities(
+                qwen_settings.resolve_model_connection("master")
+            ).max_input_tokens,
+            1_000_000,
+        )
+        self.assertEqual(
+            resolve_model_capabilities(
+                minimax_settings.resolve_model_connection("master")
+            ).max_input_tokens,
+            204_800,
+        )
+        self.assertEqual(
+            resolve_model_capabilities(
+                glm_settings.resolve_model_connection("master")
+            ).max_input_tokens,
+            1_000_000,
+        )
 
     def test_system_messages_are_merged_without_reordering_tool_history(self) -> None:
         capabilities = ModelCapabilities(structured_output_strategy="prompted_json")
         ai_message = AIMessage(
             content="<think>reasoning</think>",
-            tool_calls=[{"name": "lookup", "args": {}, "id": "call-1", "type": "tool_call"}],
+            tool_calls=[
+                {"name": "lookup", "args": {}, "id": "call-1", "type": "tool_call"}
+            ],
         )
         messages = [
             HumanMessage(content="start"),
@@ -342,7 +400,10 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
 
         normalized = normalize_messages(messages, capabilities)
 
-        self.assertEqual([type(message) for message in normalized], [SystemMessage, HumanMessage, AIMessage, ToolMessage, HumanMessage])
+        self.assertEqual(
+            [type(message) for message in normalized],
+            [SystemMessage, HumanMessage, AIMessage, ToolMessage, HumanMessage],
+        )
         self.assertEqual(normalized[0].content, "base\n\nruntime")
         self.assertIs(normalized[2], ai_message)
         self.assertEqual(normalized[2].content, "<think>reasoning</think>")
@@ -350,7 +411,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     def test_tool_binding_omits_minimax_unsupported_parameters(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "minimax", "channel": "minimax_openai", "model": "MiniMax-M2.7"},
+            master_llm={
+                "family": "minimax",
+                "channel": "minimax_openai",
+                "model": "MiniMax-M2.7",
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
@@ -386,7 +451,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     def test_generic_gateway_does_not_receive_parallel_tool_parameter(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "generic", "channel": "generic_openai", "model": "custom-model"},
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "custom-model",
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
@@ -400,21 +469,37 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(kwargs, {})
 
-    async def test_qwen_structured_output_uses_json_mode_and_single_system(self) -> None:
+    async def test_qwen_structured_output_uses_json_mode_and_single_system(
+        self,
+    ) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "qwen", "channel": "dashscope_openai", "model": "qwen3.5-plus"},
+            master_llm={
+                "family": "qwen",
+                "channel": "dashscope_openai",
+                "model": "qwen3.5-plus",
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
         model = FakeStructuredModel(
-            [{"raw": AIMessage(content='{"value":"ok"}'), "parsed": SimplePayload(value="ok"), "parsing_error": None}]
+            [
+                {
+                    "raw": AIMessage(content='{"value":"ok"}'),
+                    "parsed": SimplePayload(value="ok"),
+                    "parsing_error": None,
+                }
+            ]
         )
 
         result = await invoke_structured(
             model=model,
             schema=SimplePayload,
-            messages=[SystemMessage(content="base"), SystemMessage(content="runtime"), HumanMessage(content="go")],
+            messages=[
+                SystemMessage(content="base"),
+                SystemMessage(content="runtime"),
+                HumanMessage(content="go"),
+            ],
             capabilities=capabilities,
             connection=connection,
         )
@@ -423,17 +508,25 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.structured_calls[0]["method"], "json_mode")
         self.assertTrue(model.structured_calls[0]["include_raw"])
         sent_messages = model.inputs[0]
-        self.assertEqual(sum(isinstance(message, SystemMessage) for message in sent_messages), 1)
+        self.assertEqual(
+            sum(isinstance(message, SystemMessage) for message in sent_messages), 1
+        )
         self.assertIn("JSON", sent_messages[0].content)
 
     async def test_minimax_prompted_json_parses_after_think_content(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "minimax", "channel": "minimax_openai", "model": "MiniMax-M2.7"},
+            master_llm={
+                "family": "minimax",
+                "channel": "minimax_openai",
+                "model": "MiniMax-M2.7",
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
-        model = FakeStructuredModel([AIMessage(content='<think>{"value":"draft"}</think>\n{"value":"ok"}')])
+        model = FakeStructuredModel(
+            [AIMessage(content='<think>{"value":"draft"}</think>\n{"value":"ok"}')]
+        )
 
         result = await invoke_structured(
             model=model,
@@ -450,11 +543,19 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_empty_function_call_result_becomes_typed_error(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "generic", "channel": "generic_openai", "model": "custom-model"},
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "custom-model",
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
-        empty_response = {"raw": AIMessage(content=""), "parsed": None, "parsing_error": "no tool call"}
+        empty_response = {
+            "raw": AIMessage(content=""),
+            "parsed": None,
+            "parsing_error": "no tool call",
+        }
         model = FakeStructuredModel([empty_response, empty_response])
 
         with self.assertRaises(StructuredOutputError) as context:
@@ -470,6 +571,26 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(context.exception.context["has_raw_response"])
         self.assertEqual(len(model.structured_calls), 2)
 
+    async def test_structured_output_propagates_user_cancellation(self) -> None:
+        settings = AppSettings(
+            _env_file=None,
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "custom-model",
+            },
+        )
+        connection = settings.resolve_model_connection("master")
+
+        with self.assertRaises(UserInterrupt):
+            await invoke_structured(
+                model=CancellingStructuredModel(),
+                schema=SimplePayload,
+                messages=[HumanMessage(content="go")],
+                capabilities=resolve_model_capabilities(connection),
+                connection=connection,
+            )
+
     async def test_qwen_http_contract_merges_system_and_sends_json_mode(self) -> None:
         settings = AppSettings(
             _env_file=None,
@@ -480,7 +601,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "test-key",
                 "base_url": "https://mock.local/v1",
                 "thinking": "disabled",
-            }
+            },
         )
         connection = settings.resolve_model_connection("master")
         capabilities = resolve_model_capabilities(connection)
@@ -493,7 +614,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             result = await invoke_structured(
                 model=model,
                 schema=SimplePayload,
-                messages=[SystemMessage(content="base"), SystemMessage(content="runtime"), HumanMessage(content="go")],
+                messages=[
+                    SystemMessage(content="base"),
+                    SystemMessage(content="runtime"),
+                    HumanMessage(content="go"),
+                ],
                 capabilities=capabilities,
                 connection=connection,
             )
@@ -505,10 +630,14 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertFalse(payload["enable_thinking"])
         self.assertNotIn("tool_choice", payload)
-        self.assertEqual([message["role"] for message in payload["messages"]], ["system", "user"])
+        self.assertEqual(
+            [message["role"] for message in payload["messages"]], ["system", "user"]
+        )
         self.assertIn("JSON", payload["messages"][0]["content"])
 
-    async def test_minimax_http_contract_omits_unsupported_fields_and_replays_thinking(self) -> None:
+    async def test_minimax_http_contract_omits_unsupported_fields_and_replays_thinking(
+        self,
+    ) -> None:
         settings = AppSettings(
             _env_file=None,
             specialist_llm={
@@ -517,7 +646,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "model": "MiniMax-M2.7",
                 "api_key": "test-key",
                 "base_url": "https://mock.local/v1",
-            }
+            },
         )
         model, requests, client = self._build_http_model(
             settings,
@@ -532,7 +661,9 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "parameters": {"type": "object", "properties": {}},
             },
         }
-        bound = model.bind_tools([tool], tool_choice="required", parallel_tool_calls=True)
+        bound = model.bind_tools(
+            [tool], tool_choice="required", parallel_tool_calls=True
+        )
         thinking_content = "<think>reasoning that must be replayed</think>"
         try:
             await bound.ainvoke(
@@ -540,7 +671,14 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                     HumanMessage(content="first"),
                     AIMessage(
                         content=thinking_content,
-                        tool_calls=[{"name": "lookup", "args": {}, "id": "call-1", "type": "tool_call"}],
+                        tool_calls=[
+                            {
+                                "name": "lookup",
+                                "args": {},
+                                "id": "call-1",
+                                "type": "tool_call",
+                            }
+                        ],
                     ),
                     ToolMessage(content="result", tool_call_id="call-1"),
                     HumanMessage(content="continue"),
@@ -554,7 +692,9 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tool_choice", payload)
         self.assertNotIn("parallel_tool_calls", payload)
         self.assertNotIn("response_format", payload)
-        assistant_message = next(message for message in payload["messages"] if message["role"] == "assistant")
+        assistant_message = next(
+            message for message in payload["messages"] if message["role"] == "assistant"
+        )
         self.assertEqual(assistant_message["content"], thinking_content)
 
     async def test_glm_http_contract_limits_tool_choice_to_auto(self) -> None:
@@ -567,7 +707,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "test-key",
                 "base_url": "https://mock.local/v1",
                 "thinking": "enabled",
-            }
+            },
         )
         model, requests, client = self._build_http_model(
             settings,
@@ -583,9 +723,9 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             },
         }
         try:
-            await model.bind_tools([tool], tool_choice="required", parallel_tool_calls=True).ainvoke(
-                [HumanMessage(content="go")]
-            )
+            await model.bind_tools(
+                [tool], tool_choice="required", parallel_tool_calls=True
+            ).ainvoke([HumanMessage(content="go")])
         finally:
             await client.aclose()
 
@@ -605,14 +745,16 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "test-key",
                 "base_url": "https://mock.local/v1",
                 "thinking": "disabled",
-            }
+            },
         )
         model, requests, client = self._build_http_model(
             settings,
             role="specialist",
             response_content="specialist done",
         )
-        agent = create_deep_agent(model=model, tools=[], system_prompt="specialist system")
+        agent = create_deep_agent(
+            model=model, tools=[], system_prompt="specialist system"
+        )
         try:
             result = await agent.ainvoke({"messages": [HumanMessage(content="run")]})
         finally:
@@ -620,5 +762,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["messages"][-1].content, "specialist done")
         self.assertEqual(requests[0]["messages"][0]["role"], "system")
-        self.assertEqual(sum(message["role"] == "system" for message in requests[0]["messages"]), 1)
+        self.assertEqual(
+            sum(message["role"] == "system" for message in requests[0]["messages"]), 1
+        )
         self.assertFalse(requests[0]["parallel_tool_calls"])

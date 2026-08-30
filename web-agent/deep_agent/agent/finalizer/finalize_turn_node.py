@@ -1,10 +1,11 @@
 """主工作流的最终汇总节点。"""
 
-from __future__ import annotations
-
 from langchain_core.runnables import RunnableConfig
 
-from deep_agent.helpers.artifacts import build_final_turn_summary, clear_current_turn_buffers
+from deep_agent.helpers.artifacts import (
+    build_final_turn_summary,
+    clear_current_turn_buffers,
+)
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.display_message import (
     build_display_summary_message,
@@ -25,13 +26,17 @@ logger = get_logger(__name__)
 class FinalizeTurnNode:
     """将当前轮所有阶段摘要汇总成唯一用户可见回复。"""
 
-    async def execute(self, state: WorkflowState, config: RunnableConfig | None = None) -> WorkflowState:
+    async def execute(
+        self, state: WorkflowState, config: RunnableConfig | None = None
+    ) -> WorkflowState:
         """生成单条最终回复，并清理当前轮缓冲字段。"""
 
         logger.info(
             "%s event=node_enter trace=%s state=%s",
             log_title("执行", "节点入参", node_name="finalize_turn_node"),
-            build_trace_context(config, node_name="finalize_turn_node", event_name="node_enter"),
+            build_trace_context(
+                config, node_name="finalize_turn_node", event_name="node_enter"
+            ),
             format_state_for_log(state),
         )
 
@@ -58,7 +63,9 @@ class FinalizeTurnNode:
         logger.info(
             "%s event=node_exit trace=%s messages=%s",
             log_title("执行", "节点出参", node_name="finalize_turn_node"),
-            build_trace_context(config, node_name="finalize_turn_node", event_name="node_exit"),
+            build_trace_context(
+                config, node_name="finalize_turn_node", event_name="node_exit"
+            ),
             format_messages_for_log(result["messages"]),
         )
         return result

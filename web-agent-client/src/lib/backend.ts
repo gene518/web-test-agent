@@ -2,10 +2,40 @@ import { isTauri, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { Client } from "@langchain/langgraph-sdk";
+import { isValidBackendPort } from "./client-state";
 import type { BackendStatus, ClientConfig } from "./types";
 import { DEFAULT_BACKEND_PORT } from "./types";
 
 const CONFIG_KEY = "web-test-agent.client-config.v1";
+const INFO_PROBE_TIMEOUT_MS = 2_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export function isLangGraphInfo(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.langgraph_py_version === "string" &&
+    value.langgraph_py_version.trim().length > 0 &&
+    isRecord(value.flags)
+  );
+}
+
+async function fetchBackendInfo(port: number): Promise<{
+  response: Response;
+  info: unknown;
+}> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), INFO_PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${apiUrl(port)}/info`, { signal: controller.signal });
+    const info: unknown = response.ok ? await response.json().catch(() => null) : null;
+    return { response, info };
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
 
 export function apiUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
@@ -17,7 +47,7 @@ export function loadClientConfig(): ClientConfig {
     return {
       projectRoot: typeof stored.projectRoot === "string" ? stored.projectRoot : "",
       backendPort:
-        Number.isInteger(stored.backendPort) && Number(stored.backendPort) > 0
+        isValidBackendPort(stored.backendPort)
           ? Number(stored.backendPort)
           : DEFAULT_BACKEND_PORT,
     };
@@ -49,12 +79,28 @@ export async function getBackendStatus(config: ClientConfig): Promise<BackendSta
     });
   }
   try {
-    const response = await fetch(`${apiUrl(config.backendPort)}/info`);
+    const { response, info } = await fetchBackendInfo(config.backendPort);
+    if (!response.ok) {
+      return {
+        state: "error",
+        apiUrl: apiUrl(config.backendPort),
+        projectRoot: config.projectRoot,
+        message: `后端返回 HTTP ${response.status}`,
+      };
+    }
+    if (!isLangGraphInfo(info)) {
+      return {
+        state: "conflict",
+        apiUrl: apiUrl(config.backendPort),
+        projectRoot: config.projectRoot,
+        message: `端口 ${config.backendPort} 上的服务不是 LangGraph 后端。`,
+      };
+    }
     return {
-      state: response.ok ? "running" : "error",
+      state: "running",
       apiUrl: apiUrl(config.backendPort),
       projectRoot: config.projectRoot,
-      message: response.ok ? "浏览器预览模式" : `后端返回 HTTP ${response.status}`,
+      message: "浏览器预览模式",
     };
   } catch {
     return {
@@ -74,13 +120,24 @@ export async function restartBackend(config: ClientConfig): Promise<BackendStatu
   });
 }
 
-export async function stopBackend(port: number): Promise<void> {
-  if (isTauri()) await invoke("stop_backend", { port });
+export async function stopBackend(): Promise<void> {
+  if (isTauri()) await invoke("stop_backend");
 }
 
 export async function readBackendLog(projectRoot: string, tailLines = 200): Promise<string> {
   if (!isTauri()) return "浏览器预览模式不读取本地日志。";
   return invoke<string>("backend_log", { projectRoot, tailLines });
+}
+
+export async function revealPathInFileManager(
+  projectRoot: string,
+  baseDir: string | undefined,
+  path: string,
+): Promise<void> {
+  if (!isTauri()) {
+    throw new Error("浏览器预览模式无法打开本地路径，请在桌面客户端中使用此功能。");
+  }
+  await invoke("reveal_path_in_file_manager", { projectRoot, baseDir, path });
 }
 
 export async function chooseProjectRoot(defaultPath?: string): Promise<string | null> {

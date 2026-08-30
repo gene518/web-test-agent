@@ -47,6 +47,21 @@ class SchedulerRuntimeConfig(BaseModel):
         ge=5,
         description="调度器轮询配置文件并检查到点任务的时间间隔，单位为秒。",
     )
+    task_timeout_seconds: int = Field(
+        default=1800,
+        ge=1,
+        description="单次 Playwright 定时任务允许执行的最长时间，单位为秒。",
+    )
+    max_pending_runs: int = Field(
+        default=100,
+        ge=1,
+        description="串行执行器允许保留的最大待执行任务数，不包含当前活动任务。",
+    )
+    misfire_grace_seconds: int = Field(
+        default=300,
+        ge=0,
+        description="轮询延迟时向前补偿检查 Cron 执行窗口的最长时间，单位为秒。",
+    )
 
 
 class ScheduledTaskConfig(BaseModel):

@@ -8,17 +8,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from deep_agent.helpers.artifacts import build_stage_summary
-from deep_agent.agent.state import WorkflowState
 from deep_agent.core.display_message import (
     build_display_summary_message,
     build_runtime_message_result,
 )
 from deep_agent.core.runtime_logging import debug_max_chars
+
+if TYPE_CHECKING:
+    from deep_agent.agent.state import WorkflowState
 
 
 class SpecialistDisplayMixin:
@@ -75,18 +77,21 @@ class SpecialistDisplayMixin:
             if url:
                 lines.append(f"- 目标 URL：`{url}`")
         elif self.agent_type == "generator":
-            test_plan_files = self._display_string_list(extracted_params.get("test_plan_files"))
+            test_plan_files = self._display_string_list(
+                extracted_params.get("test_plan_files")
+            )
             if test_plan_files:
                 lines.append(
                     "- 测试计划输入："
                     + "、".join(f"`{path}`" for path in test_plan_files)
                 )
         elif self.agent_type == "healer":
-            test_scripts = self._display_string_list(extracted_params.get("test_scripts"))
+            test_scripts = self._display_string_list(
+                extracted_params.get("test_scripts")
+            )
             if test_scripts:
                 lines.append(
-                    "- 调试脚本输入："
-                    + "、".join(f"`{path}`" for path in test_scripts)
+                    "- 调试脚本输入：" + "、".join(f"`{path}`" for path in test_scripts)
                 )
 
         return build_display_summary_message(
@@ -94,7 +99,9 @@ class SpecialistDisplayMixin:
             prefix=f"{self.agent_type}-start",
         )
 
-    def _extract_new_messages(self, result: dict[str, Any], existing_message_count: int) -> list[Any]:
+    def _extract_new_messages(
+        self, result: dict[str, Any], existing_message_count: int
+    ) -> list[Any]:
         """从 Agent 输出中截取新增消息。"""
 
         all_messages = result.get("messages", [])
@@ -143,7 +150,9 @@ class SpecialistDisplayMixin:
             return status
         return "success"
 
-    def _extract_stage_artifact(self, raw_result: dict[str, Any]) -> dict[str, Any] | None:
+    def _extract_stage_artifact(
+        self, raw_result: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """从阶段原始结果中取出结构化产物。"""
 
         artifact = raw_result.get("artifact")
@@ -225,11 +234,13 @@ class SpecialistDisplayMixin:
             "status": stage_status,
             "artifact": artifact,
             "stage_summary": stage_summary,
-            "raw_messages": [self._message_to_text(message) for message in raw_result.get("messages", []) if isinstance(message, BaseMessage)],
+            "raw_messages": [
+                self._message_to_text(message)
+                for message in raw_result.get("messages", [])
+                if isinstance(message, BaseMessage)
+            ],
             "raw_result": {
-                key: value
-                for key, value in raw_result.items()
-                if key != "messages"
+                key: value for key, value in raw_result.items() if key != "messages"
             },
         }
 
@@ -239,8 +250,12 @@ class SpecialistDisplayMixin:
         lines: list[str] = []
         for key, value in raw_result.items():
             if key == "messages" and isinstance(value, list):
-                message_lines = [f"{message.__class__.__name__}: {self._message_to_text(message)}" for message in value if isinstance(message, BaseMessage)]
-                lines.append(f"messages:\n" + "\n".join(message_lines))
+                message_lines = [
+                    f"{message.__class__.__name__}: {self._message_to_text(message)}"
+                    for message in value
+                    if isinstance(message, BaseMessage)
+                ]
+                lines.append("messages:\n" + "\n".join(message_lines))
                 continue
             lines.append(f"{key}: {value}")
         text = "\n".join(lines)
