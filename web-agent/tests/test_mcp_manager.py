@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -682,6 +683,26 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
         run_npm.assert_called_once_with(
             PLAYWRIGHT_TEST_MCP_PROVIDER,
             ("npm", "install", "--save-dev", "@playwright/test@1.59.1"),
+            project_dir.resolve(),
+            settings=settings,
+        )
+
+    def test_playwright_provider_uses_supported_version_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = AppSettings(
+                _env_file=None,
+                default_automation_project_root=str(self.root_path / "projects"),
+            )
+        project_dir = self.root_path / "default-playwright-project"
+
+        with patch.object(
+            type(PLAYWRIGHT_TEST_MCP_PROVIDER), "_run_npm", autospec=True
+        ) as run_npm:
+            PLAYWRIGHT_TEST_MCP_PROVIDER.prepare_workspace(settings, str(project_dir))
+
+        run_npm.assert_called_once_with(
+            PLAYWRIGHT_TEST_MCP_PROVIDER,
+            ("npm", "install", "--save-dev", "@playwright/test@1.61.1"),
             project_dir.resolve(),
             settings=settings,
         )

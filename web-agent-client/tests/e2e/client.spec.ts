@@ -266,7 +266,7 @@ test("history titles fall back to messages and hydrate the selected conversation
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
 });
 
-test("stage summary paths are clickable and browser preview explains the limitation", async ({
+test("Healer validation targets are clickable and browser preview explains the limitation", async ({
   page,
 }) => {
   const threadId = "artifact-path-links";
@@ -274,12 +274,16 @@ test("stage summary paths are clickable and browser preview explains the limitat
     "access-control-allow-origin": "*",
     "content-type": "application/json",
   };
-  const summary = `**Plan 阶段**
+  const validationTarget = "test_case/login/a_login.validation.spec.ts";
+  const summary = `**Healer 阶段**
 - 状态：成功
 - 项目目录：\`/repo/web-agent/demo\`
-- 产物目录：\`test-results\`
-- 已保存测试计划：\`test_case/aaaplanning_login/aaa_login.md\`
-- 待生成脚本规划：\`test_case/aaaplanning_login/a_login.spec.ts\``;
+- 调试目标脚本：共 1 个，\`test_case/login/a_login.spec.ts\`
+- 实际变更文件：共 1 个，\`test_case/login/a_login.spec.ts\`
+- 验证运行目标：共 1 个，\`${validationTarget}\`
+- 脚本明细：共 1 条
+- 调试对象 1：\`test_case/login/a_login.spec.ts\`，覆盖标题 \`登录流程\`
+- 下一阶段建议输入：如需继续复测或追加修复，可继续提供 \`test_case/login/a_login.spec.ts\`。`;
 
   await page.route("http://127.0.0.1:2024/**", async (route) => {
     const request = route.request();
@@ -337,14 +341,13 @@ test("stage summary paths are clickable and browser preview explains the limitat
   await page.getByRole("button", { name: /产物链接验证/ }).click();
 
   const links = page.locator(".artifact-path-link");
-  await expect(links).toHaveCount(4);
-  await expect(
-    page.getByRole("button", {
-      name: "在文件管理器中打开 test_case/aaaplanning_login/aaa_login.md",
-    }),
-  ).toBeVisible();
+  await expect(links).toHaveCount(5);
+  const validationTargetLink = page.getByRole("button", {
+    name: `在文件管理器中打开 ${validationTarget}`,
+  });
+  await expect(validationTargetLink).toBeVisible();
 
-  await links.nth(1).click();
+  await validationTargetLink.click();
   await expect(page.getByRole("alert")).toContainText(
     "浏览器预览模式无法打开本地路径，请在桌面客户端中使用此功能。",
   );

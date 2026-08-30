@@ -69,7 +69,7 @@ cp web-agent/.env.example web-agent/.env
 | 运行时 | `SPECIALIST_RECURSION_LIMIT` | Specialist LangGraph 递归步数上限 |
 | Playwright | `PWTEST_HEADED` | MCP 浏览器是否有头运行 |
 | Playwright | `PLAYWRIGHT_BOOTSTRAP_WORKSPACE` | 是否自动补齐目标工程的 npm/Playwright 依赖 |
-| Playwright | `PLAYWRIGHT_TEST_PACKAGE` | 自动安装的 Playwright Test 规格，当前支持 `@playwright/test@1.58.0` |
+| Playwright | `PLAYWRIGHT_TEST_PACKAGE` | 自动安装的 Playwright Test 规格，当前支持 `@playwright/test@1.61.1` |
 | 目录 | `DEFAULT_AUTOMATION_PROJECT_ROOT` | 自动化工程根目录，默认 `~/webautotest` |
 | Scheduler | `SCHEDULER_CONFIG_PATH` | 调度 JSON 路径；留空时为 `web-agent/scheduler_tasks.json` |
 | Scheduler | `SCHEDULER_POLL_INTERVAL_SECONDS` | 服务默认轮询间隔，配置文件中的同名字段可覆盖 |

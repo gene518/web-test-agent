@@ -126,8 +126,8 @@ class BaseSpecialistAgent(
         """
 
         self._settings = settings
-        # 这里优先允许测试注入自定义 MCP 管理器；生产场景下则复用全局单例，
-        # 目的是避免每个 Specialist 都重复拉起一套 MCP 子进程。
+        # 这里优先允许测试注入自定义 MCP 管理器；生产场景复用全局管理器来统一
+        # 管理生命周期，但每次 Specialist 执行仍使用独立 session 和 MCP 子进程。
         self._mcp_manager = mcp_manager or get_mcp_tools_manager(settings)
         logger.info(
             "%s Agent 初始化完成 display_name=%s",
