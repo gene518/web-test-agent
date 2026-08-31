@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph_api.errors import UserInterrupt
 
 from deep_agent.agent.master.master_agent import MasterAgent
+from deep_agent.agent.master.models.intent import IntentClassification
 from deep_agent.core.config import AppSettings
 
 
@@ -29,15 +30,46 @@ def _master_with_model(model: object, *, max_turns: int = 1) -> MasterAgent:
 
 
 class MasterAgentResilienceTestCase(unittest.IsolatedAsyncioTestCase):
-    async def test_final_summary_propagates_user_cancellation(self) -> None:
-        master = _master_with_model(CapturingModel(UserInterrupt()))
+    async def test_classification_persists_generated_thread_title(self) -> None:
+        master = MasterAgent.__new__(MasterAgent)
+        master._settings = AppSettings(_env_file=None, max_conversation_turns=20)
+        classification = IntentClassification(
+            intent_type="general",
+            thread_title="修复多会话并发",
+        )
 
-        with self.assertRaises(UserInterrupt):
-            await master.summarize_final_response(
-                state={"messages": [HumanMessage(content="stop")]},
-                stage_name="Plan Agent",
-                raw_result={"status": "success"},
+        with patch.object(
+            master,
+            "_invoke_intent_classification",
+            new=AsyncMock(return_value=(classification, "json_schema", 1)),
+        ):
+            result = await master.classify_intent_and_params(
+                {"messages": [HumanMessage(content="修复多个会话互相阻塞的问题")]}
             )
+
+        self.assertEqual(result["thread_title"], "修复多会话并发")
+
+    async def test_classification_never_overwrites_existing_thread_title(self) -> None:
+        master = MasterAgent.__new__(MasterAgent)
+        master._settings = AppSettings(_env_file=None, max_conversation_turns=20)
+        classification = IntentClassification(
+            intent_type="general",
+            thread_title="模型生成的新标题",
+        )
+
+        with patch.object(
+            master,
+            "_invoke_intent_classification",
+            new=AsyncMock(return_value=(classification, "json_schema", 1)),
+        ):
+            result = await master.classify_intent_and_params(
+                {
+                    "messages": [HumanMessage(content="继续处理")],
+                    "thread_title": "已经确认的标题",
+                }
+            )
+
+        self.assertEqual(result["thread_title"], "已经确认的标题")
 
     async def test_conversation_summary_only_sends_unsummarized_messages(self) -> None:
         model = CapturingModel(AIMessage(content="updated summary"))

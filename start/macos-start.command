@@ -16,6 +16,9 @@ BACKEND_LOG_FILE="$START_DIR/backend.log"
 
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="${BACKEND_PORT:-2024}"
+REQUESTED_BACKEND_JOBS_PER_WORKER="${BACKEND_JOBS_PER_WORKER:-}"
+BACKEND_JOBS_PER_WORKER=4
+CLIENT_DEV_PORT=1420
 STARTUP_WAIT_SECONDS="${STARTUP_WAIT_SECONDS:-90}"
 NO_RELOAD="${NO_RELOAD:-1}"
 SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-}"
@@ -79,15 +82,14 @@ ensure_backend_env_file() {
   fail "未找到项目配置文件：${BACKEND_ENV_FILE}。请先参考 ${BACKEND_DIR}/.env.example 创建并填写它。"
 }
 
-warn_if_missing_config() {
+require_model_config() {
   local key="$1"
-  local hint="$2"
 
   if [ -n "${!key:-}" ]; then
     return
   fi
 
-  setup_log "提示：$BACKEND_ENV_FILE 中 $key 为空；$hint"
+  fail "$BACKEND_ENV_FILE 中 $key 不能为空。请分别为 Master 和 Specialist 填写 FAMILY、CHANNEL 和 MODEL。"
 }
 
 import_project_env_file() {
@@ -102,14 +104,18 @@ import_project_env_file() {
 
 load_backend_env_file() {
   import_project_env_file
-  warn_if_missing_config "MASTER_MODEL" "将使用项目默认值。"
-  warn_if_missing_config "SPECIALIST_MODEL" "将使用项目默认值。"
-
-  if [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${OPENAI_BASE_URL:-}" ]; then
-    setup_log "提示：$BACKEND_ENV_FILE 中 OPENAI_API_KEY 和 OPENAI_BASE_URL 都为空，请确认模型服务配置。"
-  elif [ -z "${OPENAI_API_KEY:-}" ]; then
-    setup_log "提示：$BACKEND_ENV_FILE 中 OPENAI_API_KEY 为空；如果你的模型服务需要 Key，请先补齐。"
+  if [ -n "$REQUESTED_BACKEND_JOBS_PER_WORKER" ]; then
+    BACKEND_JOBS_PER_WORKER="$REQUESTED_BACKEND_JOBS_PER_WORKER"
   fi
+  if [[ ! "$BACKEND_JOBS_PER_WORKER" =~ ^[1-9][0-9]*$ ]]; then
+    fail "BACKEND_JOBS_PER_WORKER 必须是正整数，当前值：$BACKEND_JOBS_PER_WORKER"
+  fi
+  require_model_config "MASTER_LLM__FAMILY"
+  require_model_config "MASTER_LLM__CHANNEL"
+  require_model_config "MASTER_LLM__MODEL"
+  require_model_config "SPECIALIST_LLM__FAMILY"
+  require_model_config "SPECIALIST_LLM__CHANNEL"
+  require_model_config "SPECIALIST_LLM__MODEL"
 }
 
 append_path_if_exists() {
@@ -369,6 +375,52 @@ kill_tree() {
   fi
 }
 
+is_client_vite_listener() {
+  local pid="$1"
+  local process_command
+
+  process_command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$process_command" in
+    *"$CLIENT_DIR"/node_modules/*/vite/bin/vite.js*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+stop_existing_client_vite_server() {
+  local pids pid
+
+  pids="$(listener_pids "$CLIENT_DEV_PORT")"
+  if [ -z "$pids" ]; then
+    return
+  fi
+
+  for pid in $pids; do
+    if ! is_client_vite_listener "$pid"; then
+      fail "客户端开发端口 ${CLIENT_DEV_PORT} 已被其他进程占用。请先停止该进程后重试。"
+    fi
+  done
+
+  setup_log "检测到本项目已有 Vite 开发服务，正在停止后重新启动桌面客户端。"
+  for pid in $pids; do
+    kill_tree TERM "$pid"
+  done
+  sleep 0.5
+
+  for pid in $pids; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill_tree KILL "$pid"
+    fi
+  done
+
+  if [ -n "$(listener_pids "$CLIENT_DEV_PORT")" ]; then
+    fail "客户端开发端口 ${CLIENT_DEV_PORT} 仍被占用，无法启动桌面客户端。"
+  fi
+}
+
 cleanup() {
   local has_process=0
 
@@ -581,7 +633,7 @@ start_backend() {
     # LangGraph dev 的 BlockingCallDetector 会把这类调用判为非法并中断连接。业务侧
     # 已经把自家同步 IO 包到 asyncio.to_thread，但第三方 MCP 客户端内部仍有同步
     # 预检，这里统一在 dev 入口放行 blocking，避免误杀。
-    langgraph_args=(dev --host "$BACKEND_HOST" --port "$BACKEND_PORT" --no-browser --allow-blocking)
+    langgraph_args=(dev --host "$BACKEND_HOST" --port "$BACKEND_PORT" --no-browser --allow-blocking --n-jobs-per-worker "$BACKEND_JOBS_PER_WORKER")
     if [ "$NO_RELOAD" = "1" ]; then
       langgraph_args+=(--no-reload)
     fi
@@ -681,6 +733,7 @@ start_client_main() {
   finish_step "同步桌面客户端依赖"
 
   start_step "启动桌面客户端"
+  stop_existing_client_vite_server
   setup_log "客户端将自动准备并管理 LangGraph 后端。"
   run_logged_command_in_dir "$CLIENT_DIR" pnpm tauri dev || fail "桌面客户端启动失败。"
 }

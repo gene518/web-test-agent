@@ -26,6 +26,27 @@ CaseStatus = Literal[
     "did_not_run",
     "unknown",
 ]
+FailureOwner = Literal[
+    "test_automation",
+    "product",
+    "environment",
+    "data",
+    "unknown",
+]
+HealingStatus = Literal[
+    "not_needed",
+    "not_eligible",
+    "attempted",
+    "succeeded",
+    "failed",
+]
+ConversationStatus = Literal[
+    "running",
+    "completed",
+    "cancelled",
+    "error",
+    "unavailable",
+]
 
 
 class ScheduledRunMetadata(BaseModel):
@@ -114,6 +135,41 @@ class ScheduledHistoryAnalysis(BaseModel):
     recurring_issue_categories: list[str] = Field(default_factory=list)
 
 
+class ScheduledFailureDiagnosis(BaseModel):
+    """模型对一个失败用例给出的结构化责任归属。"""
+
+    test_id: str
+    owner: FailureOwner = "unknown"
+    confidence: float = Field(default=0, ge=0, le=1)
+    repair_allowed: bool = False
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    recommended_action: str | None = None
+
+
+class ScheduledHealingReport(BaseModel):
+    """自动 Healer 的门禁、作用域和验证结果。"""
+
+    status: HealingStatus = "not_needed"
+    attempted: bool = False
+    eligible_test_ids: list[str] = Field(default_factory=list)
+    test_scripts: list[str] = Field(default_factory=list)
+    test_plan_files: list[str] = Field(default_factory=list)
+    modified_files: list[str] = Field(default_factory=list)
+    validation_status: Literal["not_run", "passed", "failed"] = "not_run"
+    reason: str | None = None
+
+
+class ScheduledConversationReport(BaseModel):
+    """本次运行对应的只读监控对话。"""
+
+    thread_id: str | None = None
+    graph_id: str = "web-autotest-scheduled-run"
+    readonly: bool = True
+    status: ConversationStatus = "unavailable"
+    error_message: str | None = None
+
+
 class ScheduledRunArtifacts(BaseModel):
     """本次执行和总结阶段产出的文件。"""
 
@@ -128,7 +184,8 @@ class ScheduledRunArtifacts(BaseModel):
 class ScheduledRunReport(BaseModel):
     """Scheduler 总结节点落盘的完整结构化报告。"""
 
-    schema_version: int = 1
+    # 保留普通 int 而不是 Literal[2]，这样 schema v1 历史报告仍可直接读取。
+    schema_version: int = 2
     generated_at: str
     run: ScheduledRunMetadata
     execution: ScheduledExecutionSummary
@@ -141,16 +198,27 @@ class ScheduledRunReport(BaseModel):
     conclusion: str
     analysis_mode: Literal["deterministic", "model_enriched"] = "deterministic"
     enriched_analysis: str | None = None
+    diagnoses: list[ScheduledFailureDiagnosis] = Field(default_factory=list)
+    healing: ScheduledHealingReport = Field(default_factory=ScheduledHealingReport)
+    conversation: ScheduledConversationReport = Field(
+        default_factory=ScheduledConversationReport
+    )
     artifacts: ScheduledRunArtifacts
 
 
 __all__ = [
     "CaseStatus",
+    "ConversationStatus",
     "DataQuality",
+    "FailureOwner",
+    "HealingStatus",
     "RunStatus",
     "ScheduledExecutionCounts",
     "ScheduledExecutionSummary",
     "ScheduledHistoryAnalysis",
+    "ScheduledFailureDiagnosis",
+    "ScheduledHealingReport",
+    "ScheduledConversationReport",
     "ScheduledIssueReport",
     "ScheduledRunArtifacts",
     "ScheduledRunMetadata",

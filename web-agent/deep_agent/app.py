@@ -11,6 +11,8 @@ from deep_agent.core.runtime_logging import (
     log_title,
 )
 from deep_agent.core.local_runtime_cleanup import cancel_stale_inmemory_runs_on_start
+from deep_agent.scheduled_run_workflow import build_scheduled_run_workflow
+from deep_agent.thread_title_workflow import build_thread_title_workflow
 from deep_agent.web_autotest_agent_workflow import build_web_autotest_agent_workflow
 
 # 先把 `.env` 按 UTF-8 注入进程环境，避免 Windows 默认代码页把中文注释读坏。
@@ -27,7 +29,9 @@ logger.info(
 )
 # 这里完成全局工作流图构建，命令行入口对外暴露的就是这个编译后的图对象。
 agent_graph = build_web_autotest_agent_workflow()
+title_graph = build_thread_title_workflow()
+scheduled_run_graph = build_scheduled_run_workflow()
 logger.info(
-    "%s LangGraph 图对象构建完成。",
+    "%s LangGraph 主图、标题图与定时执行图对象构建完成。",
     log_title("初始化", "应用启动"),
 )

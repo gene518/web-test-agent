@@ -1,6 +1,5 @@
 import type { Message, Run } from "@langchain/langgraph-sdk";
 import { ASSISTANT_ID, STREAM_MODES } from "./types";
-import { summarizeThreadTitle } from "./message-utils";
 
 type SubmitRequest = {
   values: Record<string, unknown>;
@@ -10,7 +9,7 @@ type SubmitRequest = {
 
 export function buildSubmitRequest(
   text: string,
-  options: { interrupted: boolean; newThread: boolean; id?: string },
+  options: { interrupted: boolean; existingThreadTitle?: string; id?: string },
 ): SubmitRequest {
   const message: Message = {
     id: options.id ?? crypto.randomUUID(),
@@ -37,15 +36,17 @@ export function buildSubmitRequest(
   }
 
   return {
-    values: { messages: [message] },
+    values: {
+      messages: [message],
+      ...(options.existingThreadTitle?.trim()
+        ? { thread_title: options.existingThreadTitle.trim() }
+        : {}),
+    },
     message,
     options: {
       ...shared,
       metadata: {
         graph_id: ASSISTANT_ID,
-        ...(options.newThread
-          ? { thread_title: summarizeThreadTitle(text) }
-          : {}),
       },
     },
   };

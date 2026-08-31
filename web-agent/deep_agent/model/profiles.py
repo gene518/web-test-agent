@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from deep_agent.model.capabilities import ModelCapabilities
 from deep_agent.model.settings import ResolvedModelConnection
 
 
 def resolve_model_capabilities(connection: ResolvedModelConnection) -> ModelCapabilities:
-    """返回指定连接的能力 Profile，并应用用户显式的 token 覆盖。"""
+    """返回指定连接的模型能力 Profile。"""
 
     family = connection.family
     channel = connection.channel
@@ -75,7 +73,7 @@ def resolve_model_capabilities(connection: ResolvedModelConnection) -> ModelCapa
             allowed_tool_choices=("auto", "none", "required", "function"),
         )
     else:
-        # 未识别网关维持旧的 Function Calling 行为，避免破坏已有部署。
+        # 通用网关采用最保守的 Function Calling 能力集合。
         capabilities = ModelCapabilities(
             structured_output_strategy="function_calling",
             supports_json_mode=False,
@@ -84,12 +82,7 @@ def resolve_model_capabilities(connection: ResolvedModelConnection) -> ModelCapa
             allowed_tool_choices=("auto", "none", "required", "function"),
         )
 
-    overrides: dict[str, int] = {}
-    if connection.context_window is not None:
-        overrides["max_input_tokens"] = connection.context_window
-    if connection.max_output_tokens is not None:
-        overrides["max_output_tokens"] = connection.max_output_tokens
-    return replace(capabilities, **overrides) if overrides else capabilities
+    return capabilities
 
 
 def _minimax_context_window(channel: str, model_name: str) -> int:

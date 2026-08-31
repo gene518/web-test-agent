@@ -1,4 +1,3 @@
-import type { Thread } from "@langchain/langgraph-sdk";
 import {
   Activity,
   MessageSquare,
@@ -8,8 +7,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { threadTitle } from "../lib/message-utils";
-import type { AgentState } from "../lib/types";
+import { threadTitle, type ThreadSummary } from "../lib/message-utils";
 
 function formatThreadTime(value?: string): string {
   if (!value) return "";
@@ -23,7 +21,7 @@ function formatThreadTime(value?: string): string {
 }
 
 type SidebarProps = {
-  threads: Thread<AgentState>[];
+  threads: ThreadSummary[];
   selectedThreadId: string | null;
   open: boolean;
   mobileOpen: boolean;

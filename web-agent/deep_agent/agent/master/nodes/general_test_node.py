@@ -12,7 +12,7 @@ logger = get_logger(__name__)
 
 
 class GeneralTestNode:
-    """对 general 请求给出测试专家回答，并包装成最终总结。"""
+    """对 general 请求直接给出测试专家回答，不经过 Specialist Finalizer。"""
 
     def __init__(self, master_agent: MasterAgent) -> None:
         """保存共享 Master 服务对象。"""
@@ -26,14 +26,8 @@ class GeneralTestNode:
             log_title("执行", "节点入参", node_name="general_test_node"), build_trace_context(config, node_name="general_test_node", event_name="node_enter"), format_state_for_log(state),)
 
         raw_answer = await self._master_agent.answer_general_request(state, config=config)
-        final_summary = await self._master_agent.summarize_final_response(
-            state=state,
-            stage_name="General Test Agent",
-            raw_result=raw_answer,
-            config=config,
-        )
         final_message = build_display_summary_message(
-            final_summary,
+            raw_answer,
             prefix="general-summary",
         )
         result: WorkflowState = {
@@ -46,7 +40,7 @@ class GeneralTestNode:
                 "agent_type": "general",
                 "raw_answer": raw_answer,
             },
-            "final_summary": final_summary,
+            "final_summary": raw_answer,
             "next_action": "end",
         }
         logger.info("%s event=node_exit trace=%s messages=%s",

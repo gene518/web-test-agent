@@ -56,7 +56,6 @@ def build_master_graph(master_agent: MasterAgent):
             "resolve_stage_files": "resolve_stage_files_node",
             "complete_params": "complete_params_node",
             "general": "general_test_node",
-            "finalize_turn": END,
             "end": END,
         },
     )
@@ -85,11 +84,12 @@ def _route_after_intent(state: WorkflowState, config: RunnableConfig | None = No
     """
 
     next_action = state.get("next_action", "end")
+    if next_action == "finalize_turn":
+        next_action = "end"
     if next_action not in {
         "resolve_stage_files",
         "complete_params",
         "general",
-        "finalize_turn",
         "end",
     }:
         next_action = "end"

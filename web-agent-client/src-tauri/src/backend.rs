@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::{
     fs,
+    path::Path,
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
@@ -16,12 +17,12 @@ mod process;
 use file_manager::reveal_path;
 use launch::{
     backend_log_path, build_launch_spec, configure_background_process, current_platform,
-    resolve_project_root,
+    resolve_project_root, Platform,
 };
 use logs::read_log_tail;
 use process::{
-    currently_owned_listeners, listener_pids, probe_port, terminate_pid, verified_listener_pids,
-    wait_until_available, PortProbe,
+    currently_owned_listeners, listener_pids, probe_port, project_backend_listener_pids,
+    terminate_pid, verified_listener_pids, wait_until_available, PortProbe,
 };
 
 const BACKEND_HOST: &str = "127.0.0.1";
@@ -116,6 +117,32 @@ fn stop_managed_child(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn stop_project_backend(root: &Path, port: u16, platform: Platform) -> Result<bool, String> {
+    let listener_pids = listener_pids(port, platform)?;
+    let project_listener_pids = project_backend_listener_pids(port, root, platform)?;
+    if project_listener_pids.is_empty() || project_listener_pids.len() != listener_pids.len() {
+        return Ok(false);
+    }
+
+    for pid in &project_listener_pids {
+        terminate_pid(*pid, platform, false);
+    }
+    if wait_until_available(port, Duration::from_secs(5)) {
+        return Ok(true);
+    }
+
+    for pid in project_backend_listener_pids(port, root, platform)? {
+        terminate_pid(pid, platform, true);
+    }
+    if wait_until_available(port, Duration::from_secs(5)) {
+        return Ok(true);
+    }
+
+    Err(format!(
+        "端口 {port} 上属于当前仓库的 LangGraph 后端未能停止，客户端不会启动重复服务。"
+    ))
+}
+
 fn status_impl(app: &AppHandle, project_root: &str, port: u16) -> BackendStatus {
     let platform = match current_platform() {
         Ok(platform) => platform,
@@ -165,10 +192,18 @@ fn status_impl(app: &AppHandle, project_root: &str, port: u16) -> BackendStatus 
             "running",
             Some("客户端管理的 LangGraph 后端已就绪。".to_string()),
         ),
-        PortProbe::LangGraph => (
-            "conflict",
-            Some("该端口已有其他 LangGraph 服务；客户端不会接管或终止它。".to_string()),
-        ),
+        PortProbe::LangGraph => match project_backend_listener_pids(port, &root, platform) {
+            Ok(pids) if !pids.is_empty() => (
+                "conflict",
+                Some(
+                    "端口已有当前仓库启动的 LangGraph 服务；可重新启动后由客户端管理。".to_string(),
+                ),
+            ),
+            _ => (
+                "conflict",
+                Some("该端口已有其他 LangGraph 服务；客户端不会接管或终止它。".to_string()),
+            ),
+        },
         PortProbe::Conflict(message) => ("conflict", Some(message)),
     };
     BackendStatus {
@@ -193,9 +228,11 @@ fn restart_impl(app: &AppHandle, project_root: &str, port: u16) -> Result<Backen
     match probe_port(port) {
         PortProbe::Available => {}
         PortProbe::LangGraph => {
-            return Err(format!(
-                "端口 {port} 已由其他 LangGraph 服务占用；客户端只会停止自己启动的后端。"
-            ))
+            if !stop_project_backend(&root, port, platform)? {
+                return Err(format!(
+                    "端口 {port} 已由其他 LangGraph 服务占用；客户端只会停止当前仓库或自己启动的后端。"
+                ));
+            }
         }
         PortProbe::Conflict(message) => return Err(message),
     }
@@ -363,7 +400,10 @@ mod tests {
     use super::*;
     use super::{
         launch::{start_script, validate_project_root_for, Platform},
-        process::{currently_owned_listener_pids, is_langgraph_info, is_process_in_tree},
+        process::{
+            currently_owned_listener_pids, is_langgraph_info, is_process_in_tree,
+            is_project_backend_command,
+        },
     };
     use std::{
         collections::HashMap,
@@ -445,6 +485,10 @@ mod tests {
         assert_eq!(spec.args[0..3], ["-m", "langgraph_cli", "dev"]);
         assert!(spec.args.windows(2).any(|args| args == ["--port", "3210"]));
         assert!(spec
+            .args
+            .windows(2)
+            .any(|args| args == ["--n-jobs-per-worker", "4"]));
+        assert!(spec
             .environment
             .iter()
             .any(|(key, value)| key == "PLAYWRIGHT_BROWSERS_PATH"
@@ -467,6 +511,23 @@ mod tests {
     #[test]
     fn non_langgraph_payload_is_protected() {
         assert!(!is_langgraph_info(r#"{"status":"ok","flags":{}}"#));
+    }
+
+    #[test]
+    fn recognizes_only_current_project_backend_commands() {
+        let root = Path::new("/workspace/web-test-agent");
+        assert!(is_project_backend_command(
+            "/workspace/web-test-agent/web-agent/.venv/bin/python /workspace/web-test-agent/web-agent/.venv/bin/langgraph dev",
+            root,
+        ));
+        assert!(!is_project_backend_command(
+            "/workspace/other-agent/web-agent/.venv/bin/python /workspace/other-agent/web-agent/.venv/bin/langgraph dev",
+            root,
+        ));
+        assert!(!is_project_backend_command(
+            "/workspace/web-test-agent/web-agent/.venv/bin/python -m http.server",
+            root,
+        ));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, field_validator
@@ -10,6 +11,11 @@ from deep_agent.helpers.artifacts import normalize_requested_pipeline
 
 IntentType = Literal["plan", "generator", "healer", "scheduler", "general", "unknown"]
 NULL_LIKE_TEXT_VALUES = frozenset({"null", "none", "nil", "undefined"})
+THREAD_TITLE_MAX_LENGTH = 32
+_THREAD_TITLE_MARKDOWN_PREFIX_RE = re.compile(r"^(?:#{1,6}\s*|[-+*]\s+)")
+_THREAD_TITLE_WHITESPACE_RE = re.compile(r"\s+")
+_THREAD_TITLE_DECORATION_CHARS = "`*_~#\"'“”‘’"
+_THREAD_TITLE_TRAILING_PUNCTUATION = ".。!?！？;；:：,，"
 SPECIALIST_STAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "plan": ("生成计划", "测试计划", "制定计划", "测试方案", "生成用例", "用例设计", "plan"),
     "generator": ("生成脚本", "写脚本", "写代码", "自动化脚本", "脚本生成", "按照计划生成", "generator"),
@@ -36,6 +42,10 @@ class IntentClassification(BaseModel):
         default="unknown",
         description="Master 识别出的任务类型，用于驱动后续 LangGraph 路由。",
     )
+    thread_title: str | None = Field(
+        default=None,
+        description="根据线程首个明确用户目标生成的简短标题；已有标题时调用方不会覆盖。",
+    )
     project_name: str | None = Field(default=None, description="自动化工程名字；Plan 阶段必填。")
     project_dir: str | None = Field(default=None, description="自动化项目目录或工程目录。")
     url: str | None = Field(
@@ -57,6 +67,13 @@ class IntentClassification(BaseModel):
     )
     missing_params: list[str] = Field(default_factory=list, description="模型推断出的缺失参数，仅用于调试。")
     reasoning: str = Field(default="", description="本次分类的理由说明。")
+
+    @field_validator("thread_title", mode="before")
+    @classmethod
+    def normalize_generated_thread_title(cls, value: Any) -> str | None:
+        """清理模型偶尔附带的 Markdown、引号和句末标点。"""
+
+        return normalize_thread_title(value)
 
     @field_validator("schedule_headed", "schedule_enabled", mode="before")
     @classmethod
@@ -129,6 +146,29 @@ def build_extracted_params(result: IntentClassification) -> dict[str, Any]:
     if schedule_locations:
         extracted["schedule_locations"] = schedule_locations
     return extracted
+
+
+def normalize_thread_title(value: Any) -> str | None:
+    """把模型或持久化 state 中的标题归一化为稳定的单行短文本。"""
+
+    if not isinstance(value, str):
+        return None
+    normalized_value = _THREAD_TITLE_WHITESPACE_RE.sub(" ", value).strip()
+    if normalized_value.lower() in NULL_LIKE_TEXT_VALUES:
+        return None
+
+    normalized_value = _THREAD_TITLE_MARKDOWN_PREFIX_RE.sub("", normalized_value)
+    normalized_value = normalized_value.strip(_THREAD_TITLE_DECORATION_CHARS + " ")
+    normalized_value = normalized_value.rstrip(_THREAD_TITLE_TRAILING_PUNCTUATION).strip()
+    normalized_value = normalized_value.strip(_THREAD_TITLE_DECORATION_CHARS + " ")
+    if not normalized_value or normalized_value.lower() in NULL_LIKE_TEXT_VALUES:
+        return None
+
+    normalized_value = normalized_value[:THREAD_TITLE_MAX_LENGTH]
+    normalized_value = normalized_value.rstrip(
+        _THREAD_TITLE_DECORATION_CHARS + _THREAD_TITLE_TRAILING_PUNCTUATION + " "
+    )
+    return normalized_value or None
 
 
 def compute_missing_params(result: IntentClassification) -> list[str]:

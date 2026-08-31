@@ -143,8 +143,12 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
     """提取可安全打印的配置摘要。"""
 
     return {
-        "master_model": getattr(settings, "master_model", None),
-        "specialist_model": getattr(settings, "specialist_model", None),
+        "master_llm": _summarize_model_connection_settings(
+            getattr(settings, "master_llm", None)
+        ),
+        "specialist_llm": _summarize_model_connection_settings(
+            getattr(settings, "specialist_llm", None)
+        ),
         "default_automation_project_root": str(
             getattr(settings, "resolved_default_automation_project_root", getattr(settings, "default_automation_project_root", None))
         ),
@@ -153,7 +157,6 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         ),
         "scheduler_poll_interval_seconds": getattr(settings, "scheduler_poll_interval_seconds", None),
         "llm_timeout_seconds": getattr(settings, "llm_timeout_seconds", None),
-        "llm_enable_thinking": getattr(settings, "llm_enable_thinking", None),
         "stream_chunk_timeout_seconds": getattr(settings, "resolved_stream_chunk_timeout_seconds", None),
         "specialist_recursion_limit": getattr(settings, "specialist_recursion_limit", None),
         "max_conversation_turns": getattr(settings, "max_conversation_turns", None),
@@ -167,8 +170,19 @@ def summarize_settings(settings: Any) -> dict[str, Any]:
         "agent_debug_trace": getattr(settings, "agent_debug_trace", None),
         "agent_debug_full_messages": getattr(settings, "agent_debug_full_messages", None),
         "agent_debug_max_chars": getattr(settings, "agent_debug_max_chars", None),
-        "has_openai_api_key": bool(getattr(settings, "openai_api_key", None)),
-        "has_openai_base_url": bool(getattr(settings, "openai_base_url", None)),
+    }
+
+
+def _summarize_model_connection_settings(connection: Any) -> dict[str, Any]:
+    """提取单个角色的模型配置摘要，不记录凭证和完整地址。"""
+
+    return {
+        "family": getattr(connection, "family", None),
+        "channel": getattr(connection, "channel", None),
+        "model": getattr(connection, "model", None),
+        "thinking": getattr(connection, "thinking", None),
+        "has_api_key": bool(getattr(connection, "api_key", None)),
+        "has_base_url": bool(getattr(connection, "base_url", None)),
     }
 
 

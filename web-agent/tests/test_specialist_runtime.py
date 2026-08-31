@@ -18,11 +18,27 @@ from deep_agent.agent.generator import GENERATOR_RUNTIME_CONFIG, GeneratorAgent
 from deep_agent.agent.healer import HEALER_RUNTIME_CONFIG, HealerAgent
 from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.plan import PLAN_RUNTIME_CONFIG, PlanAgent
+from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.helpers.specialist_helpers import (
     SpecialistExecutionContext,
     SpecialistRuntimeConfig,
 )
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
+
+
+def _canonical_stage_summary(
+    result: dict, *, include_follow_up: bool = True
+) -> str:
+    """按 FinalizeStageNode 的规范兜底格式检查 Specialist 原始结果。"""
+
+    stage_result = result["stage_result"]
+    return build_stage_summary(
+        stage=stage_result["agent_type"],
+        status=stage_result["status"],
+        artifact=stage_result.get("artifact"),
+        fallback_message=stage_result.get("fallback_message"),
+        include_follow_up=include_follow_up,
+    )["text"]
 
 
 class DummyTool(BaseTool):
@@ -201,10 +217,16 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _build_settings(self) -> AppSettings:
+    def _build_settings(self, **overrides: object) -> AppSettings:
         return AppSettings(
             _env_file=None,
             default_automation_project_root=str(self.root_path / "projects"),
+            specialist_llm={
+                "family": "openai",
+                "channel": "openai",
+                "model": "gpt-5.4",
+            },
+            **overrides,
         )
 
     def _create_template_dir(self) -> Path:
@@ -222,22 +244,34 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     def test_openai_compatible_base_url_disables_responses_api(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            openai_api_key="test-key",
-            openai_base_url=" https://open.bigmodel.cn/api/paas/v4/ ",
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "custom-model",
+                "api_key": "test-key",
+                "base_url": " https://gateway.example.test/v1/ ",
+                "thinking": "disabled",
+            },
         )
 
-        kwargs = settings.build_model_kwargs("openai:gpt-5.4")
+        kwargs = settings.build_model_kwargs(role="master")
 
-        self.assertEqual(kwargs["base_url"], "https://open.bigmodel.cn/api/paas/v4/")
+        self.assertEqual(kwargs["model"], "custom-model")
+        self.assertEqual(kwargs["base_url"], "https://gateway.example.test/v1/")
         self.assertFalse(kwargs["use_responses_api"])
-        self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
+        self.assertNotIn("extra_body", kwargs)
 
     def test_specialist_agent_uses_configured_model_instance(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            specialist_model="openai:gpt-5.4",
-            openai_api_key="test-key",
-            openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
+            specialist_llm={
+                "family": "qwen",
+                "channel": "dashscope_openai",
+                "model": "qwen3.5-plus",
+                "api_key": "test-key",
+                "base_url": "https://mock.local/v1",
+                "thinking": "disabled",
+            },
         )
         agent = PlanAgent(settings, mcp_manager=FakeMCPManager([]))
         context = SpecialistExecutionContext(
@@ -261,7 +295,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             result = agent._create_specialist_agent(context)
 
         self.assertIs(result, fake_deep_agent)
-        self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model"], "qwen3.5-plus")
+        self.assertEqual(init_model_mock.call_args.kwargs["model_provider"], "openai")
         self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
         self.assertEqual(
             init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False}
@@ -270,12 +305,17 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(create_agent_mock.call_args.kwargs["backend"])
         self.assertIsNone(create_agent_mock.call_args.kwargs["permissions"])
 
-    def test_master_agent_uses_same_thinking_switch_as_specialist(self) -> None:
+    def test_master_agent_uses_configured_role_model(self) -> None:
         settings = AppSettings(
             _env_file=None,
-            master_model="openai:gpt-5.4",
-            openai_api_key="test-key",
-            openai_base_url="https://open.bigmodel.cn/api/paas/v4/",
+            master_llm={
+                "family": "qwen",
+                "channel": "dashscope_openai",
+                "model": "qwen3.5-plus",
+                "api_key": "test-key",
+                "base_url": "https://mock.local/v1",
+                "thinking": "disabled",
+            },
         )
         fake_model = object()
 
@@ -286,7 +326,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             agent = MasterAgent(settings)
 
         self.assertIs(agent._model, fake_model)
-        self.assertEqual(init_model_mock.call_args.kwargs["model"], "openai:gpt-5.4")
+        self.assertEqual(init_model_mock.call_args.kwargs["model"], "qwen3.5-plus")
+        self.assertEqual(init_model_mock.call_args.kwargs["model_provider"], "openai")
         self.assertFalse(init_model_mock.call_args.kwargs["use_responses_api"])
         self.assertEqual(
             init_model_mock.call_args.kwargs["extra_body"], {"enable_thinking": False}
@@ -296,10 +337,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         agent = DefaultRuntimeAgent(
-            AppSettings(
-                default_automation_project_root=str(self.root_path / "projects"),
-                specialist_recursion_limit=123,
-            ),
+            self._build_settings(specialist_recursion_limit=123),
             mcp_manager=FakeMCPManager([]),
         )
         fake_agent = FakeInvokeAgent(
@@ -547,8 +585,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
         manager = FakeMCPManager(self._build_plan_tools())
         template_dir = self._create_template_dir()
-        settings = AppSettings(
-            default_automation_project_root=str(self.root_path / "projects"),
+        settings = self._build_settings(
             agent_debug_trace=True,
             agent_debug_full_messages=True,
             agent_debug_max_chars=12000,
@@ -585,9 +622,7 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         manager = FakeMCPManager(self._build_generator_tools())
         template_dir = self._create_template_dir()
-        settings = AppSettings(
-            default_automation_project_root=str(self.root_path / "projects")
-        )
+        settings = self._build_settings()
         agent = TemplateBackedGeneratorAgent(
             settings, template_dir, mcp_manager=manager
         )
@@ -789,6 +824,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(marker["late_event_reached"])
         self.assertEqual(result["messages"], [])
         self.assertEqual(result["stage_result"]["status"], "success")
+        self.assertNotIn(
+            "可选后续操作",
+            _canonical_stage_summary(result, include_follow_up=False),
+        )
         self.assertEqual(
             result["latest_artifacts"]["plan"]["output_files"],
             ["test_case/aaaplanning_demo/aaa_demo.md"],
@@ -1136,15 +1175,14 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
         self.assertEqual(result["display_messages"][0].content, "existing")
         self.assertIn("Generator 阶段开始", result["display_messages"][1].content)
         self.assertIn(
             "正在调用工具 `generator_write_test`", result["display_messages"][2].content
         )
         self.assertEqual(result["display_messages"][3].content, "generator-finished")
-        self.assertIn("Generator 阶段", result["display_messages"][-1].content)
-        self.assertIn("a_case.spec.ts", result["messages"][0].content)
+        self.assertIn("a_case.spec.ts", _canonical_stage_summary(result))
         self.assertEqual(
             fake_deep_agent.inputs[0][0]["messages"][0].content, "existing"
         )
@@ -1154,38 +1192,33 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         agent = PlanAgent(
-            AppSettings(
-                default_automation_project_root=str(self.root_path / "projects"),
-            ),
+            self._build_settings(),
             mcp_manager=FakeMCPManager([]),
         )
 
-        result = await agent._build_final_summary_result(
+        result = await agent._build_stage_result_delta(
             state={"messages": [AIMessage(content="existing", id="msg-existing")]},
             raw_result={
                 "messages": [AIMessage(content="runtime-finished", id="msg-runtime")]
             },
         )
 
-        self.assertEqual(len(result["messages"]), 1)
-        self.assertIn("Plan 阶段", result["messages"][0].content)
+        self.assertEqual(result["messages"], [])
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
         self.assertEqual(
-            [message.content for message in result["display_messages"][:-1]],
+            [message.content for message in result["display_messages"]],
             ["existing", "runtime-finished"],
         )
-        self.assertIn("Plan 阶段", result["display_messages"][-1].content)
 
     async def test_base_specialist_result_accepts_message_like_human_messages_for_display_timeline(
         self,
     ) -> None:
         agent = PlanAgent(
-            AppSettings(
-                default_automation_project_root=str(self.root_path / "projects"),
-            ),
+            self._build_settings(),
             mcp_manager=FakeMCPManager([]),
         )
 
-        result = await agent._build_final_summary_result(
+        result = await agent._build_stage_result_delta(
             state={
                 "messages": [{"type": "human", "content": "用户原话", "id": "human-1"}],
                 "requested_pipeline": ["plan"],
@@ -1196,15 +1229,13 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        # 单阶段（`requested_pipeline=["plan"]`）回流后不再走 `finalize_turn_node`，
-        # Specialist 自己把 stage_summary 作为用户可见消息发出，因此 messages 非空。
-        self.assertEqual(len(result["messages"]), 1)
-        self.assertIn("Plan 阶段", result["messages"][0].content)
+        # Specialist 只保留运行时轨迹；独立 FinalizeStageNode 才输出总结消息。
+        self.assertEqual(result["messages"], [])
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
         self.assertEqual(
-            [message.content for message in result["display_messages"][:-1]],
+            [message.content for message in result["display_messages"]],
             ["用户原话", "runtime-finished"],
         )
-        self.assertIn("Plan 阶段", result["display_messages"][-1].content)
 
     async def test_generator_execute_preserves_streamed_messages_without_root_chain_output(
         self,
@@ -1305,10 +1336,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        # 单阶段（`requested_pipeline=["generator"]`）回流后不再走 `finalize_turn_node`；
-        # Specialist 把 stage_summary 作为用户可见消息发出，避免 UI 出现两条重复总结。
-        self.assertEqual(len(result["messages"]), 1)
-        self.assertIn("Generator 阶段", result["messages"][0].content)
+        # Specialist 只产出原始结果，总结由后继 FinalizeStageNode 输出。
+        self.assertEqual(result["messages"], [])
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
         self.assertEqual(result["display_messages"][0].id, "human-generator")
         self.assertIn("Generator 阶段开始", result["display_messages"][1].content)
         self.assertIn(
@@ -1318,7 +1348,6 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["display_messages"][3].name, "generator_write_test")
         self.assertEqual(result["display_messages"][4].id, "generator-ai-final")
         self.assertEqual(result["display_messages"][4].content, "脚本已生成。")
-        self.assertIn("Generator 阶段", result["display_messages"][-1].content)
 
     async def test_generator_execute_accepts_write_file_when_expected_script_exists_by_node_end(
         self,
@@ -1386,8 +1415,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertNotIn("状态：exception", _canonical_stage_summary(result))
         self.assertEqual(
             result["latest_artifacts"]["generator"]["output_files"],
             [relative_script_path],
@@ -1441,8 +1470,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("缺失脚本", result["messages"][0].content)
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
+        self.assertIn("缺失脚本", _canonical_stage_summary(result))
         self.assertNotIn("generator", result.get("latest_artifacts", {}))
 
     async def test_generator_execute_fails_when_only_subset_of_expected_scripts_are_written(
@@ -1508,9 +1537,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("test_case/demo/b_case.spec.ts", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
+        self.assertIn("test_case/demo/b_case.spec.ts", _canonical_stage_summary(result))
         self.assertTrue((project_dir / relative_plan_path).is_file())
         self.assertFalse((project_dir / "test_case" / "demo" / "aaa_demo.md").exists())
 
@@ -1582,10 +1611,10 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertIn("a_case.spec.ts", result["messages"][0].content)
-        self.assertIn("b_case.spec.ts", result["messages"][0].content)
-        self.assertIn("下一阶段建议输入", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertIn("a_case.spec.ts", _canonical_stage_summary(result))
+        self.assertIn("b_case.spec.ts", _canonical_stage_summary(result))
+        self.assertIn("可选后续操作", _canonical_stage_summary(result))
         self.assertEqual(
             result["latest_artifacts"]["generator"]["output_files"],
             ["test_case/demo/a_case.spec.ts", "test_case/demo/b_case.spec.ts"],
@@ -1665,8 +1694,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertNotIn("状态：exception", _canonical_stage_summary(result))
         self.assertEqual(
             result["latest_artifacts"]["generator"]["output_files"],
             ["test_case/demo/b_case.spec.ts"],
@@ -1730,8 +1759,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertIn("a_case.spec.ts", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertIn("a_case.spec.ts", _canonical_stage_summary(result))
 
     async def test_generator_execute_treats_incomplete_chunked_read_after_write_as_success(
         self,
@@ -1792,8 +1821,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Generator 阶段", result["messages"][0].content)
-        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertIn("Generator 阶段", _canonical_stage_summary(result))
+        self.assertNotIn("状态：exception", _canonical_stage_summary(result))
         self.assertEqual(
             result["latest_artifacts"]["generator"]["output_files"],
             ["test_case/demo/a_case.spec.ts"],
@@ -1911,9 +1940,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Healer 阶段", result["messages"][0].content)
-        self.assertIn(relative_script_path, result["messages"][0].content)
-        self.assertIn("下一阶段建议输入", result["messages"][0].content)
+        self.assertIn("Healer 阶段", _canonical_stage_summary(result))
+        self.assertIn(relative_script_path, _canonical_stage_summary(result))
+        self.assertIn("可选后续操作", _canonical_stage_summary(result))
         self.assertEqual(
             fake_deep_agent.inputs[0][0]["messages"][0].content, "existing"
         )
@@ -2006,8 +2035,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                         }
                     )
 
-                self.assertIn("状态：exception", result["messages"][0].content)
-                self.assertIn(expected_error, result["messages"][0].content)
+                self.assertIn("状态：exception", _canonical_stage_summary(result))
+                self.assertIn(expected_error, _canonical_stage_summary(result))
                 self.assertNotIn("healer", result.get("latest_artifacts", {}))
 
     async def test_healer_normalizes_absolute_test_run_location(self) -> None:
@@ -2190,8 +2219,8 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["stage_result"]["status"], "exception")
-        self.assertIn("未覆盖全部待调试脚本", result["messages"][0].content)
-        self.assertIn(first_script, result["messages"][0].content)
+        self.assertIn("未覆盖全部待调试脚本", _canonical_stage_summary(result))
+        self.assertIn(first_script, _canonical_stage_summary(result))
         self.assertNotIn("healer", result.get("latest_artifacts", {}))
 
     async def test_healer_pairs_legacy_test_runs_in_fifo_order(self) -> None:
@@ -2322,9 +2351,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("Healer 阶段", result["messages"][0].content)
-        self.assertIn(relative_script_path, result["messages"][0].content)
-        self.assertIn("下一阶段建议输入", result["messages"][0].content)
+        self.assertIn("Healer 阶段", _canonical_stage_summary(result))
+        self.assertIn(relative_script_path, _canonical_stage_summary(result))
+        self.assertIn("可选后续操作", _canonical_stage_summary(result))
 
     async def test_healer_execute_preserves_streamed_messages_without_root_chain_output(
         self,
@@ -2417,10 +2446,9 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        # 单阶段（`requested_pipeline=["healer"]`）回流后不再走 `finalize_turn_node`；
-        # Healer 自己把 stage_summary 作为用户可见消息发出，避免 UI 出现两条重复总结。
-        self.assertEqual(len(result["messages"]), 1)
-        self.assertIn("Healer 阶段", result["messages"][0].content)
+        # Healer 原始执行与阶段总结分离，避免同一阶段被重复 finalization。
+        self.assertEqual(result["messages"], [])
+        self.assertIn("Healer 阶段", _canonical_stage_summary(result))
         self.assertEqual(result["display_messages"][0].id, "human-healer")
         self.assertIn("Healer 阶段开始", result["display_messages"][1].content)
         self.assertIn("正在调用工具 `test_run`", result["display_messages"][2].content)
@@ -2428,7 +2456,6 @@ class SpecialistRuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["display_messages"][3].name, "test_run")
         self.assertEqual(result["display_messages"][4].id, "healer-ai-final")
         self.assertEqual(result["display_messages"][4].content, "已修复并验证。")
-        self.assertIn("Healer 阶段", result["display_messages"][-1].content)
 
     async def test_generator_execute_emits_stage_start_display_message(self) -> None:
         project_dir = self.root_path / "generator-stage-start"

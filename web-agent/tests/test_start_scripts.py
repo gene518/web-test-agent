@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import unittest
 from pathlib import Path
@@ -53,6 +54,9 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertIn("web-agent-client", macos_script)
         self.assertIn("deep_agent/assets/demo", macos_script)
         self.assertIn("pnpm tauri dev", macos_script)
+        self.assertIn("stop_existing_client_vite_server", macos_script)
+        self.assertIn("is_client_vite_listener", macos_script)
+        self.assertIn('CLIENT_DEV_PORT=1420', macos_script)
         self.assertIn("backend)", macos_script)
         self.assertIn('"backend" {', windows_script)
         self.assertIn('"tauri", "dev"', windows_script)
@@ -61,6 +65,30 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertIn("CARGO_BUILD_TARGET", windows_script)
         self.assertIn('$ErrorActionPreference = "Continue"', windows_script)
         self.assertIn('$ScriptPath.StartsWith("\\\\?\\")', windows_script)
+
+    def test_backend_start_commands_enable_configurable_thread_concurrency(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        macos_script = (project_root / "start" / "macos-start.command").read_text(
+            encoding="utf-8"
+        )
+        windows_script = (project_root / "start" / "windows-start.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        portable_builder = (
+            project_root / "start" / "build-windows-x64-portable.ps1"
+        ).read_text(encoding="utf-8-sig")
+
+        self.assertIn("BACKEND_JOBS_PER_WORKER=4", macos_script)
+        self.assertIn('^[1-9][0-9]*$', macos_script)
+        self.assertIn(
+            '--n-jobs-per-worker "$BACKEND_JOBS_PER_WORKER"', macos_script
+        )
+        self.assertIn("$script:BackendJobsPerWorker = 4", windows_script)
+        self.assertIn("[int]::TryParse", windows_script)
+        self.assertIn(
+            '"--n-jobs-per-worker", $script:BackendJobsPerWorker', windows_script
+        )
+        self.assertIn('"--n-jobs-per-worker", "4"', portable_builder)
 
     def test_desktop_client_is_the_only_ui_project(self) -> None:
         project_root = Path(__file__).resolve().parents[2]
@@ -93,12 +121,47 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertNotIn("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", builder)
         self.assertIn('architecture = "x64"', builder)
         self.assertNotIn('architecture = "arm64"', builder)
+        self.assertIn("MASTER_LLM__API_KEY", builder)
+        self.assertIn("SPECIALIST_LLM__API_KEY", builder)
 
         tauri_entry = (
             project_root / "web-agent-client" / "src-tauri" / "src" / "lib.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", tauri_entry)
         self.assertNotIn("runtime/webview2", tauri_entry)
+
+    def test_model_template_contains_only_role_scoped_connection_fields(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        env_template = (project_root / "web-agent" / ".env.example").read_text(
+            encoding="utf-8"
+        )
+        expected_fields = {
+            f"{role}_LLM__{field}"
+            for role in ("MASTER", "SPECIALIST")
+            for field in (
+                "FAMILY",
+                "CHANNEL",
+                "MODEL",
+                "API_KEY",
+                "BASE_URL",
+                "THINKING",
+            )
+        }
+        configured_fields = re.findall(
+            r"^(?:MASTER|SPECIALIST)_LLM[^=]*(?==)", env_template, re.MULTILINE
+        )
+
+        self.assertEqual(set(configured_fields), expected_fields)
+        self.assertEqual(len(configured_fields), len(expected_fields))
+
+        macos_script = (project_root / "start" / "macos-start.command").read_text(
+            encoding="utf-8"
+        )
+        for role in ("MASTER", "SPECIALIST"):
+            for field in ("FAMILY", "CHANNEL", "MODEL"):
+                self.assertIn(
+                    f'require_model_config "{role}_LLM__{field}"', macos_script
+                )
 
     def test_start_directory_keeps_only_supported_source_files(self) -> None:
         project_root = Path(__file__).resolve().parents[2]

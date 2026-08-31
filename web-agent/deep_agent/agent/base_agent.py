@@ -26,11 +26,8 @@ from deep_agent.model import (
 from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.helpers.artifacts import (
     append_artifact_history,
-    append_stage_summary,
-    build_stage_summary,
 )
 from deep_agent.core.display_message import (
-    build_display_summary_message,
     emit_display_message_delta,
     extract_missing_display_messages,
     normalize_display_delta,
@@ -162,7 +159,7 @@ class BaseSpecialistAgent(
         # 执行前先做业务侧必填校验，避免把明显缺参的请求直接交给大模型“猜”。
         validation_error = self._validate_extracted_params(state)
         if validation_error:
-            result = await self._build_final_summary_result(
+            result = await self._build_stage_result_delta(
                 state=state,
                 raw_result={"status": "validation_error", "message": validation_error},
                 config=config,
@@ -193,7 +190,7 @@ class BaseSpecialistAgent(
             raw_result = await self._run_deep_agent(
                 specialist_agent, state, execution_context, config=config
             )
-            result = await self._build_final_summary_result(
+            result = await self._build_stage_result_delta(
                 state=state,
                 raw_result=raw_result,
                 config=config,
@@ -220,7 +217,7 @@ class BaseSpecialistAgent(
                 ),
                 self.display_name,
             )
-            result = await self._build_final_summary_result(
+            result = await self._build_stage_result_delta(
                 state=state,
                 raw_result={
                     "status": "exception",
@@ -290,20 +287,13 @@ class BaseSpecialistAgent(
                 allowed_tool_ids=runtime_config.allowed_playwright_test_mcp_tools,
                 session_id=mcp_session_id,
             )
-            if self._settings.model_adapter_v2_enabled:
-                model_connection = self._settings.resolve_model_connection("specialist")
-                model_capabilities = resolve_model_capabilities(model_connection)
-                tool_diagnostics = validate_tool_set(
-                    tools,
-                    model_capabilities,
-                    model_connection,
-                )
-                model_family = model_connection.family
-                model_channel = model_connection.channel
-            else:
-                tool_diagnostics = None
-                model_family = "legacy"
-                model_channel = "legacy"
+            model_connection = self._settings.resolve_model_connection("specialist")
+            model_capabilities = resolve_model_capabilities(model_connection)
+            tool_diagnostics = validate_tool_set(
+                tools,
+                model_capabilities,
+                model_connection,
+            )
             # system prompt 放在工具之后再组装，是为了把 workspace / extracted_params 等运行时上下文
             # 一次性拼进去，避免 prompt 和实际执行环境脱节。
             system_prompt = await asyncio.to_thread(
@@ -333,11 +323,9 @@ class BaseSpecialistAgent(
                 "loaded_tools": serialize_tools_for_log(
                     tools, max_text_length=debug_max_chars(self._settings)
                 ),
-                "model_family": model_family,
-                "model_channel": model_channel,
-                "tool_count": tool_diagnostics.count
-                if tool_diagnostics is not None
-                else len(tools),
+                "model_family": model_connection.family,
+                "model_channel": model_connection.channel,
+                "tool_count": tool_diagnostics.count,
                 "system_prompt_length": len(system_prompt),
             }
             if debug_full_messages_enabled(self._settings):
@@ -390,16 +378,13 @@ class BaseSpecialistAgent(
         # 调试修复等阶段都会基于这一个模型对象继续进入 Deep Agent 编排。
         model_kwargs = self._settings.build_model_kwargs(role="specialist")
         raw_model = init_chat_model(**model_kwargs)
-        if self._settings.model_adapter_v2_enabled:
-            model_connection = self._settings.resolve_model_connection("specialist")
-            model_capabilities = resolve_model_capabilities(model_connection)
-            model = adapt_chat_model(
-                raw_model,
-                connection=model_connection,
-                capabilities=model_capabilities,
-            )
-        else:
-            model = raw_model
+        model_connection = self._settings.resolve_model_connection("specialist")
+        model_capabilities = resolve_model_capabilities(model_connection)
+        model = adapt_chat_model(
+            raw_model,
+            connection=model_connection,
+            capabilities=model_capabilities,
+        )
         logger.info(
             "%s %s 模型初始化完成 model_kwargs=%s",
             log_title("初始化", "模型初始化", node_name=f"{self.agent_type}_node"),
@@ -639,7 +624,7 @@ class BaseSpecialistAgent(
 
         return "## 本次运行上下文\n" + "\n".join(prompt_lines)
 
-    async def _build_final_summary_result(
+    async def _build_stage_result_delta(
         self,
         *,
         state: WorkflowState,
@@ -647,55 +632,40 @@ class BaseSpecialistAgent(
         config: RunnableConfig | None = None,
         preface_messages: Sequence[BaseMessage] = (),
     ) -> WorkflowState:
-        """把 Specialist 原始结果整理成统一的结构化阶段结果。"""
+        """把 Specialist 原始结果整理成供阶段 Finalizer 消费的状态增量。"""
 
         stage_status = self._resolve_stage_status(raw_result)
         artifact = self._extract_stage_artifact(raw_result)
-        fallback_message = self._fallback_final_summary(raw_result)
-        stage_summary = build_stage_summary(
-            stage=self.agent_type,
-            status=stage_status,
-            artifact=artifact,
-            fallback_message=fallback_message,
-        )
+        fallback_message = self._fallback_stage_message(raw_result)
+        finalization_key = f"{self.agent_type}:{uuid4().hex}"
         artifact_history, latest_artifacts, current_turn_artifact_ids = (
             append_artifact_history(dict(state), artifact)
         )
-        pending_stage_summaries = append_stage_summary(dict(state), stage_summary)
         result: WorkflowState = {
             "stage_result": self._build_stage_result(
                 raw_result,
                 stage_status=stage_status,
                 artifact=artifact,
-                stage_summary=stage_summary,
+                fallback_message=fallback_message,
+                finalization_key=finalization_key,
             ),
-            "final_summary": stage_summary["text"],
+            "finalization_key": finalization_key,
             "artifact_history": artifact_history,
             "latest_artifacts": latest_artifacts,
             "current_turn_artifact_ids": current_turn_artifact_ids,
-            "pending_stage_summaries": pending_stage_summaries,
-            "pipeline_handoff": True,
+            "pipeline_handoff": False,
             "return_to_master": False,
             "missing_params": [],
             "pending_missing_params": [],
         }
-        stage_summary_message = build_display_summary_message(
-            stage_summary["text"],
-            prefix=f"{self.agent_type}-summary",
-        )
         display_messages = sanitize_display_messages(
             [
                 *extract_missing_display_messages(dict(state)),
                 *normalize_display_delta(preface_messages),
                 *normalize_display_delta(raw_result.get("messages", [])),
-                stage_summary_message,
             ]
         )
         if display_messages:
             result["display_messages"] = display_messages
-        if self._workflow_managed_pipeline(state):
-            result["messages"] = []
-        else:
-            result["messages"] = [stage_summary_message]
-            result["display_messages"] = display_messages
+        result["messages"] = []
         return result

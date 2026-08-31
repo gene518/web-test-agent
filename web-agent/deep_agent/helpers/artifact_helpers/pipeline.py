@@ -83,9 +83,20 @@ def append_stage_summary(
     state: dict[str, Any],
     stage_summary: StageSummaryEntry,
 ) -> list[StageSummaryEntry]:
-    """把格式化后的阶段摘要追加到当前轮缓冲区。"""
+    """把阶段摘要幂等追加到当前轮缓冲区。"""
 
     pending = list(state.get("pending_stage_summaries", []))
+    finalization_key = stage_summary.get("finalization_key")
+    for existing in pending:
+        if not isinstance(existing, dict):
+            continue
+        if finalization_key and existing.get("finalization_key") == finalization_key:
+            return pending
+        if all(
+            existing.get(field_name) == stage_summary.get(field_name)
+            for field_name in ("artifact_id", "stage", "status", "text")
+        ):
+            return pending
     pending.append(stage_summary)
     return pending
 

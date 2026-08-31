@@ -18,18 +18,17 @@ from deep_agent.helpers.artifacts import summarize_latest_artifacts
 from deep_agent.agent.master.models.intent import (
     IntentClassification,
     build_extracted_params,
-    compute_missing_params_for_intent,
     build_requested_pipeline,
+    compute_missing_params_for_intent,
+    normalize_thread_title,
 )
 from deep_agent.agent.master.prompts.complete_params import (
     build_master_complete_params_prompt,
 )
 from deep_agent.agent.master.prompts.general_test import GENERAL_TEST_SYSTEM_PROMPT
 from deep_agent.agent.master.prompts.intent_judge import INTENT_JUDGE_SYSTEM_PROMPT
-from deep_agent.agent.master.prompts.summary import FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import AppSettings
-from deep_agent.core.cancellation import is_langgraph_user_cancellation
 from deep_agent.model import (
     adapt_chat_model,
     invoke_structured,
@@ -66,28 +65,17 @@ class MasterAgent:
         """
 
         self._settings = settings
-        self._adapter_enabled = settings.model_adapter_v2_enabled
-        self._model_connection = (
-            settings.resolve_model_connection("master")
-            if self._adapter_enabled
-            else None
-        )
-        self._model_capabilities = (
-            resolve_model_capabilities(self._model_connection)
-            if self._model_connection is not None
-            else None
-        )
+        self._model_connection = settings.resolve_model_connection("master")
+        self._model_capabilities = resolve_model_capabilities(self._model_connection)
         model_kwargs = settings.build_model_kwargs(role="master")
-        # 这个模型实例同时用于意图识别、参数补全、general 回答、历史压缩和最终总结。
+        # 这个模型实例用于意图识别、参数补全、general 回答和历史压缩；
+        # Specialist 阶段总结由独立 FinalizerAgent 负责。
         raw_model = init_chat_model(**model_kwargs)
-        if self._model_connection is not None and self._model_capabilities is not None:
-            self._model = adapt_chat_model(
-                raw_model,
-                connection=self._model_connection,
-                capabilities=self._model_capabilities,
-            )
-        else:
-            self._model = raw_model
+        self._model = adapt_chat_model(
+            raw_model,
+            connection=self._model_connection,
+            capabilities=self._model_capabilities,
+        )
         logger.info(
             "%s Master 模型初始化完成 model_kwargs=%s",
             log_title("初始化", "模型初始化"),
@@ -165,6 +153,12 @@ class MasterAgent:
             "completed_stage_summaries": [],
             "current_turn_artifact_ids": [],
         }
+        existing_thread_title = normalize_thread_title(state.get("thread_title"))
+        generated_thread_title = normalize_thread_title(classification.thread_title)
+        if existing_thread_title:
+            result["thread_title"] = existing_thread_title
+        elif generated_thread_title:
+            result["thread_title"] = generated_thread_title
         if "conversation_summary" in state_with_summary:
             result["conversation_summary"] = state_with_summary["conversation_summary"]
         if "summarized_message_count" in state_with_summary:
@@ -245,18 +239,6 @@ class MasterAgent:
     ) -> tuple[IntentClassification, str, int]:
         """Choose the structured-output contract required by the active provider."""
 
-        if (
-            not self._adapter_enabled
-            or self._model_capabilities is None
-            or self._model_connection is None
-        ):
-            classifier_model = self._model.with_structured_output(
-                IntentClassification,
-                method="function_calling",
-            )
-            classification = await classifier_model.ainvoke(messages, config=config)
-            return classification, "legacy_function_calling", 1
-
         structured_result = await invoke_structured(
             model=self._model,
             schema=IntentClassification,
@@ -308,61 +290,6 @@ class MasterAgent:
                 config, node_name="general_test_node", event_name="model_end"
             ),
             model="master_general",
-            messages=[response],
-        )
-        return self._message_to_text(response)
-
-    async def summarize_final_response(
-        self,
-        *,
-        state: WorkflowState,
-        stage_name: str,
-        raw_result: Any,
-        config: RunnableConfig | None = None,
-    ) -> str:
-        """把某个阶段的原始结果包装成用户最终可见总结。"""
-
-        latest_user_request = self.latest_human_message_text(state.get("messages", []))
-        result_text = self._format_raw_result(raw_result)
-        summary_request = (
-            f"阶段：{stage_name}\n"
-            f"用户要求：{latest_user_request or '未识别到明确用户原文'}\n"
-            f"阶段原始结果：\n{result_text}\n\n"
-            "请生成最终回复，必须覆盖：用户要求什么、分析怎么做、如何做、完成了什么。"
-        )
-        model_messages = [
-            SystemMessage(content=FINAL_RESPONSE_SUMMARY_SYSTEM_PROMPT),
-            HumanMessage(content=summary_request),
-        ]
-        # 主链路：这里开始最终总结模型调用；它负责把写用例、写脚本、调试通过等
-        # 阶段原始结果统一包装成用户最终可见的一条总结回复。
-        log_debug_event(
-            logger,
-            self._settings,
-            log_title("模型", "调用"),
-            "model_start",
-            build_trace_context(config, node_name="summary", event_name="model_start"),
-            model="master_summary",
-            messages=model_messages,
-        )
-        try:
-            response = await self._model.ainvoke(model_messages, config=config)
-        except Exception as exc:  # noqa: BLE001
-            if is_langgraph_user_cancellation(exc):
-                raise
-            logger.warning(
-                "%s 总结模型调用失败，回退到阶段原始结果。error=%s",
-                log_title("模型", "总结兜底", node_name="summary"),
-                exc,
-            )
-            return result_text
-        log_debug_event(
-            logger,
-            self._settings,
-            log_title("模型", "调用"),
-            "model_end",
-            build_trace_context(config, node_name="summary", event_name="model_end"),
-            model="master_summary",
             messages=[response],
         )
         return self._message_to_text(response)
@@ -513,18 +440,3 @@ class MasterAgent:
         if len(text) <= max_chars:
             return text
         return f"{text[:max_chars]}... [truncated]"
-
-    def _format_raw_result(self, raw_result: Any) -> str:
-        """把阶段原始结果转成总结模型可消费文本。"""
-
-        if isinstance(raw_result, dict):
-            parts = []
-            for key, value in raw_result.items():
-                if key == "messages" and isinstance(value, list):
-                    parts.append(f"{key}: {self._format_messages(value)}")
-                else:
-                    parts.append(f"{key}: {value}")
-            return "\n".join(parts)
-        if isinstance(raw_result, list):
-            return self._format_messages(raw_result)
-        return str(raw_result)

@@ -124,9 +124,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         service = FakeMasterService()
         node = IntentJudgeNode(service)
 
-        # 单阶段请求（如 ["generator"]）回流时，不再走 finalize_turn：
-        # Specialist 自己已经把 stage_summary 作为用户可见消息发出，
-        # 这里直接 end 并清空本轮缓冲，避免 UI 出现两条重复总结。
+        # 单阶段已经由阶段 Finalizer 收尾，Master 只清理本轮缓冲并结束。
         single_stage_result = await node.execute(
             {
                 "pipeline_handoff": True,
@@ -144,8 +142,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(single_stage_result["pending_stage_summaries"], [])
         self.assertEqual(service.classify_calls, 0)
 
-        # 多阶段请求（如 ["plan", "generator"] 已经走完）回流时，保持原有行为：
-        # 走 finalize_turn 把多个 stage_summary 统一汇总成一条。
+        # 多阶段的最后一个阶段同样已经独立收尾，不再调用整体 Finalizer。
         multi_stage_result = await node.execute(
             {
                 "pipeline_handoff": True,
@@ -160,7 +157,8 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(multi_stage_result["next_action"], "finalize_turn")
+        self.assertEqual(multi_stage_result["next_action"], "end")
+        self.assertEqual(multi_stage_result["pending_stage_summaries"], [])
         self.assertEqual(service.classify_calls, 0)
 
     async def test_complete_params_node_merges_resume_params_and_keeps_existing_context(self) -> None:
@@ -241,10 +239,10 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(result["messages"][0].content, "summary: general raw answer")
+        self.assertEqual(result["messages"][0].content, "general raw answer")
         self.assertEqual(len(result["display_messages"]), 2)
         self.assertEqual(result["display_messages"][0].content, "你是谁")
-        self.assertEqual(result["display_messages"][1].content, "summary: general raw answer")
+        self.assertEqual(result["display_messages"][1].content, "general raw answer")
 
     async def test_resolve_stage_files_node_inherits_latest_plan_files_for_generator(self) -> None:
         node = ResolveStageFilesNode()
@@ -551,7 +549,7 @@ class MasterRoutingTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["next_action"], "end")
-        self.assertEqual(result["messages"][-1].content, "summary: general raw answer")
+        self.assertEqual(result["messages"][-1].content, "general raw answer")
         self.assertEqual(result["stage_result"]["agent_type"], "general")
 
     def _build_outer_graph(self, service: FakeMasterService):

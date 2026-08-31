@@ -1,12 +1,14 @@
 import type { Message } from "@langchain/langgraph-sdk";
 
 export const ASSISTANT_ID = "web-autotest-agent";
+export const THREAD_TITLE_ASSISTANT_ID = "web-autotest-thread-title";
 export const DEFAULT_BACKEND_PORT = 2024;
 export const STREAM_MODES = ["values", "messages-tuple", "custom"] as const;
 
 export type AgentState = {
   messages?: Message[];
   display_messages?: Message[];
+  thread_title?: string;
   __interrupt__?: unknown;
   [key: string]: unknown;
 };

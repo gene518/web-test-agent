@@ -23,6 +23,10 @@ class WorkflowState(TypedDict, total=False):
         Field(description="仅供 UI 展示的完整时间线消息列表；保留执行过程，但不参与后续模型上下文。"),
         add_messages,
     ]
+    thread_title: Annotated[
+        str,
+        Field(description="由模型根据线程首个明确目标生成的简短标题；生成后保持不变。"),
+    ]
     agent_type: Annotated[
         str | None,
         Field(description="Master 识别出的目标动作类型，例如 plan、generator、healer、scheduler。"),
@@ -53,7 +57,15 @@ class WorkflowState(TypedDict, total=False):
     ]
     stage_result: Annotated[
         dict[str, Any],
-        Field(description="当前阶段的内部执行结果摘要，供最终总结使用，不直接作为用户消息返回。"),
+        Field(description="当前 Specialist 的结构化原始结果，由紧随其后的阶段 Finalizer 消费。"),
+    ]
+    finalization_key: Annotated[
+        str,
+        Field(description="当前实际阶段执行的唯一收尾键，用于重试或 checkpoint 恢复时幂等。"),
+    ]
+    finalized_stage_keys: Annotated[
+        list[str],
+        Field(description="线程内已经完成阶段收尾的键列表，防止同一执行重复调用 Finalizer。"),
     ]
     final_summary: Annotated[
         str,
@@ -93,7 +105,7 @@ class WorkflowState(TypedDict, total=False):
     ]
     pending_stage_summaries: Annotated[
         list[dict[str, Any]],
-        Field(description="当前轮待最终汇总的阶段摘要列表，由 finalize_turn_node 统一拼装。"),
+        Field(description="当前轮已经完成的阶段摘要列表，供阶段链推进和 checkpoint 兼容使用。"),
     ]
     completed_stage_summaries: Annotated[
         list[dict[str, Any]],

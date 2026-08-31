@@ -28,10 +28,10 @@ class IntentJudgeNode:
 
         if state.get("pipeline_handoff") or state.get("return_to_master"):
             # 主链路：这里处理 Specialist 阶段回流后的下一步决策；
-            # 如果还有后续阶段就继续推进，否则直接进入统一汇总。
+            # 如果还有后续阶段就继续推进，否则直接结束；每个 Specialist 已经由
+            # 紧随其后的 FinalizeStageNode 独立完成了阶段总结。
             next_stage = next_pipeline_stage(state)
             stage_status = self._stage_status(state)
-            pending_stage_count = self._pending_stage_summary_count(state)
             if next_stage is not None and stage_status == "success":
                 pipeline_cursor = state.get("pipeline_cursor", 0)
                 next_cursor = pipeline_cursor + 1 if isinstance(pipeline_cursor, int) else 0
@@ -46,31 +46,24 @@ class IntentJudgeNode:
                     "next_action": "resolve_stage_files",
                     "routing_reason": f"上一阶段完成，准备继续执行 `{next_stage}` 阶段。",
                 }
-            elif pending_stage_count <= 1:
-                # 单阶段已经由 Specialist 自己把 stage_summary 作为用户可见消息发出，
-                # 这里直接结束，避免 finalize_turn 把相同内容再原样复述一次。
+            else:
+                pending = list(state.get("pending_stage_summaries", []))
+                completed = (
+                    pending
+                    if pending
+                    else list(state.get("completed_stage_summaries", []))
+                )
                 result = {
                     "return_to_master": False,
                     "pipeline_handoff": False,
-                    "completed_stage_summaries": list(state.get("pending_stage_summaries", [])),
+                    "completed_stage_summaries": completed,
                     "pending_stage_summaries": [],
                     "current_turn_artifact_ids": [],
                     "next_action": "end",
                     "routing_reason": (
-                        "当前轮为单阶段请求，Specialist 已输出用户可见总结，直接结束。"
+                        "当前轮阶段链已执行完成，各阶段均已独立收尾。"
                         if stage_status == "success"
-                        else f"阶段链在 `{state.get('agent_type')}` 阶段提前结束，直接返回当前阶段结果。"
-                    ),
-                }
-            else:
-                result = {
-                    "return_to_master": False,
-                    "pipeline_handoff": False,
-                    "next_action": "finalize_turn",
-                    "routing_reason": (
-                        "当前轮阶段链已执行完成，准备统一汇总。"
-                        if stage_status == "success"
-                        else f"阶段链在 `{state.get('agent_type')}` 阶段结束，准备输出截至当前阶段的汇总。"
+                        else f"阶段链在 `{state.get('agent_type')}` 阶段结束，失败阶段已完成收尾。"
                     ),
                 }
             result = self._with_display_delta(state, result)
@@ -122,16 +115,3 @@ class IntentJudgeNode:
         if isinstance(status, str) and status:
             return status
         return "success"
-
-    def _pending_stage_summary_count(self, state: WorkflowState) -> int:
-        """返回本轮已累计的阶段摘要数量。
-
-        调用方：回流分支判断当前轮到底经过了几个 Specialist。
-        目的：`finalize_turn_node` 存在的价值是把多阶段摘要合并为一条；单阶段时
-        Specialist 已经在 messages 里发过阶段摘要，再走一次 finalize 会造成 UI 重复。
-        """
-
-        pending = state.get("pending_stage_summaries")
-        if not isinstance(pending, list):
-            return 0
-        return sum(1 for item in pending if isinstance(item, dict))

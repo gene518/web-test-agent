@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from deep_agent.agent.finalizer import SCHEDULER_FINALIZE_CONFIG, FinalizeStageNode
 from deep_agent.agent.scheduler import SchedulerAgent
 from deep_agent.core.config import AppSettings
 from deep_agent.scheduler.cron import CronExpression
@@ -40,11 +41,9 @@ class FakeTaskRunner:
         return ScheduledRunResult(exit_code=0, duration_seconds=0.01)
 
 
-class FakeMasterAgent:
-    async def summarize_final_response(
-        self, *, state, stage_name, raw_result, config=None
-    ):  # noqa: ANN001
-        return f"{stage_name}: {raw_result}"
+class CanonicalFinalizerAgent:
+    async def finalize_stage(self, *, canonical_summary, **kwargs):  # noqa: ANN003
+        return canonical_summary
 
 
 class FakeProcessOutput:
@@ -638,18 +637,20 @@ class SchedulerServiceTestCase(unittest.IsolatedAsyncioTestCase):
         terminate_process.assert_awaited_once()
 
     async def test_scheduler_agent_creates_config_without_task_id(self) -> None:
-        scheduler_agent = SchedulerAgent(FakeMasterAgent(), self.settings)
+        scheduler_agent = SchedulerAgent(self.settings)
 
-        result = await scheduler_agent.execute(
-            {
-                "messages": [],
-                "extracted_params": {
-                    "project_dir": str(self.project_dir),
-                    "schedule_cron": "30 11 * * *",
-                    "schedule_headed": True,
-                },
-            }
-        )
+        state = {
+            "messages": [],
+            "extracted_params": {
+                "project_dir": str(self.project_dir),
+                "schedule_cron": "30 11 * * *",
+                "schedule_headed": True,
+            },
+        }
+        stage_result = await scheduler_agent.execute(state)
+        result = await FinalizeStageNode(
+            CanonicalFinalizerAgent(), SCHEDULER_FINALIZE_CONFIG
+        ).execute({**state, **stage_result})
 
         updated_task = load_scheduler_config(self.config_path).projects[0].tasks[0]
         self.assertEqual(
@@ -668,25 +669,26 @@ class SchedulerServiceTestCase(unittest.IsolatedAsyncioTestCase):
             result["messages"][0].content,
         )
         self.assertIn("- Cron：`30 11 * * *`", result["messages"][0].content)
-        self.assertIn("Scheduler Agent", result["messages"][0].content)
         self.assertEqual(len(result["display_messages"]), 1)
         self.assertEqual(
-            result["stage_result"]["stage_summary"],
+            result["stage_result"]["stage_summary"]["text"],
             result["display_messages"][0].content,
         )
 
     async def test_scheduler_agent_failure_uses_a_stable_stage_summary(self) -> None:
-        scheduler_agent = SchedulerAgent(FakeMasterAgent(), self.settings)
+        scheduler_agent = SchedulerAgent(self.settings)
 
-        result = await scheduler_agent.execute(
-            {
-                "messages": [],
-                "extracted_params": {
-                    "project_dir": str(self.project_dir),
-                    "schedule_cron": "invalid cron",
-                },
-            }
-        )
+        state = {
+            "messages": [],
+            "extracted_params": {
+                "project_dir": str(self.project_dir),
+                "schedule_cron": "invalid cron",
+            },
+        }
+        stage_result = await scheduler_agent.execute(state)
+        result = await FinalizeStageNode(
+            CanonicalFinalizerAgent(), SCHEDULER_FINALIZE_CONFIG
+        ).execute({**state, **stage_result})
 
         summary = result["messages"][0].content
         self.assertIn("**Scheduler 阶段**", summary)

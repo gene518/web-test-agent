@@ -23,10 +23,12 @@ from deep_agent.scheduler.paths import (
     resolve_scheduler_project_dir,
 )
 from deep_agent.scheduler.runner import (
+    LangGraphScheduledTaskRunner,
     PendingScheduledRun,
     PlaywrightTaskRunner,
     ScheduledRunResult,
     ScheduledTaskRunner,
+    scheduled_run_thread_id,
 )
 from deep_agent.scheduler.store import load_scheduler_config
 from deep_agent.scheduler.summary import (
@@ -53,7 +55,12 @@ class SchedulerService:
 
         self._settings = settings
         self._config_path = config_path.expanduser().resolve()
-        self._task_runner = task_runner or PlaywrightTaskRunner()
+        self._task_runner = task_runner or LangGraphScheduledTaskRunner(
+            api_url=settings.scheduler_langgraph_url,
+            graph_id=settings.scheduler_scheduled_run_graph_id,
+            api_key=settings.scheduler_langgraph_api_key,
+            api_timeout_seconds=settings.scheduler_langgraph_timeout_seconds,
+        )
         self._fallback_summary_node = ScheduledRunSummaryNode()
         self._summary_node = summary_node or self._fallback_summary_node
         self._current_time_factory = current_time_factory or (
@@ -423,6 +430,7 @@ class SchedulerService:
                     error_message="Scheduler task was cancelled before completion.",
                     started_at=self._active_run_started_at,
                     finished_at=finished_at,
+                    conversation_thread_id=self._conversation_thread_id(active_run),
                 )
             else:
                 try:
@@ -435,6 +443,7 @@ class SchedulerService:
                         error_message="Scheduler task was cancelled before completion.",
                         started_at=self._active_run_started_at,
                         finished_at=finished_at,
+                        conversation_thread_id=self._conversation_thread_id(active_run),
                     )
                 except Exception as exc:  # noqa: BLE001
                     result = ScheduledRunResult(
@@ -493,6 +502,18 @@ class SchedulerService:
                     f"exit_code={result.exit_code} error={result.error_message or '<none>'}"
                 ),
             )
+
+        if result.report_generated:
+            await _append_project_log(
+                run_request.log_file_path,
+                (
+                    f"{_log_timestamp()} INFO 总结阶段完成 display_name={run_request.display_name} "
+                    f"source=scheduled_run_graph conversation_thread_id="
+                    f"{result.conversation_thread_id or '<none>'} "
+                    f"report_path={result.report_path or '<unknown>'}"
+                ),
+            )
+            return
 
         await _append_project_log(
             run_request.log_file_path,
@@ -554,6 +575,15 @@ class SchedulerService:
         return round(
             max(0, (finished_at - self._active_run_started_at).total_seconds()), 3
         )
+
+    def _conversation_thread_id(
+        self, run_request: PendingScheduledRun
+    ) -> str | None:
+        """仅默认 SDK runner 实际创建了监控对话时返回确定性 thread ID。"""
+
+        if not isinstance(self._task_runner, LangGraphScheduledTaskRunner):
+            return None
+        return scheduled_run_thread_id(run_request)
 
     async def _ensure_project_startup_logs(
         self, projects: list[ScheduledProjectConfig]

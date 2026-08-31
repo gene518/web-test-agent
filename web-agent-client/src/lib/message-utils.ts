@@ -5,6 +5,15 @@ type RecordValue = Record<string, unknown>;
 
 export type CanonicalMessage = Message & { type: "human" | "ai" | "tool" };
 
+export type ThreadSummary = Pick<
+  Thread<AgentState>,
+  "thread_id" | "created_at" | "updated_at" | "metadata" | "status"
+> & {
+  state_updated_at?: string;
+  values?: AgentState;
+  extracted?: Record<string, unknown>;
+};
+
 export type ToolInvocation = {
   id: string;
   name: string;
@@ -202,14 +211,41 @@ export function summarizeThreadTitle(text: string, limit = 32): string {
     : `${normalized.slice(0, limit - 1)}…`;
 }
 
-export function threadTitle(thread: Thread<AgentState>): string {
+function normalizedTitle(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function extractedMessage(thread: ThreadSummary): CanonicalMessage | null {
+  return normalizeMessage(thread.extracted?.first_message);
+}
+
+export function threadFirstHumanText(thread: ThreadSummary): string | undefined {
+  const extracted = extractedMessage(thread);
+  if (extracted?.type === "human") return messageText(extracted).trim() || undefined;
+  const firstHuman = conversationMessages(thread.values).find((message) => message.type === "human");
+  return firstHuman ? messageText(firstHuman).trim() || undefined : undefined;
+}
+
+export function threadModelTitle(
+  thread: ThreadSummary | undefined,
+  liveValues?: AgentState,
+): string | undefined {
+  if (!thread) return normalizedTitle(liveValues?.thread_title);
+  return normalizedTitle(liveValues?.thread_title) ??
+    normalizedTitle(thread.values?.thread_title) ??
+    normalizedTitle(thread.extracted?.thread_title) ??
+    (thread.metadata?.thread_title_source === "model-v1"
+      ? normalizedTitle(thread.metadata.thread_title)
+      : undefined);
+}
+
+export function threadTitle(thread: ThreadSummary, liveValues?: AgentState): string {
   const metadata = isRecord(thread.metadata) ? thread.metadata : {};
-  if (typeof metadata.thread_title === "string" && metadata.thread_title.trim()) {
-    return metadata.thread_title.trim();
-  }
-  const messages = conversationMessages(thread.values);
-  const firstHuman = messages.find((message) => message.type === "human");
-  return firstHuman ? summarizeThreadTitle(messageText(firstHuman)) : "未命名对话";
+  return threadModelTitle(thread, liveValues) ??
+    normalizedTitle(metadata.thread_title) ??
+    (threadFirstHumanText(thread)
+      ? summarizeThreadTitle(threadFirstHumanText(thread)!)
+      : "未命名对话");
 }
 
 export function extractInterruptQuestion(value: unknown): string {

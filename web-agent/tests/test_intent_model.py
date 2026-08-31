@@ -7,10 +7,24 @@ from deep_agent.agent.master.models.intent import (
     build_extracted_params,
     build_requested_pipeline,
     compute_missing_params,
+    normalize_thread_title,
 )
 
 
 class IntentModelTestCase(unittest.TestCase):
+    def test_thread_title_removes_model_decoration_and_caps_length(self) -> None:
+        classification = IntentClassification(
+            intent_type="plan",
+            thread_title="  **“修复多会话并发。”**  ",
+        )
+
+        self.assertEqual(classification.thread_title, "修复多会话并发")
+        self.assertEqual(normalize_thread_title("a" * 40), "a" * 32)
+
+    def test_thread_title_rejects_empty_and_non_text_values(self) -> None:
+        self.assertIsNone(IntentClassification(thread_title=" undefined ").thread_title)
+        self.assertIsNone(normalize_thread_title({"title": "不可用"}))
+
     def test_plan_requires_project_name_and_url(self) -> None:
         classification = IntentClassification(intent_type="plan")
         self.assertEqual(compute_missing_params(classification), ["project_name", "url"])

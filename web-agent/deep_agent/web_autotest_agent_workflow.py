@@ -5,7 +5,14 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from deep_agent.agent.finalizer import FinalizeTurnNode
+from deep_agent.agent.finalizer import (
+    GENERATOR_FINALIZE_CONFIG,
+    HEALER_FINALIZE_CONFIG,
+    PLAN_FINALIZE_CONFIG,
+    SCHEDULER_FINALIZE_CONFIG,
+    FinalizeStageNode,
+    FinalizerAgent,
+)
 from deep_agent.agent.generator import GeneratorAgent
 from deep_agent.agent.healer import HealerAgent
 from deep_agent.agent.master import MasterAgent, build_master_graph
@@ -41,14 +48,34 @@ def build_web_autotest_agent_workflow(*, checkpointer: Any | None = None):
     plan_agent = PlanAgent(settings)
     generator_agent = GeneratorAgent(settings)
     healer_agent = HealerAgent(settings)
-    scheduler_agent = SchedulerAgent(master_agent, settings)
-    finalize_turn_node = FinalizeTurnNode()
+    scheduler_agent = SchedulerAgent(settings)
+    finalizer_agent = FinalizerAgent(settings)
+    plan_finalize_node = FinalizeStageNode(finalizer_agent, PLAN_FINALIZE_CONFIG)
+    generator_finalize_node = FinalizeStageNode(
+        finalizer_agent, GENERATOR_FINALIZE_CONFIG
+    )
+    healer_finalize_node = FinalizeStageNode(finalizer_agent, HEALER_FINALIZE_CONFIG)
+    scheduler_finalize_node = FinalizeStageNode(
+        finalizer_agent, SCHEDULER_FINALIZE_CONFIG
+    )
 
     web_autotest_agent_workflow = StateGraph(WorkflowState)
     web_autotest_agent_workflow.add_node("master_graph_node", master_graph)
     web_autotest_agent_workflow.add_node(
-        "finalize_turn_node",
-        finalize_turn_node.execute,
+        "finalize_plan_stage_node",
+        plan_finalize_node.execute,
+    )
+    web_autotest_agent_workflow.add_node(
+        "finalize_generator_stage_node",
+        generator_finalize_node.execute,
+    )
+    web_autotest_agent_workflow.add_node(
+        "finalize_healer_stage_node",
+        healer_finalize_node.execute,
+    )
+    web_autotest_agent_workflow.add_node(
+        "finalize_scheduler_stage_node",
+        scheduler_finalize_node.execute,
     )
     web_autotest_agent_workflow.add_node("plan_node", plan_agent.execute)
     web_autotest_agent_workflow.add_node("generator_node", generator_agent.execute)
@@ -64,15 +91,29 @@ def build_web_autotest_agent_workflow(*, checkpointer: Any | None = None):
             "generator": "generator_node",
             "healer": "healer_node",
             "scheduler": "scheduler_config_node",
-            "finalize_turn": "finalize_turn_node",
             "end": END,
         },
     )
-    web_autotest_agent_workflow.add_edge("plan_node", "master_graph_node")
-    web_autotest_agent_workflow.add_edge("generator_node", "master_graph_node")
-    web_autotest_agent_workflow.add_edge("healer_node", "master_graph_node")
-    web_autotest_agent_workflow.add_edge("scheduler_config_node", END)
-    web_autotest_agent_workflow.add_edge("finalize_turn_node", END)
+    web_autotest_agent_workflow.add_edge("plan_node", "finalize_plan_stage_node")
+    web_autotest_agent_workflow.add_edge(
+        "generator_node", "finalize_generator_stage_node"
+    )
+    web_autotest_agent_workflow.add_edge(
+        "healer_node", "finalize_healer_stage_node"
+    )
+    web_autotest_agent_workflow.add_edge(
+        "scheduler_config_node", "finalize_scheduler_stage_node"
+    )
+    web_autotest_agent_workflow.add_edge(
+        "finalize_plan_stage_node", "master_graph_node"
+    )
+    web_autotest_agent_workflow.add_edge(
+        "finalize_generator_stage_node", "master_graph_node"
+    )
+    web_autotest_agent_workflow.add_edge(
+        "finalize_healer_stage_node", "master_graph_node"
+    )
+    web_autotest_agent_workflow.add_edge("finalize_scheduler_stage_node", END)
 
     # LangGraph API / `langgraph dev` 会注入自己的持久化层；这里默认不绑定自定义
     # checkpointer，避免导出的 graph 在 CLI 加载阶段被直接拒绝。
@@ -99,12 +140,15 @@ def _route_after_master(state: WorkflowState, config: RunnableConfig | None = No
     """
 
     next_action = state.get("next_action", "end")
+    # 旧 checkpoint 可能仍携带已经废弃的整体汇总路由；恢复后直接结束，
+    # 不能再次调用 Finalizer 复述已显示过的阶段结果。
+    if next_action == "finalize_turn":
+        next_action = "end"
     if next_action not in {
         "plan",
         "generator",
         "healer",
         "scheduler",
-        "finalize_turn",
         "end",
     }:
         next_action = "end"

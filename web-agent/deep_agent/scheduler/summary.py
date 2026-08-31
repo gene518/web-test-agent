@@ -24,6 +24,7 @@ from deep_agent.scheduler.analysis import (
 )
 from deep_agent.scheduler.report_models import (
     RunStatus,
+    ScheduledConversationReport,
     ScheduledExecutionSummary,
     ScheduledHistoryAnalysis,
     ScheduledIssueReport,
@@ -134,6 +135,21 @@ class ScheduledRunSummaryNode:
                     report.analysis_mode = "model_enriched"
                     report.enriched_analysis = enriched_analysis
 
+        return await self.persist(run_request, report)
+
+    async def persist(
+        self,
+        run_request: PendingScheduledRun,
+        report: ScheduledRunReport,
+    ) -> ScheduledRunSummaryResult:
+        """在模型诊断或自动修复更新后，按相同稳定路径重写完整报告。"""
+
+        (
+            report_path,
+            latest_report_path,
+            markdown_report_path,
+            latest_markdown_report_path,
+        ) = _resolve_report_paths(run_request)
         await asyncio.to_thread(
             _persist_report,
             report,
@@ -249,6 +265,19 @@ def _build_report(
         diagnostic_excerpt=list(parsed_output.diagnostic_excerpt),
         analysis_warnings=warnings,
         conclusion=conclusion,
+        conversation=ScheduledConversationReport(
+            thread_id=result.conversation_thread_id,
+            status=(
+                "cancelled"
+                if result.cancelled and result.conversation_thread_id
+                else "error"
+                if result.conversation_error
+                else "running"
+                if result.conversation_thread_id
+                else "unavailable"
+            ),
+            error_message=result.conversation_error,
+        ),
         artifacts=ScheduledRunArtifacts(
             scheduler_log=str(run_request.log_file_path),
             analysis_report=str(report_path),
@@ -619,6 +648,50 @@ def _render_markdown_report(report: ScheduledRunReport) -> str:
     ]
     _append_case_section(lines, "失败用例", report.failed_cases)
     _append_case_section(lines, "重试用例", report.retried_cases)
+
+    lines.extend(["## 失败归因", ""])
+    if report.diagnoses:
+        for diagnosis in report.diagnoses:
+            lines.append(
+                f"- `{_markdown_code(diagnosis.test_id)}`："
+                f"owner=`{_markdown_code(diagnosis.owner)}`，"
+                f"置信度 {diagnosis.confidence:.0%}，"
+                f"允许自动修复：{'是' if diagnosis.repair_allowed else '否'}。"
+            )
+            lines.append(f"  - 判断：{_markdown_text(diagnosis.reason)}")
+    else:
+        lines.append("没有需要归因的失败用例。")
+    lines.extend(
+        [
+            "",
+            "## 自动修复",
+            "",
+            f"- 状态：`{_markdown_code(report.healing.status)}`",
+            f"- 是否调用 Healer：{'是' if report.healing.attempted else '否'}",
+            f"- 验证：`{_markdown_code(report.healing.validation_status)}`",
+        ]
+    )
+    if report.healing.reason:
+        lines.append(f"- 说明：{_markdown_text(report.healing.reason)}")
+    if report.healing.modified_files:
+        lines.append(
+            "- 修改文件："
+            + "、".join(
+                f"`{_markdown_code(path)}`" for path in report.healing.modified_files
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "## 监控对话",
+            "",
+            f"- Thread ID：`{_markdown_code(report.conversation.thread_id or '<unavailable>')}`",
+            f"- 图：`{_markdown_code(report.conversation.graph_id)}`",
+            f"- 只读：{'是' if report.conversation.readonly else '否'}",
+            f"- 状态：`{_markdown_code(report.conversation.status)}`",
+            "",
+        ]
+    )
 
     lines.extend(["## 共性问题", ""])
     if report.common_issues:

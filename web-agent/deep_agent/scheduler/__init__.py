@@ -12,6 +12,7 @@ from deep_agent.scheduler.service import (
     ScheduledRunResult,
     SchedulerService,
 )
+from deep_agent.scheduler.runner import LangGraphScheduledTaskRunner
 from deep_agent.scheduler.summary import (
     ScheduledReportEnricher,
     ScheduledRunSummaryNode,
@@ -31,6 +32,7 @@ from deep_agent.scheduler.store import (
 
 __all__ = [
     "PendingScheduledRun",
+    "LangGraphScheduledTaskRunner",
     "PlaywrightTaskRunner",
     "ScheduledProjectConfig",
     "ScheduledRunResult",

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 import unittest
-from unittest.mock import patch
 
 import httpx
 from deepagents import create_deep_agent
@@ -13,8 +11,6 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from deep_agent.core.config import AppSettings
-from deep_agent.agent.master.master_agent import MasterAgent
-from deep_agent.agent.master.models.intent import IntentClassification
 from deep_agent.model.factory import adapt_chat_model
 from deep_agent.model.diagnostics import collect_model_diagnostics
 from deep_agent.model.capabilities import ModelCapabilities
@@ -52,18 +48,6 @@ class FakeStructuredModel:
     async def ainvoke(self, messages, config=None):  # noqa: ANN001
         self.inputs.append(messages)
         return self.responses.pop(0)
-
-
-class FakeLegacyStructuredModel:
-    def __init__(self) -> None:
-        self.structured_kwargs: dict[str, object] | None = None
-
-    def with_structured_output(self, schema, **kwargs):  # noqa: ANN001
-        self.structured_kwargs = {"schema": schema, **kwargs}
-        return self
-
-    async def ainvoke(self, messages, config=None):  # noqa: ANN001
-        return IntentClassification(intent_type="general", reasoning="legacy")
 
 
 class CancellingStructuredModel:
@@ -156,54 +140,6 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             (specialist.protocol, specialist.api_key), ("anthropic", "minimax-key")
         )
 
-    def test_nested_role_config_loads_from_environment(self) -> None:
-        env = {
-            "MASTER_LLM__FAMILY": "glm",
-            "MASTER_LLM__CHANNEL": "zhipu_openai",
-            "MASTER_LLM__MODEL": "glm-5.2",
-            "MASTER_LLM__API_KEY": "glm-key",
-            "MASTER_LLM__BASE_URL": "https://open.bigmodel.cn/api/paas/v4/",
-            "MASTER_LLM__THINKING": "enabled",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            settings = AppSettings(_env_file=None)
-
-        connection = settings.resolve_model_connection("master")
-        self.assertEqual(connection.family, "glm")
-        self.assertEqual(connection.channel, "zhipu_openai")
-        self.assertEqual(connection.api_key, "glm-key")
-        self.assertEqual(connection.thinking, "enabled")
-
-    def test_explicit_role_config_does_not_fall_back_to_legacy_api_key(self) -> None:
-        settings = AppSettings(
-            _env_file=None,
-            openai_api_key="unrelated-key",
-            master_llm={
-                "family": "minimax",
-                "channel": "minimax_openai",
-                "model": "MiniMax-M2.7",
-                "base_url": "https://api.minimax.io/v1",
-            },
-        )
-        connection = settings.resolve_model_connection("master")
-
-        self.assertIsNone(connection.api_key)
-
-    def test_legacy_anthropic_model_prefix_keeps_provider(self) -> None:
-        settings = AppSettings(
-            _env_file=None,
-            master_model="anthropic:claude-sonnet-4-5",
-            openai_base_url=None,
-        )
-
-        connection = settings.resolve_model_connection("master")
-        kwargs = settings.build_model_kwargs(role="master")
-
-        self.assertEqual(connection.channel, "generic_anthropic")
-        self.assertEqual(connection.protocol, "anthropic")
-        self.assertEqual(kwargs["model_provider"], "anthropic")
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-5")
-
     def test_rejects_mismatched_family_and_channel(self) -> None:
         settings = AppSettings(
             _env_file=None,
@@ -248,7 +184,6 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
                 "api_key": "key",
                 "base_url": "https://open.bigmodel.cn/api/paas/v4/",
                 "thinking": "enabled",
-                "reasoning_effort": "max",
             },
         ).build_model_kwargs(role="specialist")
         glm_dashscope = AppSettings(
@@ -281,7 +216,7 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             {"parallel_tool_calls": None, "tool_choice": None, "response_format": None},
         )
         self.assertEqual(glm["extra_body"], {"thinking": {"type": "enabled"}})
-        self.assertEqual(glm["reasoning_effort"], "max")
+        self.assertNotIn("reasoning_effort", glm)
         self.assertEqual(glm["disabled_params"], {"parallel_tool_calls": None})
         self.assertNotIn("enable_thinking", glm["extra_body"])
         self.assertEqual(
@@ -296,11 +231,13 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
             _env_file=None,
             master_llm={
                 "family": "qwen",
+                "channel": "dashscope_openai",
                 "model": "qwen3.5-plus",
                 "api_key": "top-secret",
             },
             specialist_llm={
                 "family": "glm",
+                "channel": "zhipu_openai",
                 "model": "glm-5.2",
                 "api_key": "another-secret",
             },
@@ -312,41 +249,14 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("another-secret", serialized)
         self.assertIn('"has_api_key": true', serialized)
 
-    async def test_adapter_flag_restores_legacy_master_behavior(self) -> None:
-        settings = AppSettings(
-            _env_file=None,
-            model_adapter_v2_enabled=False,
-            master_model="openai:qwen3.5-plus",
-            openai_api_key="test-key",
-            openai_base_url="https://mock.local/v1",
-            llm_enable_thinking=False,
-        )
-        fake_model = FakeLegacyStructuredModel()
-        with patch(
-            "deep_agent.agent.master.master_agent.init_chat_model",
-            return_value=fake_model,
-        ) as init_model:
-            master = MasterAgent(settings)
-
-        classification, strategy, attempts = await master._invoke_intent_classification(  # noqa: SLF001
-            [HumanMessage(content="go")],
-            config=None,
-        )
-
-        self.assertIs(master._model, fake_model)  # noqa: SLF001
-        self.assertEqual(init_model.call_args.kwargs["model"], "openai:qwen3.5-plus")
-        self.assertEqual(
-            init_model.call_args.kwargs["extra_body"], {"enable_thinking": False}
-        )
-        self.assertEqual(fake_model.structured_kwargs["method"], "function_calling")
-        self.assertNotIn("include_raw", fake_model.structured_kwargs)
-        self.assertEqual(classification.intent_type, "general")
-        self.assertEqual((strategy, attempts), ("legacy_function_calling", 1))
-
     def test_profiles_use_channel_specific_context_limits(self) -> None:
         qwen_settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "qwen", "model": "qwen3.5-plus"},
+            master_llm={
+                "family": "qwen",
+                "channel": "dashscope_openai",
+                "model": "qwen3.5-plus",
+            },
         )
         minimax_settings = AppSettings(
             _env_file=None,
@@ -359,7 +269,11 @@ class ModelAdapterTestCase(unittest.IsolatedAsyncioTestCase):
         )
         glm_settings = AppSettings(
             _env_file=None,
-            master_llm={"family": "glm", "model": "glm-5.2"},
+            master_llm={
+                "family": "glm",
+                "channel": "zhipu_openai",
+                "model": "glm-5.2",
+            },
         )
 
         self.assertEqual(

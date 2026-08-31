@@ -12,7 +12,20 @@ from langchain_core.tools import BaseTool
 
 from deep_agent.core.config import AppSettings
 from deep_agent.agent.plan import PLAN_RUNTIME_CONFIG, PlanAgent
+from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
+
+
+def _canonical_stage_summary(result: dict) -> str:
+    """按阶段 Finalizer 的规范兜底格式检查 Plan 原始结果。"""
+
+    stage_result = result["stage_result"]
+    return build_stage_summary(
+        stage="plan",
+        status=stage_result["status"],
+        artifact=stage_result.get("artifact"),
+        fallback_message=stage_result.get("fallback_message"),
+    )["text"]
 
 
 class DummyTool(BaseTool):
@@ -204,11 +217,11 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
-        self.assertIn("Plan 阶段", result["messages"][0].content)
-        self.assertIn("aaa_demo.md", result["messages"][0].content)
-        self.assertIn("a_login_success", result["messages"][0].content)
-        self.assertIn("待生成脚本规划", result["messages"][0].content)
-        self.assertIn("下一阶段建议输入", result["messages"][0].content)
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
+        self.assertIn("aaa_demo.md", _canonical_stage_summary(result))
+        self.assertIn("a_login_success", _canonical_stage_summary(result))
+        self.assertIn("待生成脚本规划", _canonical_stage_summary(result))
+        self.assertIn("可选后续操作", _canonical_stage_summary(result))
         self.assertEqual(
             result["artifact_history"][0]["output_files"],
             ["test_case/aaaplanning_demo/aaa_demo.md"],
@@ -322,8 +335,8 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertIn("Plan 阶段", result["messages"][0].content)
-        self.assertNotIn("状态：exception", result["messages"][0].content)
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
+        self.assertNotIn("状态：exception", _canonical_stage_summary(result))
         self.assertEqual(
             result["latest_artifacts"]["plan"]["output_files"],
             [relative_plan_path],
@@ -460,10 +473,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        # 单阶段请求（`requested_pipeline=["plan"]`）不再走 `finalize_turn_node`；
-        # Specialist 自己把阶段摘要作为唯一一条用户可见消息发出，避免 UI 重复。
-        self.assertEqual(len(result["messages"]), 1)
-        self.assertIn("Plan 阶段", result["messages"][0].content)
+        # Plan 执行节点只返回原始结果，后继 FinalizeStageNode 负责总结。
+        self.assertEqual(result["messages"], [])
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
         display_ids = [message.id for message in result["display_messages"]]
         self.assertTrue(display_ids[0].startswith("display-plan-start-"))
         self.assertEqual(display_ids[1], "tool-write-todos")
@@ -471,14 +483,12 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             display_ids[2].startswith("display-tool-start-planner_save_plan-")
         )
         self.assertEqual(display_ids[3], "tool-save-plan")
-        self.assertTrue(display_ids[4].startswith("display-plan-summary-"))
         self.assertNotIn("ai-tool-call", display_ids)
         self.assertEqual(result["display_messages"][1].name, "write_todos")
         self.assertIn(
             "正在调用工具 `planner_save_plan`", result["display_messages"][2].content
         )
         self.assertEqual(result["display_messages"][3].name, "planner_save_plan")
-        self.assertIn("Plan 阶段", result["display_messages"][4].content)
 
     async def test_plan_execute_passes_custom_recursion_limit(self) -> None:
         fake_manager = FakeMCPManager(self.tools)
@@ -555,7 +565,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertIn("aaa_demo.md", result["messages"][0].content)
+        self.assertIn("aaa_demo.md", _canonical_stage_summary(result))
         self.assertEqual(fake_agent.inputs[0][1]["recursion_limit"], 123)
 
     async def test_plan_execute_returns_failure_message_when_plan_was_not_saved(
@@ -607,9 +617,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fake_manager.requests[0][0], PLAYWRIGHT_TEST_MCP_SERVER_NAME)
         self.assertIn(
-            "Plan Agent 执行过程中遇到未处理异常", result["messages"][0].content
+            "Plan Agent 执行过程中遇到未处理异常", _canonical_stage_summary(result)
         )
-        self.assertIn("planner_save_plan", result["messages"][0].content)
+        self.assertIn("planner_save_plan", _canonical_stage_summary(result))
         # 失败路径同样要兜底关闭 Playwright MCP 会话，避免浏览器子进程残留。
         self.assertEqual(
             fake_manager.closed_sessions,
@@ -677,8 +687,8 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("未真实写入工作区", result["messages"][0].content)
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
+        self.assertIn("未真实写入工作区", _canonical_stage_summary(result))
         self.assertNotIn("plan", result.get("latest_artifacts", {}))
 
     async def test_plan_execute_rejects_invalid_planner_payload_even_when_tool_succeeds(
@@ -726,9 +736,9 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertIn("Plan 阶段", result["messages"][0].content)
-        self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("planner_save_plan.suites", result["messages"][0].content)
+        self.assertIn("Plan 阶段", _canonical_stage_summary(result))
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
+        self.assertIn("planner_save_plan.suites", _canonical_stage_summary(result))
 
     async def test_plan_execute_rejects_plan_markdown_outside_aaaplanning_directory(
         self,
@@ -792,8 +802,8 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertIn("状态：exception", result["messages"][0].content)
-        self.assertIn("aaaplanning_{plan-name}", result["messages"][0].content)
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
+        self.assertIn("aaaplanning_{plan-name}", _canonical_stage_summary(result))
 
     async def test_plan_execute_rejects_case_file_outside_matching_aaaplanning_directory(
         self,
@@ -857,10 +867,10 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ):
             result = await agent.execute(state)
 
-        self.assertIn("状态：exception", result["messages"][0].content)
+        self.assertIn("状态：exception", _canonical_stage_summary(result))
         self.assertIn(
             "test_case/aaaplanning_demo/a_login_success.spec.ts",
-            result["messages"][0].content,
+            _canonical_stage_summary(result),
         )
 
     async def test_plan_event_truncation_uses_debug_max_chars(self) -> None:

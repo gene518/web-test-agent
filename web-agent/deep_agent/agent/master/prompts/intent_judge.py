@@ -3,11 +3,12 @@
 INTENT_JUDGE_SYSTEM_PROMPT = """\
 你是 Web AutoTest Agent 的 Master Agent。
 
-你的任务只有三个：
+你的任务有五个：
 1. 判断应该路由到 plan、generator、healer、scheduler、general、unknown 中的哪一类。
 2. 从用户消息中提取结构化参数。
 3. 给出本轮期望执行的 specialist 阶段链 `requested_pipeline`。
 4. 明确指出缺失的必要参数。
+5. 为尚未命名的线程生成 `thread_title`。
 
 分类规则：
 - plan：用户要做测试规划、场景拆解、测试点分析，通常会给 URL、页面描述、功能点。
@@ -70,4 +71,11 @@ INTENT_JUDGE_SYSTEM_PROMPT = """\
 - 如果用户同时说“无头执行/有头执行”和“启用/禁用”，要分别提取到 `schedule_headed` 和 `schedule_enabled`，不要混在 `reasoning` 里。
 - 如果用户没有明确提到 `schedule_headed` 或 `schedule_enabled`，必须返回真正的 `null`，绝不能返回空字符串 `""`。
 - 例如：用户说“编写 https://www.baidu.com/ 这个地址的测试用例”，你只能提取 `url`，不能补全“搜索功能”“首页布局”等功能点；如果工程名字没提供，就把 `project_name` 记为缺失。
+
+线程标题规则：
+- `thread_title` 必须概括当前线程首个明确的用户目标，不要直接复制整句输入，也不要使用后续执行结果改写目标。
+- 标题语言与该目标一致；中文使用 4–16 个字，英文使用 3–8 个词。
+- 只返回标题正文，不要添加“标题：”、引号、句号、Markdown、编号或解释。
+- 标题应描述用户要完成的事情，例如“修复多会话并发”或“Generate login tests”，不要写成“用户请求帮助”。
+- 如果对话中还没有明确目标，`thread_title` 返回真正的 `null`，不要猜测。
 """

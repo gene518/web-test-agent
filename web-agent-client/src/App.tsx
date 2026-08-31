@@ -1,13 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { useStream } from "@langchain/langgraph-sdk/react";
-import type { Message } from "@langchain/langgraph-sdk";
 import {
   AlertTriangle,
   CircleStop,
@@ -28,7 +20,13 @@ import { BackendBadge, BackendBanner } from "./components/BackendStatus";
 import { Composer } from "./components/Composer";
 import { MessageTimeline } from "./components/MessageTimeline";
 import { Sidebar } from "./components/Sidebar";
+import {
+  ThreadSessionController,
+  type ThreadSessionHandle,
+  type ThreadSessionSnapshot,
+} from "./components/ThreadSessionController";
 import { useThreadHistory } from "./hooks/use-thread-history";
+import { useThreadTitleBackfill } from "./hooks/use-thread-title-backfill";
 import {
   chooseProjectRoot,
   createAgentClient,
@@ -40,34 +38,33 @@ import {
   saveClientConfig,
 } from "./lib/backend";
 import {
-  historicalConversationMessages,
-  mergeMessages,
+  messageText,
+  summarizeThreadTitle,
+  threadModelTitle,
   threadTitle,
 } from "./lib/message-utils";
 import {
-  activeRunIdForThread,
   backendPortError,
-  cancellationFailureMessages,
   configDraft,
   configFromDraft,
-  type ActiveRun,
   type ClientConfigDraft,
 } from "./lib/client-state";
 import { errorMessage } from "./lib/errors";
-import { activeRunIds, buildSubmitRequest } from "./lib/session-actions";
+import { isActiveRunPhase, runPhaseLabel } from "./lib/thread-runtime";
 import {
   ASSISTANT_ID,
-  STREAM_MODES,
   type AgentState,
   type BackendStatus,
   type ClientConfig,
 } from "./lib/types";
 
-type DisplayMessagesEvent = { type: "display_messages"; messages: unknown[] };
-type PendingSubmit = {
+type SessionDescriptor = {
+  sessionKey: string;
   threadId: string | null;
-  selectionRevision: number;
+  lastUsedAt: number;
 };
+
+const MAX_CACHED_IDLE_SESSIONS = 8;
 
 const INITIAL_STATUS: BackendStatus = {
   state: "checking",
@@ -76,186 +73,153 @@ const INITIAL_STATUS: BackendStatus = {
   message: "正在检查本地后端...",
 };
 
-function isDisplayMessagesEvent(value: unknown): value is DisplayMessagesEvent {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    (value as { type?: unknown }).type === "display_messages" &&
-    Array.isArray((value as { messages?: unknown }).messages)
-  );
+function createSession(threadId: string | null = null): SessionDescriptor {
+  return {
+    sessionKey: crypto.randomUUID(),
+    threadId,
+    lastUsedAt: Date.now(),
+  };
+}
+
+function firstMessageTitle(snapshot: ThreadSessionSnapshot | undefined): string | undefined {
+  const firstHuman = snapshot?.messages.find((message) => message.type === "human");
+  return firstHuman ? summarizeThreadTitle(messageText(firstHuman)) : undefined;
 }
 
 function App() {
+  const initialSessionRef = useRef<SessionDescriptor | undefined>(undefined);
+  if (!initialSessionRef.current) initialSessionRef.current = createSession();
+
   const [config, setConfig] = useState<ClientConfig>(() => loadClientConfig());
   const [settingsDraft, setSettingsDraft] = useState<ClientConfigDraft>(() => configDraft(config));
   const [backend, setBackend] = useState<BackendStatus>(INITIAL_STATUS);
-  const [threadId, setThreadId] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  const [sessions, setSessions] = useState<SessionDescriptor[]>([initialSessionRef.current]);
+  const [selectedSessionKey, setSelectedSessionKey] = useState(initialSessionRef.current.sessionKey);
+  const [sessionSnapshots, setSessionSnapshots] = useState<Record<string, ThreadSessionSnapshot>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [backendBusy, setBackendBusy] = useState(false);
-  const [cancellingThreadIds, setCancellingThreadIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [backendLog, setBackendLog] = useState("");
   const [logTheme, setLogTheme] = useState<LogTheme>(loadLogTheme);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [activeRun, setActiveRun] = useState<ActiveRun | undefined>();
-  const [reconnectRevision, setReconnectRevision] = useState(0);
+  const [systemNotice, setSystemNotice] = useState<string | null>(null);
+  const sessionHandlesRef = useRef(new Map<string, ThreadSessionHandle>());
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const threadIdRef = useRef<string | null>(null);
-  const selectionRevisionRef = useRef(0);
-  const joiningRunsRef = useRef(new Map<string, ActiveRun>());
-  const pendingSubmitsRef = useRef(new Set<PendingSubmit>());
-  const reconnectAttemptsRef = useRef(new Map<string, number>());
-  const reconnectTimersRef = useRef(new Map<string, number>());
 
   const client = useMemo(() => createAgentClient(backend.apiUrl), [backend.apiUrl]);
-  const handleHistoryError = useCallback((message: string) => setNotice(message), []);
+  const handleHistoryError = useCallback((message: string) => setSystemNotice(message), []);
   const {
     threads,
     loading: historyLoading,
     hasMore: hasMoreThreads,
     refresh: refreshThreads,
     loadMore: loadMoreThreads,
+    patchThread,
+    upsertThread,
   } = useThreadHistory({
     client,
     enabled: backend.state === "running",
     onError: handleHistoryError,
   });
 
-  const scheduleStreamReconnect = useCallback((targetThreadId: string) => {
-    if (reconnectTimersRef.current.has(targetThreadId)) return;
-    const attempt = reconnectAttemptsRef.current.get(targetThreadId) ?? 0;
-    reconnectAttemptsRef.current.set(targetThreadId, attempt + 1);
-    const timer = window.setTimeout(() => {
-      reconnectTimersRef.current.delete(targetThreadId);
-      if (threadIdRef.current === targetThreadId) {
-        setReconnectRevision((current) => current + 1);
-      }
-    }, Math.min(1_000 * 2 ** attempt, 8_000));
-    reconnectTimersRef.current.set(targetThreadId, timer);
-  }, []);
+  const selectedSession = sessions.find((session) => session.sessionKey === selectedSessionKey);
+  const selectedThreadId = selectedSession?.threadId ?? null;
+  const selectedSnapshot = sessionSnapshots[selectedSessionKey];
+  const selectedThread = threads.find((thread) => thread.thread_id === selectedThreadId);
+  const selectedHandle = sessionHandlesRef.current.get(selectedSessionKey);
+  const selectedDraft = drafts[selectedSessionKey] ?? "";
+  const foregroundActive = Object.values(sessionSnapshots).some((snapshot) => (
+    isActiveRunPhase(snapshot.phase)
+  )) || threads.some((thread) => thread.status === "busy");
 
-  const stream = useStream<
-    AgentState,
-    {
-      UpdateType: AgentState;
-      CustomEventType: DisplayMessagesEvent;
-    }
-  >({
-    assistantId: ASSISTANT_ID,
+  const handleBackfillUpdated = useCallback((threadId: string, metadata: Record<string, unknown>) => {
+    patchThread(threadId, { metadata });
+  }, [patchThread]);
+
+  useThreadTitleBackfill({
     client,
-    threadId,
-    messagesKey: "display_messages",
-    // 当前界面只需要最新 checkpoint。false 会调用 getState；true 会改走完整
-    // history 接口，某些本地 LangGraph 运行时会因此出现列表可见但详情为空。
-    fetchStateHistory: false,
-    onThreadId: (id) => {
-      const unboundSubmits = [...pendingSubmitsRef.current].filter(
-        (pending) => pending.threadId === null,
-      );
-      const pendingSubmit = unboundSubmits.length === 1 ? unboundSubmits[0] : undefined;
-      if (pendingSubmit) pendingSubmit.threadId = id;
-      if (
-        !pendingSubmit ||
-        pendingSubmit.selectionRevision === selectionRevisionRef.current
-      ) {
-        threadIdRef.current = id;
-        setThreadId(id);
-      }
-      window.setTimeout(() => void refreshThreads(), 700);
-    },
-    onCreated: (run) => {
-      setActiveRun({ threadId: run.thread_id, runId: run.run_id });
-    },
-    onFinish: (...args) => {
-      const run = args[1];
-      if (run) {
-        joiningRunsRef.current.delete(`${run.thread_id}:${run.run_id}`);
-        const timer = reconnectTimersRef.current.get(run.thread_id);
-        if (timer !== undefined) window.clearTimeout(timer);
-        reconnectTimersRef.current.delete(run.thread_id);
-        reconnectAttemptsRef.current.delete(run.thread_id);
-        setActiveRun((current) =>
-          current?.threadId === run.thread_id && current.runId === run.run_id
-            ? undefined
-            : current,
-        );
-        setNotice((current) =>
-          threadIdRef.current === run.thread_id && current?.startsWith("恢复执行流失败")
-            ? null
-            : current,
-        );
-      }
-      window.setTimeout(() => void refreshThreads(), 300);
-    },
-    onError: (error, run) => {
-      const runKey = run ? `${run.thread_id}:${run.run_id}` : undefined;
-      const joiningRun =
-        runKey
-          ? joiningRunsRef.current.get(runKey)
-          : joiningRunsRef.current.size === 1
-            ? joiningRunsRef.current.values().next().value
-            : undefined;
-      const pendingSubmit =
-        !run && !joiningRun && pendingSubmitsRef.current.size === 1
-          ? pendingSubmitsRef.current.values().next().value
-          : undefined;
-      if (run || joiningRun) {
-        const failedRun = joiningRun ?? {
-          threadId: run!.thread_id,
-          runId: run!.run_id,
-        };
-        setActiveRun((current) =>
-          current?.threadId === failedRun.threadId && current.runId === failedRun.runId
-            ? undefined
-            : current,
-        );
-      }
-      if (joiningRun) {
-        joiningRunsRef.current.delete(`${joiningRun.threadId}:${joiningRun.runId}`);
-        if (threadIdRef.current === joiningRun.threadId) {
-          setNotice(`恢复执行流失败，将自动重试：${errorMessage(error)}`);
-        }
-        scheduleStreamReconnect(joiningRun.threadId);
-      } else {
-        const failedThreadId = run?.thread_id ?? pendingSubmit?.threadId;
-        if (
-          failedThreadId !== undefined &&
-          threadIdRef.current === failedThreadId
-        ) {
-          setNotice(`Agent 执行失败：${errorMessage(error)}`);
-        }
-      }
-    },
-    onCustomEvent: (event, options) => {
-      if (!isDisplayMessagesEvent(event)) return;
-      options.mutate((previous) => ({
-        ...previous,
-        display_messages: mergeMessages(
-          previous.display_messages ?? previous.messages ?? [],
-          event.messages,
-        ) as Message[],
-      }));
-    },
+    threads,
+    enabled: backend.state === "running",
+    foregroundActive,
+    onUpdated: handleBackfillUpdated,
   });
 
-  const selectedThread = threads.find((thread) => thread.thread_id === threadId);
-  const messages = useMemo(
-    () => historicalConversationMessages(selectedThread?.values, stream.values, stream.messages),
-    [selectedThread?.values, stream.messages, stream.values],
-  );
-  const interrupt = stream.interrupt ?? stream.values.__interrupt__;
-  const selectedRunId = activeRunIdForThread(activeRun, threadId);
-  const selectedThreadBusy = selectedThread?.status === "busy";
-  const isRunning = stream.isLoading || Boolean(selectedRunId) || selectedThreadBusy;
-  const composerDisabled = backend.state !== "running" || isRunning || stream.isThreadLoading;
-  const cancelBusy = threadId ? cancellingThreadIds.has(threadId) : false;
-  const settingsPortError = backendPortError(settingsDraft.backendPort);
+  const handleSessionRegister = useCallback((sessionKey: string, handle?: ThreadSessionHandle) => {
+    if (handle) sessionHandlesRef.current.set(sessionKey, handle);
+    else sessionHandlesRef.current.delete(sessionKey);
+  }, []);
+
+  const handleSnapshot = useCallback((snapshot: ThreadSessionSnapshot) => {
+    setSessionSnapshots((current) => (
+      current[snapshot.sessionKey] === snapshot
+        ? current
+        : { ...current, [snapshot.sessionKey]: snapshot }
+    ));
+  }, []);
+
+  const handleRestoreDraft = useCallback((sessionKey: string, text: string) => {
+    setDrafts((current) => ({
+      ...current,
+      [sessionKey]: current[sessionKey]?.trim() ? current[sessionKey] : text,
+    }));
+  }, []);
+
+  const handleRefreshRequested = useCallback(() => {
+    void refreshThreads();
+  }, [refreshThreads]);
+
+  const handleThreadBound = useCallback((sessionKey: string, threadId: string) => {
+    setSessions((current) => current.map((session) => (
+      session.sessionKey === sessionKey
+        ? { ...session, threadId, lastUsedAt: Date.now() }
+        : session
+    )));
+    const snapshot = sessionSnapshots[sessionKey];
+    const now = new Date().toISOString();
+    upsertThread({
+      thread_id: threadId,
+      created_at: now,
+      updated_at: now,
+      metadata: { graph_id: ASSISTANT_ID },
+      status: "busy",
+      extracted: snapshot?.messages[0]
+        ? { first_message: snapshot.messages[0] }
+        : undefined,
+    });
+    window.setTimeout(() => void refreshThreads(), 700);
+  }, [refreshThreads, sessionSnapshots, upsertThread]);
+
+  useEffect(() => {
+    for (const snapshot of Object.values(sessionSnapshots)) {
+      if (!snapshot.threadId || !snapshot.values.thread_title?.trim()) continue;
+      const thread = threads.find((item) => item.thread_id === snapshot.threadId);
+      if (!thread) continue;
+      if (thread?.extracted?.thread_title === snapshot.values.thread_title.trim()) continue;
+      patchThread(snapshot.threadId, {
+        extracted: {
+          ...thread?.extracted,
+          thread_title: snapshot.values.thread_title.trim(),
+        },
+      });
+    }
+  }, [patchThread, sessionSnapshots, threads]);
+
+  useEffect(() => {
+    const inactive = sessions
+      .filter((session) => (
+        session.sessionKey !== selectedSessionKey &&
+        !isActiveRunPhase(sessionSnapshots[session.sessionKey]?.phase)
+      ))
+      .sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+    if (inactive.length <= MAX_CACHED_IDLE_SESSIONS) return;
+    const removed = new Set(inactive.slice(MAX_CACHED_IDLE_SESSIONS).map((session) => session.sessionKey));
+    setSessions((current) => current.filter((session) => !removed.has(session.sessionKey)));
+    setSessionSnapshots((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => !removed.has(key)),
+    ));
+  }, [selectedSessionKey, sessionSnapshots, sessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -295,74 +259,9 @@ function App() {
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      for (const timer of reconnectTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
-      reconnectTimersRef.current.clear();
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (
-      !threadId ||
-      backend.state !== "running" ||
-      stream.isLoading ||
-      stream.isThreadLoading
-    ) {
-      return;
-    }
-    let cancelled = false;
-    let joiningRunKey: string | undefined;
-
-    const reconnect = async () => {
-      try {
-        const [running, pending] = await Promise.all([
-          client.runs.list(threadId, { limit: 1, status: "running" }),
-          client.runs.list(threadId, { limit: 1, status: "pending" }),
-        ]);
-        const run = running[0] ?? pending[0];
-        if (!run || cancelled) return;
-        const runKey = `${threadId}:${run.run_id}`;
-        if (joiningRunsRef.current.has(runKey)) {
-          scheduleStreamReconnect(threadId);
-          return;
-        }
-
-        joiningRunKey = runKey;
-        joiningRunsRef.current.set(runKey, { threadId, runId: run.run_id });
-        setActiveRun({ threadId, runId: run.run_id });
-        await stream.joinStream(run.run_id, undefined, { streamMode: [...STREAM_MODES] });
-      } catch (error) {
-        if (joiningRunKey) joiningRunsRef.current.delete(joiningRunKey);
-        setActiveRun((current) =>
-          current?.threadId === threadId ? undefined : current,
-        );
-        if (!cancelled) {
-          setNotice(`恢复执行流失败，将自动重试：${errorMessage(error)}`);
-          scheduleStreamReconnect(threadId);
-        }
-      }
-    };
-    void reconnect();
-    return () => {
-      cancelled = true;
-      if (joiningRunKey) joiningRunsRef.current.delete(joiningRunKey);
-    };
-  }, [
-    backend.state,
-    client,
-    reconnectRevision,
-    scheduleStreamReconnect,
-    stream.isThreadLoading,
-    threadId,
-  ]);
-
   const handleRestart = async (nextConfig = config): Promise<boolean> => {
     setBackendBusy(true);
-    setNotice(null);
+    setSystemNotice(null);
     setBackend((previous) => ({ ...previous, state: "starting", message: "正在重启本地后端..." }));
     try {
       const status = await restartBackend(nextConfig);
@@ -393,126 +292,55 @@ function App() {
   const handleChooseRoot = async () => {
     const root = await chooseProjectRoot(config.projectRoot);
     if (!root) return;
-    const next = { ...config, projectRoot: root };
-    await handleRestart(next);
+    await handleRestart({ ...config, projectRoot: root });
   };
 
   const handleChooseSettingsRoot = async () => {
     const root = await chooseProjectRoot(settingsDraft.projectRoot);
-    if (!root) return;
-    setSettingsDraft((current) => ({ ...current, projectRoot: root }));
-  };
-
-  const handleOpenSettings = () => {
-    setSettingsDraft(configDraft(config));
-    setSettingsOpen(true);
+    if (root) setSettingsDraft((current) => ({ ...current, projectRoot: root }));
   };
 
   const handleSaveSettings = async () => {
     const nextConfig = configFromDraft(settingsDraft);
-    if (!nextConfig || !nextConfig.projectRoot) return;
+    if (!nextConfig?.projectRoot) return;
     if (await handleRestart(nextConfig)) setSettingsOpen(false);
   };
 
-  const handleSubmit = async () => {
-    const text = input.trim();
-    if (!text || composerDisabled) return;
-    setNotice(null);
-    const request = buildSubmitRequest(text, {
-      interrupted: Boolean(interrupt),
-      newThread: !threadId,
-    });
-    const pendingSubmit: PendingSubmit = {
-      threadId,
-      selectionRevision: selectionRevisionRef.current,
-    };
-    pendingSubmitsRef.current.add(pendingSubmit);
-    setInput("");
-    try {
-      await stream.submit(request.values as AgentState, {
-        ...(request.options as Parameters<typeof stream.submit>[1]),
-        optimisticValues: (previous) => ({
-          ...previous,
-          messages: [...(previous.messages ?? []), request.message],
-          display_messages: [
-            ...(previous.display_messages ?? previous.messages ?? []),
-            request.message,
-          ],
-        }),
-      });
-    } catch (error) {
-      if (threadIdRef.current === pendingSubmit.threadId) {
-        setInput(text);
-        setNotice(`发送失败：${errorMessage(error)}`);
-      }
-    } finally {
-      pendingSubmitsRef.current.delete(pendingSubmit);
-    }
+  const handleSubmit = () => {
+    const text = selectedDraft.trim();
+    if (!text || !selectedHandle) return;
+    const existingTitle = threadModelTitle(selectedThread, selectedSnapshot?.values);
+    if (!selectedHandle.submit(text, existingTitle)) return;
+    setSystemNotice(null);
+    setDrafts((current) => ({ ...current, [selectedSessionKey]: "" }));
   };
 
   const handlePromptTemplate = (content: string) => {
-    setInput(content);
+    setDrafts((current) => ({ ...current, [selectedSessionKey]: content }));
     window.requestAnimationFrame(() => {
       if (composerInputRef.current) composerInputRef.current.scrollTop = 0;
     });
   };
 
-  const handleCancel = async () => {
-    if (!threadId || cancelBusy) return;
-    const targetThreadId = threadId;
-    const targetRunId = activeRunIdForThread(activeRun, targetThreadId);
-    setCancellingThreadIds((current) => new Set(current).add(targetThreadId));
-    try {
-      const [running, pending] = await Promise.all([
-        client.runs.list(targetThreadId, { limit: 20, status: "running" }),
-        client.runs.list(targetThreadId, { limit: 20, status: "pending" }),
-      ]);
-      const ids = activeRunIds(running, pending, targetRunId);
-      const results = await Promise.allSettled(
-        ids.map((runId) =>
-          client.runs.cancel(targetThreadId, runId, true, "interrupt"),
-        ),
-      );
-      const failures = cancellationFailureMessages(results);
-      if (failures.length > 0) {
-        throw new Error(
-          `${failures.length}/${ids.length} 个运行取消失败：${failures.join("；")}`,
-        );
-      }
-      setActiveRun((current) =>
-        current?.threadId === targetThreadId ? undefined : current,
-      );
-      if (threadIdRef.current === targetThreadId) await stream.stop();
-      await refreshThreads();
-    } catch (error) {
-      if (threadIdRef.current === targetThreadId) {
-        setNotice(`取消任务失败：${errorMessage(error)}`);
-      }
-    } finally {
-      setCancellingThreadIds((current) => {
-        const next = new Set(current);
-        next.delete(targetThreadId);
-        return next;
-      });
-    }
-  };
-
   const handleNewThread = () => {
-    selectionRevisionRef.current += 1;
-    threadIdRef.current = null;
-    stream.switchThread(null);
-    setThreadId(null);
-    setInput("");
-    setNotice(null);
+    const session = createSession();
+    setSessions((current) => [...current, session]);
+    setSelectedSessionKey(session.sessionKey);
+    setDrafts((current) => ({ ...current, [session.sessionKey]: "" }));
+    setSystemNotice(null);
     setMobileSidebarOpen(false);
   };
 
-  const handleSelectThread = (id: string) => {
-    selectionRevisionRef.current += 1;
-    threadIdRef.current = id;
-    stream.switchThread(id);
-    setThreadId(id);
-    setNotice(null);
+  const handleSelectThread = (threadId: string) => {
+    const existing = sessions.find((session) => session.threadId === threadId);
+    const session = existing ?? createSession(threadId);
+    setSessions((current) => existing
+      ? current.map((item) => item.sessionKey === existing.sessionKey
+        ? { ...item, lastUsedAt: Date.now() }
+        : item)
+      : [...current, session]);
+    setSelectedSessionKey(session.sessionKey);
+    setSystemNotice(null);
     setMobileSidebarOpen(false);
   };
 
@@ -527,7 +355,7 @@ function App() {
   };
 
   const handleOpenArtifactPath = async (path: string, baseDir?: string) => {
-    setNotice(null);
+    setSystemNotice(null);
     try {
       await revealPathInFileManager(
         backend.projectRoot || config.projectRoot,
@@ -535,7 +363,7 @@ function App() {
         path,
       );
     } catch (error) {
-      setNotice(`无法打开路径：${errorMessage(error)}`);
+      setSystemNotice(`无法打开路径：${errorMessage(error)}`);
     }
   };
 
@@ -548,11 +376,44 @@ function App() {
     }
   };
 
+  const serverBusyBeforeHydration = selectedThread?.status === "busy" && !selectedSnapshot?.checkedRuns;
+  const selectedRunning = isActiveRunPhase(selectedSnapshot?.phase) || serverBusyBeforeHydration;
+  const composerDisabled = backend.state !== "running" ||
+    !selectedHandle ||
+    selectedRunning ||
+    Boolean(selectedSnapshot?.isThreadLoading);
+  const notice = systemNotice ?? selectedSnapshot?.notice ?? null;
+  const headingTitle = selectedThread
+    ? threadTitle(selectedThread, selectedSnapshot?.values)
+    : selectedSnapshot?.values.thread_title?.trim() || firstMessageTitle(selectedSnapshot) || "新对话";
+  const headingStatus = selectedSnapshot?.isThreadLoading
+    ? "正在加载对话"
+    : serverBusyBeforeHydration
+      ? "Agent 正在执行任务"
+      : runPhaseLabel(selectedSnapshot?.phase);
+  const settingsPortError = backendPortError(settingsDraft.backendPort);
+
   return (
     <main className="app-shell">
+      {backend.state === "running" && sessions.map((session) => (
+        <ThreadSessionController
+          key={session.sessionKey}
+          sessionKey={session.sessionKey}
+          threadId={session.threadId}
+          client={client}
+          enabled
+          initialValues={sessionSnapshots[session.sessionKey]?.values as AgentState | undefined}
+          onThreadBound={handleThreadBound}
+          onSnapshot={handleSnapshot}
+          onRegister={handleSessionRegister}
+          onRefreshThreads={handleRefreshRequested}
+          onRestoreDraft={handleRestoreDraft}
+        />
+      ))}
+
       <Sidebar
         threads={threads}
-        selectedThreadId={threadId}
+        selectedThreadId={selectedThreadId}
         open={sidebarOpen}
         mobileOpen={mobileSidebarOpen}
         historyLoading={historyLoading}
@@ -562,7 +423,10 @@ function App() {
         onSelectThread={handleSelectThread}
         onRefreshThreads={refreshThreads}
         onLoadMoreThreads={loadMoreThreads}
-        onOpenSettings={handleOpenSettings}
+        onOpenSettings={() => {
+          setSettingsDraft(configDraft(config));
+          setSettingsOpen(true);
+        }}
         onShowLog={handleShowLog}
       />
 
@@ -576,16 +440,16 @@ function App() {
               {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
             </button>
             <div className="conversation-heading">
-              <strong>{selectedThread ? threadTitle(selectedThread) : "新对话"}</strong>
-              <span>{stream.isThreadLoading ? "正在加载对话" : isRunning ? "Agent 正在执行任务" : interrupt ? "等待补充信息" : "Web 自动化测试 Agent"}</span>
+              <strong>{headingTitle}</strong>
+              <span>{headingStatus}</span>
             </div>
           </div>
           <div className="header-actions">
             <BackendBadge status={backend} />
-            {isRunning && (
-              <button className="cancel-button" onClick={() => void handleCancel()} disabled={cancelBusy}>
+            {selectedRunning && selectedThreadId && (
+              <button className="cancel-button" onClick={() => void selectedHandle?.cancel()} disabled={selectedSnapshot?.phase === "cancelling"}>
                 <CircleStop size={16} />
-                <span>{cancelBusy ? "取消中" : "取消任务"}</span>
+                <span>{selectedSnapshot?.phase === "cancelling" ? "取消中" : "取消任务"}</span>
               </button>
             )}
           </div>
@@ -602,27 +466,40 @@ function App() {
           <div className="notice" role="alert">
             <AlertTriangle size={16} />
             <span>{notice}</span>
-            <button className="icon-button small" onClick={() => setNotice(null)} title="关闭提示"><X size={14} /></button>
+            <button
+              className="icon-button small"
+              onClick={() => {
+                if (systemNotice) setSystemNotice(null);
+                else selectedHandle?.clearNotice();
+              }}
+              title="关闭提示"
+            >
+              <X size={14} />
+            </button>
           </div>
         )}
 
         <MessageTimeline
-          messages={messages}
-          interrupt={interrupt}
-          isLoading={stream.isLoading}
-          isThreadLoading={stream.isThreadLoading}
+          threadKey={selectedSessionKey}
+          messages={selectedSnapshot?.messages ?? []}
+          interrupt={selectedSnapshot?.interrupt}
+          isLoading={selectedSnapshot?.phase === "queued" || selectedSnapshot?.phase === "running"}
+          isThreadLoading={Boolean(selectedSnapshot?.isThreadLoading)}
           onPromptTemplate={handlePromptTemplate}
-          onOpenPath={(path, baseDir) => void handleOpenArtifactPath(path, baseDir)}
+          onOpenPath={handleOpenArtifactPath}
         />
 
         <Composer
-          value={input}
+          value={selectedDraft}
           disabled={composerDisabled}
-          threadLoading={stream.isThreadLoading}
-          interrupted={Boolean(interrupt)}
+          threadLoading={Boolean(selectedSnapshot?.isThreadLoading)}
+          interrupted={selectedSnapshot?.phase === "awaiting_input"}
           apiUrl={backend.apiUrl}
           inputRef={composerInputRef}
-          onChange={setInput}
+          onChange={(value) => setDrafts((current) => ({
+            ...current,
+            [selectedSessionKey]: value,
+          }))}
           onSubmit={handleSubmit}
         />
       </section>

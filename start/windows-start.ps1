@@ -26,7 +26,9 @@ $AppStateDir = if ($env:LOCALAPPDATA) {
 $PlaywrightMarkerFile = Join-Path $AppStateDir "playwright-chromium-installed"
 $BackendHost = "127.0.0.1"
 $RequestedBackendPort = $env:BACKEND_PORT
+$RequestedBackendJobsPerWorker = $env:BACKEND_JOBS_PER_WORKER
 $script:BackendPort = 2024
+$script:BackendJobsPerWorker = 4
 $script:PythonExe = ""
 $script:UvExe = ""
 $script:NpxExe = ""
@@ -90,6 +92,18 @@ function Import-ProjectEnv {
   } elseif ($env:BACKEND_PORT) {
     $script:BackendPort = [int]$env:BACKEND_PORT
   }
+  $jobsPerWorkerValue = if ($RequestedBackendJobsPerWorker) {
+    $RequestedBackendJobsPerWorker
+  } elseif ($env:BACKEND_JOBS_PER_WORKER) {
+    $env:BACKEND_JOBS_PER_WORKER
+  } else {
+    "4"
+  }
+  $parsedJobsPerWorker = 0
+  if (-not [int]::TryParse($jobsPerWorkerValue, [ref]$parsedJobsPerWorker) -or $parsedJobsPerWorker -lt 1) {
+    Fail-Startup "BACKEND_JOBS_PER_WORKER 必须是正整数，当前值：$jobsPerWorkerValue"
+  }
+  $script:BackendJobsPerWorker = $parsedJobsPerWorker
   Write-SetupLog "已加载项目配置：$BackendEnvFile"
 }
 
@@ -318,7 +332,10 @@ function Test-PortAvailable {
 
 function Start-Backend {
   param([string]$LangGraphExe)
-  $arguments = @("dev", "--host", $BackendHost, "--port", $script:BackendPort, "--no-browser", "--allow-blocking")
+  $arguments = @(
+    "dev", "--host", $BackendHost, "--port", $script:BackendPort,
+    "--no-browser", "--allow-blocking", "--n-jobs-per-worker", $script:BackendJobsPerWorker
+  )
   if (-not $env:NO_RELOAD -or $env:NO_RELOAD -eq "1") {
     $arguments += "--no-reload"
   }

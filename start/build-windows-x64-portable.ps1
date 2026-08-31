@@ -162,7 +162,7 @@ $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
 
 Write-Step "Validate portable runtime"
 Invoke-Checked -Command $PortablePython -Arguments @(
-  "-c", "import os; from pathlib import Path; import deep_agent, langgraph_cli, langgraph_api, pydantic_core; from deep_agent.core.config import AppSettings, _DEFAULT_ENV_FILE; assert _DEFAULT_ENV_FILE == Path(os.environ['WEB_TEST_AGENT_ENV_FILE']).resolve(); settings = AppSettings(); assert settings.master_model and settings.specialist_model; print('portable Python config OK')"
+  "-c", "import os; from pathlib import Path; import deep_agent, langgraph_cli, langgraph_api, pydantic_core; from deep_agent.core.config import AppSettings, _DEFAULT_ENV_FILE; assert _DEFAULT_ENV_FILE == Path(os.environ['WEB_TEST_AGENT_ENV_FILE']).resolve(); settings = AppSettings(); master = settings.resolve_model_connection('master'); specialist = settings.resolve_model_connection('specialist'); assert master.api_model_name and specialist.api_model_name; print('portable Python config OK')"
 ) -FailureMessage "Portable Python import check failed" -WorkingDirectory $AppDir
 Invoke-Checked -Command $PortableNode -Arguments @($PortablePlaywrightCli, "--version") -FailureMessage "Portable Playwright CLI check failed"
 
@@ -190,10 +190,12 @@ test("portable Chromium", async ({ page }) => {
   $SmokePort = 21249
   $SmokeStdout = Join-Path $BuildRoot "backend-smoke.log"
   $SmokeStderr = Join-Path $BuildRoot "backend-smoke-error.log"
-  $env:OPENAI_API_KEY = "portable-build-smoke-key"
+  $env:MASTER_LLM__API_KEY = "portable-build-smoke-key"
+  $env:SPECIALIST_LLM__API_KEY = "portable-build-smoke-key"
   $BackendProcess = Start-Process -FilePath $PortablePython -ArgumentList @(
     "-m", "langgraph_cli", "dev", "--host", "127.0.0.1", "--port", $SmokePort,
     "--no-browser", "--allow-blocking", "--no-reload", "--server-log-level", "ERROR",
+    "--n-jobs-per-worker", "4",
     "--config", (Join-Path $AppDir "langgraph.json")
   ) -WorkingDirectory $AppDir -RedirectStandardOutput $SmokeStdout -RedirectStandardError $SmokeStderr -WindowStyle Hidden -PassThru
   try {

@@ -75,6 +75,7 @@ class StageSummaryEntry(TypedDict, total=False):
     stage: StageName
     status: str
     text: str
+    finalization_key: str
 
 
 class FileManifestEntry(TypedDict):

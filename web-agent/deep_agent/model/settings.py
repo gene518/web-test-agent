@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 ModelRole = Literal["master", "specialist"]
-ModelFamily = Literal["auto", "openai", "qwen", "minimax", "glm", "generic"]
+ModelFamily = Literal["openai", "qwen", "minimax", "glm", "generic"]
 ModelChannel = Literal[
-    "auto",
     "openai",
     "dashscope_openai",
     "minimax_openai",
@@ -26,66 +25,37 @@ ThinkingMode = Literal["auto", "enabled", "disabled"]
 class ModelConnectionSettings(BaseModel):
     """单个 Agent 角色使用的模型连接配置。"""
 
-    family: ModelFamily = "auto"
-    channel: ModelChannel = "auto"
+    model_config = ConfigDict(extra="forbid")
+
+    family: ModelFamily | None = None
+    channel: ModelChannel | None = None
     model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
     thinking: ThinkingMode = "auto"
-    reasoning_effort: str | None = None
-    context_window: int | None = Field(default=None, gt=0)
-    max_output_tokens: int | None = Field(default=None, gt=0)
-    timeout_seconds: int | None = Field(default=None, gt=0)
-    max_retries: int | None = Field(default=None, ge=0)
-    stream_chunk_timeout_seconds: int | None = None
 
-    @field_validator("model", "api_key", "base_url", "reasoning_effort", mode="before")
+    @field_validator("family", "channel", "model", mode="before")
     @classmethod
-    def _empty_string_to_none(cls, value: object) -> object:
+    def _normalize_required_text(cls, value: object) -> object:
+        """让空必填项进入统一的连接配置错误路径。"""
+
         if isinstance(value, str):
-            normalized = value.strip()
-            return normalized or None
+            return value.strip() or None
         return value
-
-    def has_explicit_configuration(self) -> bool:
-        """判断是否启用了新的角色级模型配置。"""
-
-        return any(
-            (
-                self.family != "auto",
-                self.channel != "auto",
-                self.model is not None,
-                self.api_key is not None,
-                self.base_url is not None,
-                self.thinking != "auto",
-                self.reasoning_effort is not None,
-                self.context_window is not None,
-                self.max_output_tokens is not None,
-                self.timeout_seconds is not None,
-                self.max_retries is not None,
-                self.stream_chunk_timeout_seconds is not None,
-            )
-        )
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedModelConnection:
-    """完成旧配置迁移、模型识别和默认值补齐后的连接配置。"""
+    """完成必填校验和运行参数补齐后的模型连接配置。"""
 
     role: ModelRole
-    model: str
     api_model_name: str
-    family: str
-    channel: str
-    protocol: str
+    family: ModelFamily
+    channel: ModelChannel
+    protocol: Literal["openai", "anthropic"]
     api_key: str | None
     base_url: str | None
     thinking: ThinkingMode
-    reasoning_effort: str | None
-    context_window: int | None
-    max_output_tokens: int | None
     timeout_seconds: int
     max_retries: int
     stream_chunk_timeout_seconds: int | None
-    legacy_config: bool = False
-    metadata: dict[str, object] = field(default_factory=dict)

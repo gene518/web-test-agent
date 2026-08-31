@@ -10,14 +10,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
-from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.core.display_message import (
     build_display_summary_message,
     build_runtime_message_result,
 )
-from deep_agent.core.runtime_logging import debug_max_chars
 
 if TYPE_CHECKING:
     from deep_agent.agent.state import WorkflowState
@@ -160,22 +158,8 @@ class SpecialistDisplayMixin:
             return artifact
         return None
 
-    def _workflow_managed_pipeline(self, state: WorkflowState) -> bool:
-        """判断当前阶段是否由统一工作流 finalizer 管理用户回复。
-
-        判定规则：只有当本轮请求包含 ≥2 个阶段时（例如 `plan -> generator`），
-        才由 `finalize_turn_node` 统一输出一条合并汇总；单阶段请求视为独立阶段，
-        Specialist 自己把 `stage_summary` 作为用户可见消息发出，避免 finalize 节点
-        把同一份内容再原样复述一次，造成 UI 上出现两条重复的总结。
-        """
-
-        requested_pipeline = state.get("requested_pipeline")
-        if not isinstance(requested_pipeline, list):
-            return False
-        return len(requested_pipeline) >= 2
-
-    def _fallback_final_summary(self, raw_result: dict[str, Any]) -> str:
-        """总结模型不可用时，退回到阶段结果中最接近最终回复的文本。"""
+    def _fallback_stage_message(self, raw_result: dict[str, Any]) -> str:
+        """提取最接近当前阶段结果的文本，供阶段 Finalizer 兜底。"""
 
         status = raw_result.get("status")
         message = raw_result.get("message")
@@ -224,16 +208,18 @@ class SpecialistDisplayMixin:
         *,
         stage_status: str,
         artifact: dict[str, Any] | None,
-        stage_summary: dict[str, Any],
+        fallback_message: str,
+        finalization_key: str,
     ) -> dict[str, Any]:
-        """构造写入 state 的内部阶段结果，不直接暴露给用户。"""
+        """构造写入 state 的原始阶段结果，交给独立 Finalizer 收尾。"""
 
         return {
             "agent_type": self.agent_type,
             "display_name": self.display_name,
             "status": stage_status,
             "artifact": artifact,
-            "stage_summary": stage_summary,
+            "fallback_message": fallback_message,
+            "finalization_key": finalization_key,
             "raw_messages": [
                 self._message_to_text(message)
                 for message in raw_result.get("messages", [])
@@ -243,34 +229,6 @@ class SpecialistDisplayMixin:
                 key: value for key, value in raw_result.items() if key != "messages"
             },
         }
-
-    def _format_stage_result_for_prompt(self, raw_result: dict[str, Any]) -> str:
-        """把阶段原始结果压成总结提示词文本。"""
-
-        lines: list[str] = []
-        for key, value in raw_result.items():
-            if key == "messages" and isinstance(value, list):
-                message_lines = [
-                    f"{message.__class__.__name__}: {self._message_to_text(message)}"
-                    for message in value
-                    if isinstance(message, BaseMessage)
-                ]
-                lines.append("messages:\n" + "\n".join(message_lines))
-                continue
-            lines.append(f"{key}: {value}")
-        text = "\n".join(lines)
-        max_chars = debug_max_chars(self._settings)
-        if len(text) <= max_chars:
-            return text
-        return f"{text[:max_chars]}... [truncated]"
-
-    def _latest_human_message_text(self, messages: Sequence[Any]) -> str:
-        """返回最近一条用户消息文本。"""
-
-        for message in reversed(messages):
-            if isinstance(message, HumanMessage):
-                return self._message_to_text(message)
-        return ""
 
     def _message_to_text(self, message: BaseMessage) -> str:
         """把消息内容转换成字符串。"""
@@ -300,19 +258,3 @@ class SpecialistDisplayMixin:
             return ", ".join(str(item) for item in value)
 
         return str(value)
-
-    def _build_stage_summary_for_result(
-        self,
-        *,
-        stage_status: str,
-        artifact: dict[str, Any] | None,
-        fallback_message: str | None,
-    ) -> dict[str, Any]:
-        """构建当前阶段 summary，保留一层方法便于测试替换。"""
-
-        return build_stage_summary(
-            stage=self.agent_type,
-            status=stage_status,
-            artifact=artifact,
-            fallback_message=fallback_message,
-        )

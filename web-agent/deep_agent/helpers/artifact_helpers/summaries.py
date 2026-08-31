@@ -20,6 +20,7 @@ def build_stage_summary(
     status: str,
     artifact: ArtifactHistoryEntry | None,
     fallback_message: str | None = None,
+    include_follow_up: bool = True,
 ) -> StageSummaryEntry:
     """构建面向用户的阶段摘要块。"""
 
@@ -37,11 +38,15 @@ def build_stage_summary(
         )
 
     if stage == "plan":
-        text = _build_plan_stage_summary(artifact)
+        text = _build_plan_stage_summary(artifact, include_follow_up=include_follow_up)
     elif stage == "generator":
-        text = _build_generator_stage_summary(artifact)
+        text = _build_generator_stage_summary(
+            artifact, include_follow_up=include_follow_up
+        )
     else:
-        text = _build_healer_stage_summary(artifact)
+        text = _build_healer_stage_summary(
+            artifact, include_follow_up=include_follow_up
+        )
 
     return StageSummaryEntry(
         artifact_id=artifact.get("artifact_id"),
@@ -57,17 +62,35 @@ def build_final_turn_summary(pending_stage_summaries: Any) -> str:
     if not isinstance(pending_stage_summaries, list) or not pending_stage_summaries:
         return "当前轮次已结束，但没有可汇总的阶段结果。"
 
-    blocks: list[str] = []
+    entries: list[dict[str, Any]] = []
     for summary in pending_stage_summaries:
         if not isinstance(summary, dict):
             continue
+        entries.append(summary)
+
+    blocks: list[str] = []
+    is_multi_stage = len(entries) > 1
+    for summary in entries:
         text = str(summary.get("text") or "").strip()
         if text:
-            blocks.append(text)
-    return "\n\n".join(blocks) if blocks else "当前轮次已结束，但没有可汇总的阶段结果。"
+            blocks.append(_without_follow_up_lines(text) if is_multi_stage else text)
+    if not blocks:
+        return "当前轮次已结束，但没有可汇总的阶段结果。"
+
+    if is_multi_stage:
+        statuses = [str(entry.get("status") or "").strip().lower() for entry in entries]
+        if statuses and all(status == "success" for status in statuses):
+            blocks.append("**完成状态**\n- 当前请求已完成，无需补充信息。")
+        else:
+            blocks.append(
+                "**执行状态**\n- 当前请求未完整完成，请根据失败阶段的具体说明处理后重试。"
+            )
+    return "\n\n".join(blocks)
 
 
-def _build_plan_stage_summary(artifact: ArtifactHistoryEntry) -> str:
+def _build_plan_stage_summary(
+    artifact: ArtifactHistoryEntry, *, include_follow_up: bool
+) -> str:
     plan_files = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
     planned_files = _plan_target_files_from_artifact(artifact)
     case_detail_lines = _build_plan_case_detail_lines(artifact)
@@ -90,11 +113,14 @@ def _build_plan_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     ]
     if case_detail_lines:
         lines.extend(case_detail_lines)
-    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('plan', artifact)}")
+    if include_follow_up:
+        lines.append(f"- 可选后续操作：{_next_stage_input_hint('plan', artifact)}")
     return "\n".join(lines)
 
 
-def _build_generator_stage_summary(artifact: ArtifactHistoryEntry) -> str:
+def _build_generator_stage_summary(
+    artifact: ArtifactHistoryEntry, *, include_follow_up: bool
+) -> str:
     input_plans = ", ".join(f"`{path}`" for path in artifact.get("input_files", [])) or "无"
     output_scripts = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
     script_detail_lines = _build_script_detail_lines(
@@ -116,11 +142,14 @@ def _build_generator_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     ]
     if script_detail_lines:
         lines.extend(script_detail_lines)
-    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('generator', artifact)}")
+    if include_follow_up:
+        lines.append(f"- 可选后续操作：{_next_stage_input_hint('generator', artifact)}")
     return "\n".join(lines)
 
 
-def _build_healer_stage_summary(artifact: ArtifactHistoryEntry) -> str:
+def _build_healer_stage_summary(
+    artifact: ArtifactHistoryEntry, *, include_follow_up: bool
+) -> str:
     input_scripts = ", ".join(f"`{path}`" for path in artifact.get("input_files", [])) or "无"
     changed_files = ", ".join(f"`{path}`" for path in artifact.get("output_files", [])) or "无"
     validation_runs = ", ".join(f"`{path}`" for path in artifact.get("validation_runs", [])) or "无"
@@ -144,8 +173,20 @@ def _build_healer_stage_summary(artifact: ArtifactHistoryEntry) -> str:
     ]
     if script_detail_lines:
         lines.extend(script_detail_lines)
-    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint('healer', artifact)}")
+    if include_follow_up:
+        lines.append(f"- 可选后续操作：{_next_stage_input_hint('healer', artifact)}")
     return "\n".join(lines)
+
+
+def _without_follow_up_lines(text: str) -> str:
+    """兼容旧 checkpoint：多阶段最终汇总时移除历史阶段建议。"""
+
+    follow_up_prefixes = ("- 下一阶段建议输入：", "- 可选后续操作：")
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.strip().startswith(follow_up_prefixes)
+    ).strip()
 
 
 def _plan_target_files_from_artifact(artifact: ArtifactHistoryEntry) -> list[str]:
@@ -273,7 +314,7 @@ def _build_failure_stage_summary(
         input_files = ", ".join(f"`{path}`" for path in artifact.get("input_files", []))
         if input_files:
             lines.append(f"- 已识别输入文件：{input_files}")
-    if fallback_message:
-        lines.append(f"- 说明：{fallback_message}")
-    lines.append(f"- 下一阶段建议输入：{_next_stage_input_hint(stage, artifact or {})}")
+    failure_reason = fallback_message or "当前阶段未返回可用的成功结果。"
+    lines.append(f"- 说明：{failure_reason}")
+    lines.append("- 处理建议：请根据上述失败原因修正问题后，重新执行当前阶段。")
     return "\n".join(lines)

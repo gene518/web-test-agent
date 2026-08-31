@@ -2,17 +2,13 @@
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
 
 from deep_agent.agent.base_agent import BaseAgent
-from deep_agent.agent.master.master_agent import MasterAgent
 from deep_agent.agent.state import WorkflowState
 from deep_agent.core.config import AppSettings
-from deep_agent.core.display_message import (
-    build_display_summary_message,
-    extract_missing_display_messages,
-)
 from deep_agent.core.runtime_logging import (
     build_trace_context,
     format_messages_for_log,
@@ -32,10 +28,9 @@ class SchedulerAgent(BaseAgent):
     agent_type = "scheduler"
     display_name = "Scheduler Agent"
 
-    def __init__(self, master_agent: MasterAgent, settings: AppSettings) -> None:
-        """保存共享 Master 服务对象和应用配置。"""
+    def __init__(self, settings: AppSettings) -> None:
+        """保存 Scheduler 配置写入所需的应用配置。"""
 
-        self._master_agent = master_agent
         self._settings = settings
 
     async def execute(
@@ -53,30 +48,19 @@ class SchedulerAgent(BaseAgent):
         )
 
         raw_result = await self._build_raw_result(state)
-        narrative = await self._master_agent.summarize_final_response(
-            state=state,
-            stage_name=self.display_name,
-            raw_result=raw_result,
-            config=config,
-        )
-        final_summary = self._build_stage_summary(raw_result, narrative)
-        final_message = build_display_summary_message(
-            final_summary,
-            prefix="scheduler-summary",
-        )
+        finalization_key = f"{self.agent_type}:{uuid4().hex}"
         result: WorkflowState = {
-            "messages": [final_message],
-            "display_messages": [
-                *extract_missing_display_messages(dict(state)),
-                final_message,
-            ],
+            "messages": [],
             "stage_result": {
                 "agent_type": self.agent_type,
+                "display_name": self.display_name,
+                "status": raw_result.get("status", "success"),
                 "raw_result": raw_result,
-                "stage_summary": final_summary,
+                "finalization_key": finalization_key,
             },
-            "final_summary": final_summary,
-            "next_action": "end",
+            "finalization_key": finalization_key,
+            "pipeline_handoff": False,
+            "return_to_master": False,
         }
         logger.info(
             "%s event=node_exit trace=%s messages=%s",
@@ -124,56 +108,6 @@ class SchedulerAgent(BaseAgent):
             **update_result,
             "message": "定时任务配置成功；任务 ID 已由系统生成，独立调度服务将在下一轮扫描时自动读取最新配置。",
         }
-
-    def _build_stage_summary(
-        self,
-        raw_result: dict[str, Any],
-        narrative: str,
-    ) -> str:
-        """把模型补充说明包装进前端可稳定识别的 Scheduler 阶段摘要。"""
-
-        succeeded = raw_result.get("status") == "success"
-        lines = [
-            "**Scheduler 阶段**",
-            f"- 状态：{'成功' if succeeded else '失败'}",
-        ]
-        project_dir = self._optional_text(raw_result.get("project_dir"))
-        if project_dir:
-            lines.append(f"- 项目目录：`{project_dir}`")
-        config_path = self._optional_text(raw_result.get("config_path"))
-        if config_path:
-            lines.append(f"- 配置文件：`{config_path}`")
-
-        if succeeded:
-            operation = "新建" if raw_result.get("operation") == "created" else "更新"
-            lines.extend(
-                [
-                    f"- 配置操作：{operation}",
-                    f"- 任务 ID：`{raw_result.get('task_id', '未知')}`",
-                    f"- Cron：`{raw_result.get('schedule', '未知')}`",
-                    f"- 执行方式：{'有头模式' if raw_result.get('headed') else '无头模式'}，"
-                    f"{'已启用' if raw_result.get('enabled') else '已停用'}",
-                ]
-            )
-            locations = self._optional_string_list(raw_result.get("locations")) or []
-            lines.append(
-                "- 测试范围："
-                + (
-                    "、".join(f"`{location}`" for location in locations)
-                    if locations
-                    else "全部用例"
-                )
-            )
-            log_file = self._optional_text(raw_result.get("log_file"))
-            if log_file:
-                lines.append(f"- Scheduler 日志：`{log_file}`")
-
-        detail = self._optional_text(narrative) or self._optional_text(
-            raw_result.get("message")
-        )
-        if detail:
-            lines.append(f"- 说明：{detail}")
-        return "\n".join(lines)
 
     def _optional_text(self, value: Any) -> str | None:
         """把参数归一化为可判空字符串。"""

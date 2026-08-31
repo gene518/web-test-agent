@@ -45,6 +45,16 @@ describe("thread titles", () => {
     expect(threadTitle(thread)).toBe("登录测试");
   });
 
+  it("prefers a persisted model title over legacy metadata", () => {
+    const thread = {
+      metadata: { thread_title: "请帮我生成登录页面自动化测试" },
+      extracted: { thread_title: "登录自动化测试" },
+    } as unknown as Thread<AgentState>;
+
+    expect(threadTitle(thread)).toBe("登录自动化测试");
+    expect(threadTitle(thread, { thread_title: "登录回归测试" })).toBe("登录回归测试");
+  });
+
   it("falls back to the first human message for legacy thread titles", () => {
     const thread = {
       metadata: {},

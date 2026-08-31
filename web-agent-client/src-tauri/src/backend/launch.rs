@@ -182,6 +182,8 @@ pub(super) fn build_launch_spec(root: &Path, platform: Platform, port: u16) -> L
                     port.to_string(),
                     "--no-browser".to_string(),
                     "--allow-blocking".to_string(),
+                    "--n-jobs-per-worker".to_string(),
+                    "4".to_string(),
                     "--no-reload".to_string(),
                     "--server-log-level".to_string(),
                     "ERROR".to_string(),

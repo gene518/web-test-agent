@@ -37,7 +37,9 @@
 
 ### 2.3 历史会话续聊
 
-点击历史会话后可以继续发送消息。后端会在再次调用模型前修复持久化工具消息链：忽略没有对应调用的孤立工具结果，并为未闭合的工具调用补齐结果，避免 OpenAI `function_call_output` 协议错误。
+点击历史会话后可以继续发送消息。每个选中或运行中的会话维护独立流、运行状态、输入草稿和滚动位置，因此会话 A 在后台执行时，会话 B 可以立即提交并独立返回；同一会话仍拒绝重复运行。后端会在再次调用模型前修复持久化工具消息链：忽略没有对应调用的孤立工具结果，并为未闭合的工具调用补齐结果，避免 OpenAI `function_call_output` 协议错误。
+
+新会话标题由 Master 首轮模型概括并随 state 持久化；历史列表只提取标题和首条消息，缺少模型标题的已加载旧会话在空闲时限速回填。长对话首次显示最后 20 个用户轮次，上滑触顶后继续加载并保持锚点；用户离开底部时流式消息不强制拉回，可通过浮动向下按钮返回最新。
 
 ## 3. 目录结构
 
@@ -141,7 +143,7 @@ web-test-agent/  # 仓库根目录。
 ### 3.1 服务端核心类与职责
 
 - 入口与状态：`AppSettings` 负责统一环境变量和运行配置，`WorkflowState` 负责统一 LangGraph 全局状态，`build_web_autotest_agent_workflow()` 负责组装整个服务端主图。
-- Master 路由层：`MasterAgent`、`IntentClassification`、`IntentJudgeNode`、`ResolveStageFilesNode` 和 `CompleteParamsNode` 共同完成意图识别、缺参补全和阶段切换；`FinalizeTurnNode` 位于 `agent/finalizer/`，由主工作流在多阶段完成后统一合并最终回复。
+- Master 路由层：`MasterAgent`、`IntentClassification`、`IntentJudgeNode`、`ResolveStageFilesNode` 和 `CompleteParamsNode` 共同完成意图识别、缺参补全和阶段切换；`FinalizerAgent` 与配置化 `FinalizeStageNode` 位于 `agent/finalizer/`，分别在 Plan、Generator、Healer、Scheduler 实际结束后执行一次阶段收尾，Master 和 General 不经过该节点。
 - Specialist 执行层：`BaseAgent` 定义统一执行接口，`BaseSpecialistAgent` 负责 Plan、Generator、Healer 三类阶段的公共执行骨架；`SpecialistRuntimeConfig`、`SpecialistExecutionContext` 和三个 `Mixin`（workspace、display、logging）负责运行时配置、目录权限、消息展示和日志处理。
 - Specialist 分层约定：`*_agent.py` 只承担"阶段配置 + 参数校验 + workspace 解析 + prompt + 写权限"这类静态职责；事件流监听、工具状态机、产物抽取等运行期逻辑放在同目录下的 `runtime.py`（`PlanRuntimeHelper` / `GeneratorRuntimeHelper` / `HealerRuntimeHelper`）里，分层方式与 Master 的 `master_agent.py + master_graph.py + nodes/*.py` 保持一致。
 - 通用输入与异常识别：Specialist 规范化的输入解析、workspace 边界校验、浏览器关闭预期异常识别等能力统一放在 `helpers/specialist_helpers/` 下的 `input_resolution.py` 与 `browser_close.py`，不再在各阶段重复实现。
@@ -173,16 +175,17 @@ flowchart TD
     阶段路由 --> 定时["scheduler_config_node：维护定时任务配置"]
     意图判断 --> 普通问答["general_test_node：测试专家问答"]
 
-    计划 --> 产物["阶段产物和阶段摘要"]
-    生成 --> 产物
-    修复 --> 产物
-    产物 --> 回流["return_to_master：回到 Master 推进下一阶段"]
+    计划 --> 计划收尾["finalize_plan_stage_node：总结 Plan 阶段"]
+    生成 --> 生成收尾["finalize_generator_stage_node：总结 Generator 阶段"]
+    修复 --> 修复收尾["finalize_healer_stage_node：总结 Healer 阶段"]
+    定时 --> 定时收尾["finalize_scheduler_stage_node：总结 Scheduler 阶段"]
+    计划收尾 --> 回流["return_to_master：回到 Master 推进下一阶段"]
+    生成收尾 --> 回流
+    修复收尾 --> 回流
     回流 --> 意图判断
 
     普通问答 --> 结束["END：当前轮结束"]
-    定时 --> 结束
-    意图判断 --> 最终汇总["finalize_turn_node：统一输出最终总结"]
-    最终汇总 --> 结束
+    定时收尾 --> 结束
 
     计划 -.-> 工具["Playwright MCP 工具白名单和工作目录权限"]
     生成 -.-> 工具
@@ -196,8 +199,8 @@ flowchart TD
 3. Master 路由：`IntentJudgeNode` 调用 `MasterAgent` 判断请求属于计划、生成、修复、普通问答或定时任务。
 4. 参数准备：`ResolveStageFilesNode` 继承历史产物，`CompleteParamsNode` 在缺参时中断并等待补充。
 5. 阶段执行：Plan、Generator、Healer 通过 `BaseSpecialistAgent` 准备工作目录、加载提示词、获取 MCP 工具并执行 Deep Agent。
-6. 产物回流：阶段完成后写入 `artifact_history`、`latest_artifacts` 和 `pending_stage_summaries`，多阶段链路继续回到 Master。
-7. 汇总结束：`FinalizeTurnNode` 将当前轮所有阶段摘要合成用户可见结论，随后进入下一轮等待。
+6. 阶段收尾：每个 Specialist 的后继 `FinalizeStageNode` 以 `finalization_key` 幂等生成一次阶段总结；中间阶段只写 UI 时间线，终止或失败阶段才写入模型消息。
+7. 产物回流：成功的中间阶段带着 `artifact_history`、`latest_artifacts` 和阶段摘要回到 Master；最后阶段或失败阶段直接结束，不再调用整体 Finalizer。
 
 ## 5. 环境要求
 
@@ -235,7 +238,7 @@ bash start/macos-start.command start
 .\start\windows-start.ps1 -Mode start
 ```
 
-启动脚本会检查工具链、同步依赖、准备 Playwright Chromium，然后运行 Tauri 开发客户端。客户端会管理自己在 `127.0.0.1:2024` 上启动的本地 LangGraph 后端；如端口已被任何外部服务占用（包括其他 LangGraph 实例），会拒绝接管或终止该进程并报告冲突。
+启动脚本会检查工具链、同步依赖、准备 Playwright Chromium，然后运行 Tauri 开发客户端。客户端会管理自己在 `127.0.0.1:2024` 上启动的本地 LangGraph 后端；源码启动默认允许每个 worker 并发处理 4 个会话任务，可通过 `BACKEND_JOBS_PER_WORKER` 覆盖，Windows 便携版固定为 4。如端口已被当前仓库 `web-agent` 启动的 LangGraph 服务占用，可通过“重新启动”安全接管。其他外部服务（包括其他仓库的 LangGraph 实例）仍会被保留并报告冲突。
 
 停止或查看日志：
 
@@ -266,7 +269,7 @@ bash start/macos-start.command logs
 
 ## 8. Scheduler 执行和总结报告
 
-Scheduler Agent 负责把自然语言需求写入 JSON 配置；真正的定时执行由独立常驻进程负责，不会随桌面客户端自动启动。
+Scheduler Agent 负责把自然语言需求写入 JSON 配置；真正的定时执行由独立常驻进程负责，不会随桌面客户端自动启动。常驻进程会通过 LangGraph SDK 创建确定性的只读监控对话并运行 `web-autotest-scheduled-run` 图。
 
 ```bash
 cp web-agent/scheduler_tasks.example.json web-agent/scheduler_tasks.json
@@ -277,12 +280,14 @@ uv run web-agent-scheduler
 uv run web-agent-scheduler --config ./scheduler_tasks.json
 ```
 
-调度器使用五段 Cron，支持项目时区、misfire 补偿、有界等待队列和任务超时。Playwright 进程结束后，无论成功、失败、超时、取消还是执行器异常，都会进入总结阶段。总结会：
+调度器使用五段 Cron，支持项目时区、misfire 补偿、有界等待队列和任务超时。执行期间会在监控对话发布用例、重试、失败及每 30 秒有变化心跳。Playwright 结束后，无论成功、失败、超时、取消还是执行器异常，都会进入总结阶段。总结会：
 
 - 结合进程退出码和 Playwright 真实输出判定最终状态。
 - 提取失败、重试、flaky、跳过、中断、超时和未执行用例。
 - 保留失败与重试原因，归类当前问题，并聚合同一任务最近 20 份历史报告计算成功率、重试率和重复问题。
 - 同时生成适合机器处理的 JSON 和便于人阅读的 Markdown。
+- 使用模型结构化判断失败 owner 为 `test_automation`、`product`、`environment`、`data` 或 `unknown`。项目根目录可提供 UTF-8、最大 32 KiB 且非符号链接的 `task-healer.md` 辅助判断；缺失时由模型根据证据自主判断。
+- 仅对 `test_automation`、允许修复且置信度不低于 `0.8` 的失败调用一次 Healer，并将写入范围限制为失败 spec、关联计划和 `test_case/shared`；不修改产品代码、不提交 Git。
 
 报告和日志位于自动化项目内：
 
@@ -297,11 +302,11 @@ uv run web-agent-scheduler --config ./scheduler_tasks.json
         └── latest.md
 ```
 
-JSON 报告包含任务元数据、进程结果、用例统计、失败用例、重试用例、共性问题、历史稳定性、诊断摘录、分析警告和产物路径。控制台输出最多保留 5000 行用于分析；超限时报告会显式标记截断，完整输出仍可在 `scheduler-service.log` 中查看。
+schema v2 JSON 报告包含任务元数据、进程结果、用例统计、失败用例、重试用例、模型归因、自动修复结果、只读监控对话、共性问题、历史稳定性、诊断摘录、分析警告和产物路径；读取历史时继续兼容 schema v1。控制台输出最多保留 5000 行用于分析；超限时报告会显式标记截断，完整输出仍可在 `scheduler-service.log` 中查看。
 
 ## 9. 阶段总结和本地产物打开
 
-Plan、Generator、Healer 和 Scheduler 配置阶段都会输出结构稳定的阶段总结。Plan / Generator / Healer 总结包括项目目录、输入文件、实际落盘文件和验证结果；Scheduler 总结的成功和失败分支都固定包含状态和配置文件，成功时还包含项目目录、配置操作、任务 ID、Cron、执行模式、测试范围和 Scheduler 日志。桌面客户端会把规范阶段总结中可识别的本地文件和目录显示为可点击项：macOS 使用 Finder，Windows 使用文件资源管理器。
+Plan、Generator、Healer 和 Scheduler 配置阶段都会输出结构稳定的阶段总结。Plan / Generator / Healer 总结包括项目目录、输入文件、实际落盘文件和验证结果；完整多阶段成功后会明确标记当前请求已完成，不再要求用户追加内容，单阶段成功只提供可选后续操作。Scheduler 总结的成功和失败分支都固定包含状态和配置文件，成功时还包含项目目录、配置操作、任务 ID、Cron、执行模式、测试范围和 Scheduler 日志。桌面客户端会把规范阶段总结中可识别的本地文件和目录显示为带类型图标的紧凑引用：macOS 使用 Finder，Windows 使用文件资源管理器。
 
 Scheduler 的对话阶段总结只表示定时任务配置已成功写入或写入失败，不表示测试已执行。真正的定时运行由独立 `web-agent-scheduler` 进程完成，执行结束后另行生成第 8 节所述 JSON / Markdown 分析报告。
 

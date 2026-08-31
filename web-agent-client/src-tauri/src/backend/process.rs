@@ -3,6 +3,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    path::Path,
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -114,6 +115,55 @@ pub(super) fn listener_pids(port: u16, platform: Platform) -> Result<Vec<u32>, S
         .split_whitespace()
         .filter_map(|value| value.parse::<u32>().ok())
         .collect())
+}
+
+fn process_command(pid: u32, platform: Platform) -> Result<String, String> {
+    let output = match platform {
+        Platform::MacOs => Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output(),
+        Platform::Windows => Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object -ExpandProperty CommandLine"
+                ),
+            ])
+            .output(),
+    }
+    .map_err(|error| format!("无法读取端口进程命令：{error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("无法读取端口进程命令：{}", stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub(super) fn is_project_backend_command(command: &str, project_root: &Path) -> bool {
+    let backend_dir = project_root.join("web-agent");
+    let backend_dir = backend_dir.to_string_lossy();
+    command.contains(backend_dir.as_ref()) && command.contains("langgraph")
+}
+
+pub(super) fn project_backend_listener_pids(
+    port: u16,
+    project_root: &Path,
+    platform: Platform,
+) -> Result<Vec<u32>, String> {
+    listener_pids(port, platform)?
+        .into_iter()
+        .map(|pid| {
+            process_command(pid, platform)
+                .map(|command| (pid, is_project_backend_command(&command, project_root)))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|processes| {
+            processes
+                .into_iter()
+                .filter_map(|(pid, belongs_to_project)| belongs_to_project.then_some(pid))
+                .collect()
+        })
 }
 
 fn process_parent_map(platform: Platform) -> Result<HashMap<u32, u32>, String> {

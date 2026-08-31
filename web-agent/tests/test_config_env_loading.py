@@ -4,6 +4,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from pydantic import ValidationError
 
 from deep_agent.core.config import (
     AppSettings,
@@ -11,6 +14,7 @@ from deep_agent.core.config import (
     _discover_default_env_file,
     load_project_env_file,
 )
+from deep_agent.model.errors import ModelConfigurationError
 
 
 class ProjectEnvLoadingTestCase(unittest.TestCase):
@@ -48,54 +52,187 @@ class ProjectEnvLoadingTestCase(unittest.TestCase):
 
         self.assertEqual(resolved, package_root.resolve())
 
-    def test_empty_portable_template_model_names_use_defaults(self) -> None:
-        settings = AppSettings(
-            _env_file=None,
-            master_model=" ",
-            specialist_model="",
-        )
-
-        self.assertEqual(settings.master_model, "openai:gpt-4.1")
-        self.assertEqual(settings.specialist_model, "openai:gpt-5.4")
-
-    def test_flat_role_fields_load_without_nested_config(self) -> None:
+    def test_nested_role_configs_load_from_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
             env_path.write_text(
-                "MASTER_LLM_MODEL=qwen-internal\n"
-                "MASTER_LLM_API_KEY=master-key\n"
-                "MASTER_LLM_BASE_URL=https://master.example.test/v1\n"
-                "MASTER_LLM_THINKING=false\n"
-                "SPECIALIST_LLM_MODEL=qwen-specialist\n"
-                "SPECIALIST_LLM_API_KEY=specialist-key\n"
-                "SPECIALIST_LLM_BASE_URL=https://specialist.example.test/v1\n"
-                "SPECIALIST_LLM_THINKING=true\n",
+                "MASTER_LLM__FAMILY=qwen\n"
+                "MASTER_LLM__CHANNEL=dashscope_openai\n"
+                "MASTER_LLM__MODEL=qwen3.5-plus\n"
+                "MASTER_LLM__API_KEY=master-key\n"
+                "MASTER_LLM__BASE_URL=https://master.example.test/v1\n"
+                "MASTER_LLM__THINKING=disabled\n"
+                "SPECIALIST_LLM__FAMILY=minimax\n"
+                "SPECIALIST_LLM__CHANNEL=minimax_anthropic\n"
+                "SPECIALIST_LLM__MODEL=MiniMax-M2.7\n"
+                "SPECIALIST_LLM__API_KEY=specialist-key\n"
+                "SPECIALIST_LLM__BASE_URL=https://specialist.example.test/anthropic\n"
+                "SPECIALIST_LLM__THINKING=enabled\n",
                 encoding="utf-8",
             )
 
-            settings = AppSettings(_env_file=env_path)
-            master_kwargs = settings.build_model_kwargs(
-                settings.master_model, role="master"
-            )
-            specialist_kwargs = settings.build_model_kwargs(
-                settings.specialist_model,
-                role="specialist",
-            )
+            with patch.dict(os.environ, {}, clear=True):
+                settings = AppSettings(_env_file=env_path)
 
-        self.assertEqual(settings.master_llm_base_url, "https://master.example.test/v1")
-        self.assertEqual(master_kwargs["model"], "qwen-internal")
-        self.assertEqual(master_kwargs["model_provider"], "openai")
-        self.assertEqual(master_kwargs["api_key"], "master-key")
-        self.assertEqual(master_kwargs["base_url"], "https://master.example.test/v1")
-        self.assertEqual(master_kwargs["extra_body"], {"enable_thinking": False})
-        self.assertFalse(master_kwargs["use_responses_api"])
-        self.assertEqual(specialist_kwargs["model"], "qwen-specialist")
-        self.assertEqual(specialist_kwargs["api_key"], "specialist-key")
+        master = settings.resolve_model_connection("master")
+        specialist = settings.resolve_model_connection("specialist")
         self.assertEqual(
-            specialist_kwargs["base_url"],
-            "https://specialist.example.test/v1",
+            (
+                master.family,
+                master.channel,
+                master.api_model_name,
+                master.api_key,
+                master.base_url,
+                master.thinking,
+            ),
+            (
+                "qwen",
+                "dashscope_openai",
+                "qwen3.5-plus",
+                "master-key",
+                "https://master.example.test/v1",
+                "disabled",
+            ),
         )
-        self.assertEqual(specialist_kwargs["extra_body"], {"enable_thinking": True})
+        self.assertEqual(
+            (
+                specialist.family,
+                specialist.channel,
+                specialist.api_model_name,
+                specialist.api_key,
+                specialist.base_url,
+                specialist.thinking,
+            ),
+            (
+                "minimax",
+                "minimax_anthropic",
+                "MiniMax-M2.7",
+                "specialist-key",
+                "https://specialist.example.test/anthropic",
+                "enabled",
+            ),
+        )
+
+    def test_role_model_connections_are_isolated(self) -> None:
+        settings = AppSettings(
+            _env_file=None,
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "master-model",
+                "api_key": "master-key",
+                "base_url": "https://master.example.test/v1",
+                "thinking": "disabled",
+            },
+            specialist_llm={
+                "family": "generic",
+                "channel": "generic_anthropic",
+                "model": "specialist-model",
+                "api_key": "specialist-key",
+                "base_url": "https://specialist.example.test/v1",
+                "thinking": "enabled",
+            },
+        )
+
+        master = settings.resolve_model_connection("master")
+        specialist = settings.resolve_model_connection("specialist")
+
+        self.assertEqual(
+            (master.api_model_name, master.api_key, master.base_url, master.protocol),
+            (
+                "master-model",
+                "master-key",
+                "https://master.example.test/v1",
+                "openai",
+            ),
+        )
+        self.assertEqual(
+            (
+                specialist.api_model_name,
+                specialist.api_key,
+                specialist.base_url,
+                specialist.protocol,
+            ),
+            (
+                "specialist-model",
+                "specialist-key",
+                "https://specialist.example.test/v1",
+                "anthropic",
+            ),
+        )
+
+    def test_missing_required_role_fields_raise_configuration_error(self) -> None:
+        invalid_configs = {
+            "family": {"channel": "generic_openai", "model": "custom-model"},
+            "channel": {"family": "generic", "model": "custom-model"},
+            "model": {
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": " ",
+            },
+        }
+
+        for missing_field, role_config in invalid_configs.items():
+            with self.subTest(missing_field=missing_field):
+                settings = AppSettings(_env_file=None, master_llm=role_config)
+                with self.assertRaises(ModelConfigurationError):
+                    settings.resolve_model_connection("master")
+
+    def test_empty_api_key_and_base_url_are_allowed(self) -> None:
+        settings = AppSettings(
+            _env_file=None,
+            master_llm={
+                "family": "generic",
+                "channel": "generic_openai",
+                "model": "custom-model",
+                "api_key": " ",
+                "base_url": "",
+            },
+        )
+
+        connection = settings.resolve_model_connection("master")
+
+        self.assertIsNone(connection.api_key)
+        self.assertIsNone(connection.base_url)
+        self.assertEqual(connection.thinking, "auto")
+
+    def test_model_id_rejects_provider_prefix(self) -> None:
+        for model_name in ("openai:gpt-5.6-terra", "anthropic:claude-sonnet"):
+            with self.subTest(model_name=model_name):
+                settings = AppSettings(
+                    _env_file=None,
+                    master_llm={
+                        "family": "generic",
+                        "channel": "generic_openai",
+                        "model": model_name,
+                    },
+                )
+
+                with self.assertRaises(ModelConfigurationError):
+                    settings.resolve_model_connection("master")
+
+    def test_role_model_config_rejects_removed_override_fields(self) -> None:
+        removed_fields = {
+            "reasoning_effort": "max",
+            "context_window": 100_000,
+            "max_output_tokens": 10_000,
+            "timeout_seconds": 30,
+            "max_retries": 5,
+            "stream_chunk_timeout_seconds": 15,
+        }
+
+        for field_name, value in removed_fields.items():
+            with self.subTest(field_name=field_name):
+                with self.assertRaises(ValidationError):
+                    AppSettings(
+                        _env_file=None,
+                        master_llm={
+                            "family": "generic",
+                            "channel": "generic_openai",
+                            "model": "custom-model",
+                            field_name: value,
+                        },
+                    )
 
     def test_load_project_env_file_reads_utf8_and_preserves_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

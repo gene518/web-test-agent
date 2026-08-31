@@ -134,6 +134,38 @@ test("browser preview rejects a non-LangGraph service on the configured port", a
   await expect(page.getByText("端口 2024 上的服务不是 LangGraph 后端。", { exact: true })).toBeVisible();
 });
 
+test("an idle new conversation does not enter a render loop", async ({ page }) => {
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+    } else if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+    } else if (url.pathname === "/threads/search") {
+      await route.fulfill({ headers, json: [] });
+    } else {
+      await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+    }
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "开始一个测试任务" })).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(consoleErrors.filter((message) => message.includes("Maximum update depth"))).toEqual([]);
+});
+
 test("settings edits stay in a draft until a successful save", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
@@ -185,6 +217,7 @@ test("settings edits stay in a draft until a successful save", async ({ page }) 
 test("history titles fall back to messages and hydrate the selected conversation on demand", async ({ page }) => {
   let stateRequests = 0;
   let searchSelect: string[] = [];
+  let searchExtract: Record<string, string> = {};
   const threadId = "history-detail-regression";
   const headers = {
     "access-control-allow-origin": "*",
@@ -205,7 +238,12 @@ test("history titles fall back to messages and hydrate the selected conversation
       return;
     }
     if (url.pathname === "/threads/search") {
-      searchSelect = (route.request().postDataJSON() as { select?: string[] }).select ?? [];
+      const search = route.request().postDataJSON() as {
+        select?: string[];
+        extract?: Record<string, string>;
+      };
+      searchSelect = search.select ?? [];
+      searchExtract = search.extract ?? {};
       await route.fulfill({
         headers,
         json: [
@@ -215,8 +253,8 @@ test("history titles fall back to messages and hydrate the selected conversation
             updated_at: "2026-07-17T08:01:00Z",
             metadata: { graph_id: "web-autotest-agent" },
             status: "idle",
-            values: {
-              messages: [{ id: "history-title", type: "human", content: "历史详情回归" }],
+            extracted: {
+              first_message: { id: "history-title", type: "human", content: "历史详情回归" },
             },
           },
         ],
@@ -261,8 +299,12 @@ test("history titles fall back to messages and hydrate the selected conversation
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "对话输入框" })).toBeEnabled();
   await expect.poll(() => stateRequests).toBe(1);
-  expect(searchSelect).toContain("values");
+  expect(searchSelect).not.toContain("values");
   expect(searchSelect).not.toContain("interrupts");
+  expect(searchExtract).toEqual({
+    thread_title: "values.thread_title",
+    first_message: "values.messages[0]",
+  });
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
 });
 
@@ -343,7 +385,7 @@ test("Healer validation targets are clickable and browser preview explains the l
   const links = page.locator(".artifact-path-link");
   await expect(links).toHaveCount(5);
   const validationTargetLink = page.getByRole("button", {
-    name: `在文件管理器中打开 ${validationTarget}`,
+    name: `在系统文件管理器中显示文件 ${validationTarget}`,
   });
   await expect(validationTargetLink).toBeVisible();
 
@@ -708,6 +750,295 @@ test("a late new-thread submit failure does not pull thread B back into thread A
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(composer).toHaveValue("");
   await expect(page.locator(".conversation-heading span")).toHaveText("Web 自动化测试 Agent");
+});
+
+test("thread B completes while thread A is still streaming", async ({ page }) => {
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  let aJoinStarted = false;
+  let bStreamStarted = false;
+  let bFinished = false;
+  let releaseA: (() => void) | undefined;
+  const aGate = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [
+          {
+            thread_id: "parallel-a",
+            created_at: "2026-08-30T08:00:00Z",
+            updated_at: "2026-08-30T08:02:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "后台任务 A" },
+            status: "busy",
+          },
+          {
+            thread_id: "parallel-b",
+            created_at: "2026-08-30T08:00:00Z",
+            updated_at: "2026-08-30T08:01:00Z",
+            metadata: { graph_id: "web-autotest-agent", thread_title: "历史会话 B" },
+            status: bFinished ? "idle" : "idle",
+          },
+        ],
+      });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-a/state") {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: [{ id: "a-human", type: "human", content: "执行耗时任务 A" }] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: "parallel-a", checkpoint_ns: "", checkpoint_id: "a-checkpoint" },
+          metadata: {},
+          created_at: "2026-08-30T08:00:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-b/state") {
+      await route.fulfill({
+        headers,
+        json: {
+          values: bFinished
+            ? {
+                thread_title: "B 会话即时回复",
+                display_messages: [
+                  { id: "b-human", type: "human", content: "请回复 B" },
+                  { id: "b-ai", type: "ai", content: "B 已在 A 完成前返回" },
+                ],
+              }
+            : { display_messages: [] },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: "parallel-b", checkpoint_ns: "", checkpoint_id: "b-checkpoint" },
+          metadata: {},
+          created_at: "2026-08-30T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-a/runs" && request.method() === "GET") {
+      await route.fulfill({
+        headers,
+        json: url.searchParams.get("status") === "running" ? [{ run_id: "run-a" }] : [],
+      });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-b/runs" && request.method() === "GET") {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-a/runs/run-a/stream") {
+      aJoinStarted = true;
+      await aGate;
+      await route.fulfill({
+        headers: { ...headers, "content-type": "text/event-stream" },
+        body: "",
+      });
+      return;
+    }
+    if (url.pathname === "/threads/parallel-b/runs/stream" && request.method() === "POST") {
+      bStreamStarted = true;
+      bFinished = true;
+      await route.fulfill({
+        headers: {
+          ...headers,
+          "access-control-expose-headers": "Content-Location",
+          "content-location": "/threads/parallel-b/runs/run-b",
+          "content-type": "text/event-stream",
+        },
+        body: `event: values\ndata: ${JSON.stringify({
+          thread_title: "B 会话即时回复",
+          display_messages: [
+            { id: "b-human", type: "human", content: "请回复 B" },
+            { id: "b-ai", type: "ai", content: "B 已在 A 完成前返回" },
+          ],
+          __interrupt__: [],
+        })}\n\n`,
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /后台任务 A/ }).click();
+  await expect.poll(() => aJoinStarted).toBe(true);
+  await page.getByRole("button", { name: /历史会话 B/ }).click();
+  const composer = page.getByRole("textbox", { name: "对话输入框" });
+  await composer.fill("请回复 B");
+  await page.getByTitle("发送").click();
+
+  await expect.poll(() => bStreamStarted).toBe(true);
+  await expect(page.getByText("B 已在 A 完成前返回", { exact: true })).toBeVisible();
+  await expect(page.locator(".conversation-heading strong")).toHaveText("B 会话即时回复");
+  await expect(page.getByText("需要补充信息", { exact: true })).toHaveCount(0);
+  expect(aJoinStarted).toBe(true);
+  releaseA?.();
+});
+
+test("visible legacy titles are model-backfilled and persisted", async ({ page }) => {
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  let patchedMetadata: Record<string, unknown> | undefined;
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [{
+          thread_id: "legacy-title-thread",
+          created_at: "2026-08-30T08:00:00Z",
+          updated_at: "2026-08-30T08:01:00Z",
+          metadata: { graph_id: "web-autotest-agent", thread_title: "请帮我生成很长很长的登录页面自动化测试" },
+          status: "idle",
+          extracted: {
+            first_message: { type: "human", content: "请为后台登录流程生成完整的自动化测试计划和脚本" },
+          },
+        }],
+      });
+      return;
+    }
+    if (url.pathname === "/runs/wait" && request.method() === "POST") {
+      await route.fulfill({ headers, json: { thread_title: "后台登录自动化" } });
+      return;
+    }
+    if (url.pathname === "/threads/legacy-title-thread" && request.method() === "PATCH") {
+      patchedMetadata = (request.postDataJSON() as { metadata?: Record<string, unknown> }).metadata;
+      await route.fulfill({ headers, json: null });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /后台登录自动化/ })).toBeVisible();
+  await expect.poll(() => patchedMetadata).toMatchObject({
+    graph_id: "web-autotest-agent",
+    thread_title: "后台登录自动化",
+    thread_title_source: "model-v1",
+  });
+});
+
+test("long timelines load older turns without losing the anchor and can return to latest", async ({ page }) => {
+  const threadId = "long-timeline-thread";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  const displayMessages = Array.from({ length: 30 }, (_, index) => [
+    { id: `human-${index}`, type: "human", content: `历史问题 ${index}` },
+    { id: `ai-${index}`, type: "ai", content: `历史回答 ${index}` },
+  ]).flat();
+
+  await page.route("http://127.0.0.1:2024/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+      return;
+    }
+    if (url.pathname === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+      return;
+    }
+    if (url.pathname === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [{
+          thread_id: threadId,
+          created_at: "2026-08-30T08:00:00Z",
+          updated_at: "2026-08-30T08:01:00Z",
+          metadata: { graph_id: "web-autotest-agent", thread_title: "长对话滚动回归" },
+          status: "idle",
+        }],
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/state`) {
+      await route.fulfill({
+        headers,
+        json: {
+          values: { display_messages: displayMessages },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-long" },
+          metadata: {},
+          created_at: "2026-08-30T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/threads/${threadId}/runs`) {
+      await route.fulfill({ headers, json: [] });
+      return;
+    }
+    await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /长对话滚动回归/ }).click();
+  const turns = page.locator(".timeline-turn");
+  await expect(turns).toHaveCount(20);
+  const viewport = page.getByLabel("对话消息");
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(turns).toHaveCount(30);
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+  await viewport.evaluate((element) => {
+    element.scrollTop = Math.max(1, element.scrollHeight - element.clientHeight - 300);
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const latest = page.getByRole("button", { name: "回到最新消息" });
+  await expect(latest).toBeVisible();
+  await latest.click();
+  await expect.poll(() => viewport.evaluate((element) => (
+    element.scrollHeight - element.clientHeight - element.scrollTop
+  ))).toBeLessThanOrEqual(1);
 });
 
 historyTest("a selected historical conversation can continue", async ({ page }) => {
