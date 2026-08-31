@@ -47,6 +47,22 @@ export function actionableInterrupt(value: unknown): ActionableInterrupt | undef
   return findInterruptPayload(value);
 }
 
+type CheckpointTask = {
+  interrupts?: readonly unknown[];
+};
+
+type CheckpointState = {
+  tasks?: readonly CheckpointTask[];
+};
+
+export function checkpointInterrupt(
+  state: CheckpointState | undefined,
+): ActionableInterrupt | undefined {
+  return actionableInterrupt(
+    state?.tasks?.flatMap((task) => task.interrupts ?? []) ?? [],
+  );
+}
+
 export function isActiveRunPhase(phase: RunPhase | undefined): boolean {
   return phase === "submitting" ||
     phase === "queued" ||

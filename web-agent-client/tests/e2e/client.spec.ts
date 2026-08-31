@@ -3,6 +3,10 @@ import { PROMPT_TEMPLATES } from "../../src/lib/prompt-templates";
 
 const historyTest = process.env.E2E_REAL_BACKEND === "1" ? test : test.skip;
 
+function apiPath(url: URL): string {
+  return url.pathname.replace(/^\/api\/langgraph/, "") || "/";
+}
+
 test("four prompt shortcuts stay on one row and fill the complete prompt", async ({ page }) => {
   await page.addInitScript(() => {
     Object.assign(globalThis, { isTauri: true });
@@ -120,8 +124,8 @@ test("ANSI backend logs render with selectable persistent themes", async ({ page
   await theme.selectOption("macos");
 });
 
-test("browser preview rejects a non-LangGraph service on the configured port", async ({ page }) => {
-  await page.route("http://127.0.0.1:2024/info", async (route) => {
+test("H5 rejects a non-LangGraph service on the same-origin API", async ({ page }) => {
+  await page.route("**/api/langgraph/info", async (route) => {
     await route.fulfill({
       json: { status: "ok", flags: {} },
       headers: { "access-control-allow-origin": "*" },
@@ -131,7 +135,7 @@ test("browser preview rejects a non-LangGraph service on the configured port", a
   await page.goto("/");
 
   await expect(page.getByText("端口冲突", { exact: true })).toBeVisible();
-  await expect(page.getByText("端口 2024 上的服务不是 LangGraph 后端。", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前 H5 地址未连接到有效的 LangGraph 服务。", { exact: true })).toBeVisible();
 });
 
 test("an idle new conversation does not enter a render loop", async ({ page }) => {
@@ -143,17 +147,17 @@ test("an idle new conversation does not enter a render loop", async ({ page }) =
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
-    } else if (url.pathname === "/info") {
+    } else if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
-    } else if (url.pathname === "/threads/search") {
+    } else if (apiPath(url) === "/threads/search") {
       await route.fulfill({ headers, json: [] });
     } else {
       await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
@@ -168,6 +172,7 @@ test("an idle new conversation does not enter a render loop", async ({ page }) =
 
 test("settings edits stay in a draft until a successful save", async ({ page }) => {
   await page.addInitScript(() => {
+    Object.assign(globalThis, { isTauri: true });
     localStorage.setItem(
       "web-test-agent.client-config.v1",
       JSON.stringify({ projectRoot: "/repo", backendPort: 2024 }),
@@ -224,20 +229,20 @@ test("history titles fall back to messages and hydrate the selected conversation
     "content-type": "application/json",
   };
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       const search = route.request().postDataJSON() as {
         select?: string[];
         extract?: Record<string, string>;
@@ -261,7 +266,7 @@ test("history titles fall back to messages and hydrate the selected conversation
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/state`) {
+    if (apiPath(url) === `/threads/${threadId}/state`) {
       stateRequests += 1;
       await new Promise((resolve) => setTimeout(resolve, 500));
       await route.fulfill({
@@ -283,13 +288,12 @@ test("history titles fall back to messages and hydrate the selected conversation
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs`) {
+    if (apiPath(url) === `/threads/${threadId}/runs`) {
       await route.fulfill({ headers, json: [] });
       return;
     }
     await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
   });
-
   await page.goto("/");
   await page.getByRole("button", { name: /历史详情回归/ }).click();
 
@@ -308,7 +312,7 @@ test("history titles fall back to messages and hydrate the selected conversation
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
 });
 
-test("Healer validation targets are clickable and browser preview explains the limitation", async ({
+test("Healer validation targets open the H5 artifact preview", async ({
   page,
 }) => {
   const threadId = "artifact-path-links";
@@ -327,21 +331,21 @@ test("Healer validation targets are clickable and browser preview explains the l
 - 调试对象 1：\`test_case/login/a_login.spec.ts\`，覆盖标题 \`登录流程\`
 - 下一阶段建议输入：如需继续复测或追加修复，可继续提供 \`test_case/login/a_login.spec.ts\`。`;
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -357,7 +361,7 @@ test("Healer validation targets are clickable and browser preview explains the l
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/state`) {
+    if (apiPath(url) === `/threads/${threadId}/state`) {
       await route.fulfill({
         headers,
         json: {
@@ -372,11 +376,17 @@ test("Healer validation targets are clickable and browser preview explains the l
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs`) {
+    if (apiPath(url) === `/threads/${threadId}/runs`) {
       await route.fulfill({ headers, json: [] });
       return;
     }
     await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+  });
+  await page.context().route("**/api/artifacts/preview?**", async (route) => {
+    await route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>产物预览</title>",
+    });
   });
 
   await page.goto("/");
@@ -385,14 +395,18 @@ test("Healer validation targets are clickable and browser preview explains the l
   const links = page.locator(".artifact-path-link");
   await expect(links).toHaveCount(5);
   const validationTargetLink = page.getByRole("button", {
-    name: `在系统文件管理器中显示文件 ${validationTarget}`,
+    name: `预览文件 ${validationTarget}`,
   });
   await expect(validationTargetLink).toBeVisible();
 
+  const popupPromise = page.waitForEvent("popup");
   await validationTargetLink.click();
-  await expect(page.getByRole("alert")).toContainText(
-    "浏览器预览模式无法打开本地路径，请在桌面客户端中使用此功能。",
-  );
+  const popup = await popupPromise;
+  await expect.poll(() => popup.url()).toContain("/api/artifacts/preview");
+  const target = new URL(popup.url());
+  expect(target.pathname).toBe("/api/artifacts/preview");
+  expect(target.searchParams.get("path")).toBe(validationTarget);
+  expect(target.searchParams.get("base_dir")).toBe("/repo/web-agent/demo");
 });
 
 test("a partial cancellation failure remains visible and keeps the run active", async ({ page }) => {
@@ -403,21 +417,21 @@ test("a partial cancellation failure remains visible and keeps the run active", 
   };
   const cancellationTargets: string[] = [];
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -432,7 +446,7 @@ test("a partial cancellation failure remains visible and keeps the run active", 
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/state`) {
+    if (apiPath(url) === `/threads/${threadId}/state`) {
       await route.fulfill({
         headers,
         json: {
@@ -447,7 +461,7 @@ test("a partial cancellation failure remains visible and keeps the run active", 
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs` && request.method() === "GET") {
+    if (apiPath(url) === `/threads/${threadId}/runs` && request.method() === "GET") {
       await route.fulfill({
         headers,
         json: url.searchParams.get("status") === "running"
@@ -456,7 +470,7 @@ test("a partial cancellation failure remains visible and keeps the run active", 
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs/run-ok/stream`) {
+    if (apiPath(url) === `/threads/${threadId}/runs/run-ok/stream`) {
       await route.fulfill({
         headers: {
           "access-control-allow-origin": "*",
@@ -466,9 +480,9 @@ test("a partial cancellation failure remains visible and keeps the run active", 
       });
       return;
     }
-    if (url.pathname.endsWith("/cancel") && request.method() === "POST") {
-      cancellationTargets.push(url.pathname);
-      if (url.pathname.includes("run-fail")) {
+    if (apiPath(url).endsWith("/cancel") && request.method() === "POST") {
+      cancellationTargets.push(apiPath(url));
+      if (apiPath(url).includes("run-fail")) {
         await route.fulfill({ status: 500, headers, json: { detail: "取消被拒绝" } });
       } else {
         await route.fulfill({ headers, json: null });
@@ -500,21 +514,21 @@ test("a failed stream rejoin is retried and clears its recovery notice", async (
   };
   let joinAttempts = 0;
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -529,7 +543,7 @@ test("a failed stream rejoin is retried and clears its recovery notice", async (
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/state`) {
+    if (apiPath(url) === `/threads/${threadId}/state`) {
       await route.fulfill({
         headers,
         json: {
@@ -544,14 +558,14 @@ test("a failed stream rejoin is retried and clears its recovery notice", async (
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs` && request.method() === "GET") {
+    if (apiPath(url) === `/threads/${threadId}/runs` && request.method() === "GET") {
       await route.fulfill({
         headers,
         json: url.searchParams.get("status") === "running" ? [{ run_id: "run-retry" }] : [],
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs/run-retry/stream`) {
+    if (apiPath(url) === `/threads/${threadId}/runs/run-retry/stream`) {
       joinAttempts += 1;
       if (joinAttempts <= 2) {
         await route.fulfill({ status: 500, headers, json: { detail: "temporary failure" } });
@@ -586,21 +600,21 @@ test("a late error from thread A does not leak into selected thread B", async ({
   };
   let joinStarted = false;
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -622,8 +636,8 @@ test("a late error from thread A does not leak into selected thread B", async ({
       });
       return;
     }
-    if (/\/threads\/thread-[ab]\/state$/.test(url.pathname)) {
-      const selectedId = url.pathname.includes("thread-a") ? "thread-a" : "thread-b";
+    if (/\/threads\/thread-[ab]\/state$/.test(apiPath(url))) {
+      const selectedId = apiPath(url).includes("thread-a") ? "thread-a" : "thread-b";
       await route.fulfill({
         headers,
         json: {
@@ -638,18 +652,18 @@ test("a late error from thread A does not leak into selected thread B", async ({
       });
       return;
     }
-    if (url.pathname === "/threads/thread-a/runs" && request.method() === "GET") {
+    if (apiPath(url) === "/threads/thread-a/runs" && request.method() === "GET") {
       await route.fulfill({
         headers,
         json: url.searchParams.get("status") === "running" ? [{ run_id: "run-a" }] : [],
       });
       return;
     }
-    if (url.pathname === "/threads/thread-b/runs" && request.method() === "GET") {
+    if (apiPath(url) === "/threads/thread-b/runs" && request.method() === "GET") {
       await route.fulfill({ headers, json: [] });
       return;
     }
-    if (url.pathname === "/threads/thread-a/runs/run-a/stream") {
+    if (apiPath(url) === "/threads/thread-a/runs/run-a/stream") {
       joinStarted = true;
       await new Promise((resolve) => setTimeout(resolve, 700));
       await route.fulfill({ status: 500, headers, json: { detail: "late A failure" } });
@@ -677,21 +691,21 @@ test("a late new-thread submit failure does not pull thread B back into thread A
   };
   let threadCreateStarted = false;
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -706,7 +720,7 @@ test("a late new-thread submit failure does not pull thread B back into thread A
       });
       return;
     }
-    if (url.pathname === "/threads/thread-b/state") {
+    if (apiPath(url) === "/threads/thread-b/state") {
       await route.fulfill({
         headers,
         json: {
@@ -721,17 +735,17 @@ test("a late new-thread submit failure does not pull thread B back into thread A
       });
       return;
     }
-    if (url.pathname === "/threads/thread-b/runs" && request.method() === "GET") {
+    if (apiPath(url) === "/threads/thread-b/runs" && request.method() === "GET") {
       await route.fulfill({ headers, json: [] });
       return;
     }
-    if (url.pathname === "/threads" && request.method() === "POST") {
+    if (apiPath(url) === "/threads" && request.method() === "POST") {
       threadCreateStarted = true;
       await new Promise((resolve) => setTimeout(resolve, 700));
       await route.fulfill({ headers, json: { thread_id: "thread-a" } });
       return;
     }
-    if (url.pathname === "/threads/thread-a/runs/stream" && request.method() === "POST") {
+    if (apiPath(url) === "/threads/thread-a/runs/stream" && request.method() === "POST") {
       await route.fulfill({ status: 400, headers, json: { detail: "late A submit failure" } });
       return;
     }
@@ -765,21 +779,21 @@ test("thread B completes while thread A is still streaming", async ({ page }) =>
     releaseA = resolve;
   });
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [
@@ -801,7 +815,7 @@ test("thread B completes while thread A is still streaming", async ({ page }) =>
       });
       return;
     }
-    if (url.pathname === "/threads/parallel-a/state") {
+    if (apiPath(url) === "/threads/parallel-a/state") {
       await route.fulfill({
         headers,
         json: {
@@ -816,7 +830,7 @@ test("thread B completes while thread A is still streaming", async ({ page }) =>
       });
       return;
     }
-    if (url.pathname === "/threads/parallel-b/state") {
+    if (apiPath(url) === "/threads/parallel-b/state") {
       await route.fulfill({
         headers,
         json: {
@@ -839,18 +853,18 @@ test("thread B completes while thread A is still streaming", async ({ page }) =>
       });
       return;
     }
-    if (url.pathname === "/threads/parallel-a/runs" && request.method() === "GET") {
+    if (apiPath(url) === "/threads/parallel-a/runs" && request.method() === "GET") {
       await route.fulfill({
         headers,
         json: url.searchParams.get("status") === "running" ? [{ run_id: "run-a" }] : [],
       });
       return;
     }
-    if (url.pathname === "/threads/parallel-b/runs" && request.method() === "GET") {
+    if (apiPath(url) === "/threads/parallel-b/runs" && request.method() === "GET") {
       await route.fulfill({ headers, json: [] });
       return;
     }
-    if (url.pathname === "/threads/parallel-a/runs/run-a/stream") {
+    if (apiPath(url) === "/threads/parallel-a/runs/run-a/stream") {
       aJoinStarted = true;
       await aGate;
       await route.fulfill({
@@ -859,7 +873,7 @@ test("thread B completes while thread A is still streaming", async ({ page }) =>
       });
       return;
     }
-    if (url.pathname === "/threads/parallel-b/runs/stream" && request.method() === "POST") {
+    if (apiPath(url) === "/threads/parallel-b/runs/stream" && request.method() === "POST") {
       bStreamStarted = true;
       bFinished = true;
       await route.fulfill({
@@ -905,22 +919,25 @@ test("visible legacy titles are model-backfilled and persisted", async ({ page }
     "content-type": "application/json",
   };
   let patchedMetadata: Record<string, unknown> | undefined;
+  let searchRequests = 0;
+  let backfillRequests = 0;
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
+      searchRequests += 1;
       await route.fulfill({
         headers,
         json: [{
@@ -936,11 +953,14 @@ test("visible legacy titles are model-backfilled and persisted", async ({ page }
       });
       return;
     }
-    if (url.pathname === "/runs/wait" && request.method() === "POST") {
+    if (apiPath(url) === "/runs/wait" && request.method() === "POST") {
+      backfillRequests += 1;
+      // 历史列表会在 5 秒后刷新；回填不应因列表刷新而被 abort。
+      await new Promise((resolve) => setTimeout(resolve, 5_200));
       await route.fulfill({ headers, json: { thread_title: "后台登录自动化" } });
       return;
     }
-    if (url.pathname === "/threads/legacy-title-thread" && request.method() === "PATCH") {
+    if (apiPath(url) === "/threads/legacy-title-thread" && request.method() === "PATCH") {
       patchedMetadata = (request.postDataJSON() as { metadata?: Record<string, unknown> }).metadata;
       await route.fulfill({ headers, json: null });
       return;
@@ -955,6 +975,76 @@ test("visible legacy titles are model-backfilled and persisted", async ({ page }
     thread_title: "后台登录自动化",
     thread_title_source: "model-v1",
   });
+  expect(searchRequests).toBeGreaterThanOrEqual(2);
+  expect(backfillRequests).toBe(1);
+});
+
+test("scheduled run conversations are visible and read only", async ({ page }) => {
+  const threadId = "scheduled-monitor-thread";
+  const headers = {
+    "access-control-allow-origin": "*",
+    "content-type": "application/json",
+  };
+  await page.route("**/api/langgraph/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers });
+    } else if (apiPath(url) === "/info") {
+      await route.fulfill({
+        headers,
+        json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
+      });
+    } else if (apiPath(url) === "/threads/search") {
+      await route.fulfill({
+        headers,
+        json: [{
+          thread_id: threadId,
+          created_at: "2026-08-30T08:00:00Z",
+          updated_at: "2026-08-30T08:01:00Z",
+          metadata: {
+            graph_id: "web-autotest-agent",
+            run_graph_id: "web-autotest-scheduled-run",
+            thread_title: "定时测试：demo/daily",
+            thread_title_source: "scheduler-v1",
+            readonly: true,
+            thread_type: "scheduled_run",
+          },
+          status: "busy",
+        }],
+      });
+    } else if (apiPath(url) === `/threads/${threadId}/state`) {
+      await route.fulfill({
+        headers,
+        json: {
+          values: {
+            display_messages: [{
+              id: "scheduled-final",
+              type: "ai",
+              content: "定时测试分析报告已生成。",
+            }],
+          },
+          next: [],
+          tasks: [],
+          checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "scheduled-checkpoint" },
+          metadata: {},
+          created_at: "2026-08-30T08:01:00Z",
+          parent_checkpoint: null,
+        },
+      });
+    } else if (apiPath(url) === `/threads/${threadId}/runs`) {
+      await route.fulfill({ headers, json: [] });
+    } else {
+      await route.fulfill({ status: 404, headers, json: { detail: "not mocked" } });
+    }
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /定时测试：demo\/daily/ }).click();
+  await expect(page.getByText("定时测试分析报告已生成。", { exact: true })).toBeVisible();
+  await expect(page.locator(".conversation-heading span")).toHaveText("定时任务自动执行中");
+  await expect(page.getByRole("textbox", { name: "对话输入框" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "取消任务" })).toHaveCount(0);
 });
 
 test("long timelines load older turns without losing the anchor and can return to latest", async ({ page }) => {
@@ -963,26 +1053,26 @@ test("long timelines load older turns without losing the anchor and can return t
     "access-control-allow-origin": "*",
     "content-type": "application/json",
   };
-  const displayMessages = Array.from({ length: 30 }, (_, index) => [
+  const displayMessages = Array.from({ length: 70 }, (_, index) => [
     { id: `human-${index}`, type: "human", content: `历史问题 ${index}` },
     { id: `ai-${index}`, type: "ai", content: `历史回答 ${index}` },
   ]).flat();
 
-  await page.route("http://127.0.0.1:2024/**", async (route) => {
+  await page.route("**/api/langgraph/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
-    if (url.pathname === "/info") {
+    if (apiPath(url) === "/info") {
       await route.fulfill({
         headers,
         json: { langgraph_py_version: "1.1.9", flags: { assistants: true } },
       });
       return;
     }
-    if (url.pathname === "/threads/search") {
+    if (apiPath(url) === "/threads/search") {
       await route.fulfill({
         headers,
         json: [{
@@ -995,7 +1085,7 @@ test("long timelines load older turns without losing the anchor and can return t
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/state`) {
+    if (apiPath(url) === `/threads/${threadId}/state`) {
       await route.fulfill({
         headers,
         json: {
@@ -1010,7 +1100,7 @@ test("long timelines load older turns without losing the anchor and can return t
       });
       return;
     }
-    if (url.pathname === `/threads/${threadId}/runs`) {
+    if (apiPath(url) === `/threads/${threadId}/runs`) {
       await route.fulfill({ headers, json: [] });
       return;
     }
@@ -1026,7 +1116,17 @@ test("long timelines load older turns without losing the anchor and can return t
     element.scrollTop = 0;
     element.dispatchEvent(new Event("scroll"));
   });
-  await expect(turns).toHaveCount(30);
+  await expect(turns).toHaveCount(40);
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(turns).toHaveCount(60);
+  await viewport.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(turns).toHaveCount(70);
   await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 
   await viewport.evaluate((element) => {

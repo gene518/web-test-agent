@@ -7,6 +7,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
 import { threadTitle, type ThreadSummary } from "../lib/message-utils";
 
 function formatThreadTime(value?: string): string {
@@ -51,6 +52,7 @@ export function Sidebar({
   onOpenSettings,
   onShowLog,
 }: SidebarProps) {
+  const desktopMode = isTauri();
   return (
     <>
       <aside
@@ -61,7 +63,7 @@ export function Sidebar({
           {open && (
             <div>
               <strong>Web Test Agent</strong>
-              <span>Desktop</span>
+              <span>{desktopMode ? "Desktop" : "H5"}</span>
             </div>
           )}
           <button
@@ -126,7 +128,7 @@ export function Sidebar({
           </div>
         )}
 
-        <div className="sidebar-footer">
+        {desktopMode && <div className="sidebar-footer">
           <button className="sidebar-action" onClick={onOpenSettings} title="客户端设置">
             <Settings size={17} />
             {open && <span>设置</span>}
@@ -139,7 +141,7 @@ export function Sidebar({
             <TerminalSquare size={17} />
             {open && <span>后端日志</span>}
           </button>
-        </div>
+        </div>}
       </aside>
       {mobileOpen && (
         <button className="sidebar-scrim" onClick={onCloseMobile} aria-label="关闭会话列表" />

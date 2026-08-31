@@ -17,6 +17,9 @@ from langchain_core.tools import BaseTool
 from deep_agent.core.config import AppSettings
 from deep_agent.core.runtime_logging import get_logger, log_title
 from deep_agent.tools.playwright.planner_save_plan_wrapper import wrap_planner_save_plan_tool
+from deep_agent.tools.playwright.runtime_environment import (
+    build_playwright_child_environment,
+)
 from deep_agent.tools.playwright.tool_error_policy import PLAYWRIGHT_MCP_TOOL_ERROR_POLICY
 
 
@@ -110,7 +113,7 @@ class PlaywrightTestMCPProvider:
             "transport": "stdio",
             "command": command,
             "args": args,
-            "env": settings.playwright_mcp_env,
+            "env": build_playwright_child_environment(settings.playwright_mcp_env),
             "cwd": workspace_dir,
         }
 
@@ -274,7 +277,7 @@ class PlaywrightTestMCPProvider:
     def _run_npm(self, command: tuple[str, ...], workspace_path: Path, *, settings: AppSettings) -> None:
         """在指定项目目录执行 npm 命令，并保留失败时最有用的输出。"""
 
-        env = os.environ.copy()
+        env = build_playwright_child_environment()
         if settings.playwright_skip_browser_download:
             env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] = "1"
 

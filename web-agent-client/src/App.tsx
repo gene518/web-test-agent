@@ -25,6 +25,7 @@ import {
   type ThreadSessionHandle,
   type ThreadSessionSnapshot,
 } from "./components/ThreadSessionController";
+import { UpdateBadge } from "./components/UpdateBadge";
 import { useThreadHistory } from "./hooks/use-thread-history";
 import { useThreadTitleBackfill } from "./hooks/use-thread-title-backfill";
 import {
@@ -35,6 +36,7 @@ import {
   readBackendLog,
   revealPathInFileManager,
   restartBackend,
+  runtimeLangGraphApiUrl,
   saveClientConfig,
 } from "./lib/backend";
 import {
@@ -65,10 +67,11 @@ type SessionDescriptor = {
 };
 
 const MAX_CACHED_IDLE_SESSIONS = 8;
+const IS_CONTAINER_DEPLOYMENT = import.meta.env.VITE_DEPLOYMENT_MODE === "container";
 
 const INITIAL_STATUS: BackendStatus = {
   state: "checking",
-  apiUrl: "http://127.0.0.1:2024",
+  apiUrl: runtimeLangGraphApiUrl(2024),
   projectRoot: "",
   message: "正在检查本地后端...",
 };
@@ -377,9 +380,11 @@ function App() {
   };
 
   const serverBusyBeforeHydration = selectedThread?.status === "busy" && !selectedSnapshot?.checkedRuns;
+  const selectedThreadReadonly = selectedThread?.metadata?.readonly === true;
   const selectedRunning = isActiveRunPhase(selectedSnapshot?.phase) || serverBusyBeforeHydration;
   const composerDisabled = backend.state !== "running" ||
     !selectedHandle ||
+    selectedThreadReadonly ||
     selectedRunning ||
     Boolean(selectedSnapshot?.isThreadLoading);
   const notice = systemNotice ?? selectedSnapshot?.notice ?? null;
@@ -388,8 +393,12 @@ function App() {
     : selectedSnapshot?.values.thread_title?.trim() || firstMessageTitle(selectedSnapshot) || "新对话";
   const headingStatus = selectedSnapshot?.isThreadLoading
     ? "正在加载对话"
-    : serverBusyBeforeHydration
-      ? "Agent 正在执行任务"
+    : selectedThreadReadonly && selectedThread?.status === "busy"
+        ? "定时任务自动执行中"
+      : serverBusyBeforeHydration
+        ? "Agent 正在执行任务"
+        : selectedThreadReadonly
+          ? "定时任务执行记录"
       : runPhaseLabel(selectedSnapshot?.phase);
   const settingsPortError = backendPortError(settingsDraft.backendPort);
 
@@ -445,8 +454,9 @@ function App() {
             </div>
           </div>
           <div className="header-actions">
+            <UpdateBadge enabled={IS_CONTAINER_DEPLOYMENT} />
             <BackendBadge status={backend} />
-            {selectedRunning && selectedThreadId && (
+            {selectedRunning && selectedThreadId && !selectedThreadReadonly && (
               <button className="cancel-button" onClick={() => void selectedHandle?.cancel()} disabled={selectedSnapshot?.phase === "cancelling"}>
                 <CircleStop size={16} />
                 <span>{selectedSnapshot?.phase === "cancelling" ? "取消中" : "取消任务"}</span>
@@ -504,7 +514,7 @@ function App() {
         />
       </section>
 
-      <SettingsModal
+      {isTauri() && <SettingsModal
         open={settingsOpen}
         draft={settingsDraft}
         portError={settingsPortError}
@@ -514,15 +524,15 @@ function App() {
         onChooseRoot={handleChooseSettingsRoot}
         onSave={handleSaveSettings}
         onClose={() => setSettingsOpen(false)}
-      />
-      <LogModal
+      />}
+      {isTauri() && <LogModal
         open={logOpen}
         content={backendLog}
         theme={logTheme}
         onThemeChange={handleLogThemeChange}
         onRefresh={handleShowLog}
         onClose={() => setLogOpen(false)}
-      />
+      />}
     </main>
   );
 }

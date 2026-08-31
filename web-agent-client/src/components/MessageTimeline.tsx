@@ -21,6 +21,7 @@ import {
   UserRound,
   Wrench,
 } from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
 import {
   stageSummaryBaseDir,
   stageSummarySegments,
@@ -139,6 +140,7 @@ function ArtifactPathLink({
     : segment.kindHint === "file"
       ? "文件"
       : "路径";
+  const actionLabel = isTauri() ? "在系统文件管理器中显示" : "预览";
 
   const open = async () => {
     if (opening) return;
@@ -154,8 +156,8 @@ function ArtifactPathLink({
     <button
       className={`artifact-path-link artifact-path-${segment.kindHint}`}
       type="button"
-      title={`在系统文件管理器中显示：${segment.value}`}
-      aria-label={`在系统文件管理器中显示${kindLabel} ${segment.value}`}
+      title={`${actionLabel}：${segment.value}`}
+      aria-label={`${actionLabel}${kindLabel} ${segment.value}`}
       aria-busy={opening}
       disabled={opening}
       onClick={() => void open()}

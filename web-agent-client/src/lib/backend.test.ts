@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  browserLangGraphApiUrl,
   getBackendStatus,
   isLangGraphInfo,
   loadClientConfig,
@@ -14,10 +15,18 @@ afterEach(() => {
 });
 
 describe("artifact path opening", () => {
-  it("returns a clear browser-preview error", async () => {
-    await expect(
-      revealPathInFileManager("/repo", "/repo/project", "test_case/a.spec.ts"),
-    ).rejects.toThrow("浏览器预览模式无法打开本地路径");
+  it("opens the same-origin H5 preview route", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    vi.stubGlobal("location", { origin: "https://agent.example.test" });
+
+    await revealPathInFileManager("/repo", "/repo/project", "test_case/a.spec.ts");
+
+    expect(open).toHaveBeenCalledOnce();
+    const target = new URL(open.mock.calls[0][0]);
+    expect(target.pathname).toBe("/api/artifacts/preview");
+    expect(target.searchParams.get("path")).toBe("test_case/a.spec.ts");
+    expect(target.searchParams.get("base_dir")).toBe("/repo/project");
   });
 
   it("passes the root, base directory and path to the Tauri command", async () => {
@@ -86,6 +95,11 @@ describe("LangGraph /info validation", () => {
 });
 
 describe("browser backend probe", () => {
+  it("uses the browser origin for the LangGraph API", () => {
+    vi.stubGlobal("location", { origin: "https://agent.example.test" });
+    expect(browserLangGraphApiUrl()).toBe("https://agent.example.test/api/langgraph");
+  });
+
   it("stops waiting for an unresponsive /info endpoint", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(

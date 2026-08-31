@@ -48,6 +48,74 @@ class NoopGraphAgent:
         return {}
 
 
+class PipelineMasterService:
+    def __init__(self) -> None:
+        self.classify_calls = 0
+
+    async def classify_intent_and_params(self, state, config=None):  # noqa: ANN001
+        self.classify_calls += 1
+        return {
+            "agent_type": "plan",
+            "pending_agent_type": "plan",
+            "extracted_params": {
+                "project_name": "demo",
+                "url": "https://example.com",
+                "test_plan_files": ["test_case/demo/aaa_demo.md"],
+                "test_scripts": ["tests/demo.spec.ts"],
+            },
+            "missing_params": [],
+            "pending_missing_params": [],
+            "requested_pipeline": ["plan", "generator", "healer"],
+            "pipeline_cursor": 0,
+            "routing_reason": "run the complete specialist pipeline",
+        }
+
+
+class RecordingStageAgent:
+    def __init__(self, stage: str, calls: list[str]) -> None:
+        self.stage = stage
+        self.calls = calls
+
+    async def execute(self, state, config=None):  # noqa: ANN001
+        self.calls.append(self.stage)
+        artifact = {
+            "artifact_id": f"{self.stage}-artifact-1",
+            "stage": self.stage,
+            "status": "success",
+            "project_dir": "/tmp/demo",
+            "input_files": ["tests/demo.spec.ts"],
+            "output_files": ["tests/demo.spec.ts"],
+            "planned_test_case_files": ["tests/demo.spec.ts"],
+            "saved_test_cases": [],
+            "validation_runs": ["tests/demo.spec.ts"],
+        }
+        finalization_key = f"{self.stage}:run-1"
+        return {
+            "agent_type": self.stage,
+            "stage_result": {
+                "agent_type": self.stage,
+                "display_name": f"{self.stage.title()} Agent",
+                "status": "success",
+                "artifact": artifact,
+                "raw_result": {
+                    "status": "success",
+                    "message": f"{self.stage} completed",
+                },
+                "finalization_key": finalization_key,
+            },
+            "finalization_key": finalization_key,
+        }
+
+
+class LegacyFinalizeTurnMaster:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, state, config=None):  # noqa: ANN001
+        self.calls += 1
+        return {"next_action": "finalize_turn"}
+
+
 def _plan_stage_result(*, status: str = "success", key: str = "plan:run-1") -> dict:
     artifact = {
         "artifact_id": "plan-artifact-1",
@@ -332,6 +400,115 @@ class FinalizerNodeTestCase(unittest.IsolatedAsyncioTestCase):
         for source, target in expected_edges:
             self.assertEqual(edges.count((source, target)), 1)
         self.assertFalse(any("finalize_turn" in node_name for node_name in graph.nodes))
+
+    async def test_complete_pipeline_finalizes_each_stage_once_and_legacy_route_ends(
+        self,
+    ) -> None:
+        master = PipelineMasterService()
+        specialist_calls: list[str] = []
+        finalizer = FakeFinalizerAgent()
+        noop_agent = NoopGraphAgent()
+        with (
+            patch(
+                "deep_agent.web_autotest_agent_workflow.get_settings",
+                return_value=AppSettings(_env_file=None),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.MasterAgent",
+                return_value=master,
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.PlanAgent",
+                return_value=RecordingStageAgent("plan", specialist_calls),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.GeneratorAgent",
+                return_value=RecordingStageAgent("generator", specialist_calls),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.HealerAgent",
+                return_value=RecordingStageAgent("healer", specialist_calls),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.SchedulerAgent",
+                return_value=noop_agent,
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.FinalizerAgent",
+                return_value=finalizer,
+            ),
+        ):
+            graph = build_web_autotest_agent_workflow()
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage(content="执行 plan、generator、healer 完整流程")]}
+        )
+
+        self.assertEqual(master.classify_calls, 1)
+        self.assertEqual(specialist_calls, ["plan", "generator", "healer"])
+        self.assertEqual(
+            [call["stage_name"] for call in finalizer.calls],
+            ["Plan Agent", "Generator Agent", "Healer Agent"],
+        )
+        self.assertEqual(len(finalizer.calls), 3)
+        self.assertEqual(result["next_action"], "end")
+        self.assertEqual(
+            [summary["stage"] for summary in result["completed_stage_summaries"]],
+            ["plan", "generator", "healer"],
+        )
+
+        legacy_master = LegacyFinalizeTurnMaster()
+        legacy_specialist_calls: list[str] = []
+        legacy_finalizer = FakeFinalizerAgent()
+        with (
+            patch(
+                "deep_agent.web_autotest_agent_workflow.get_settings",
+                return_value=AppSettings(_env_file=None),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.MasterAgent",
+                return_value=object(),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.build_master_graph",
+                return_value=legacy_master.execute,
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.PlanAgent",
+                return_value=RecordingStageAgent("plan", legacy_specialist_calls),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.GeneratorAgent",
+                return_value=RecordingStageAgent(
+                    "generator", legacy_specialist_calls
+                ),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.HealerAgent",
+                return_value=RecordingStageAgent("healer", legacy_specialist_calls),
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.SchedulerAgent",
+                return_value=noop_agent,
+            ),
+            patch(
+                "deep_agent.web_autotest_agent_workflow.FinalizerAgent",
+                return_value=legacy_finalizer,
+            ),
+        ):
+            legacy_graph = build_web_autotest_agent_workflow()
+
+        legacy_result = await legacy_graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="恢复旧 checkpoint")],
+                "next_action": "finalize_turn",
+            }
+        )
+
+        self.assertEqual(legacy_master.calls, 1)
+        self.assertEqual(legacy_result["next_action"], "finalize_turn")
+        self.assertEqual(legacy_specialist_calls, [])
+        self.assertEqual(legacy_finalizer.calls, [])
 
 
 if __name__ == "__main__":

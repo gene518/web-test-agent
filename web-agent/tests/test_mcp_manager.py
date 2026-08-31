@@ -794,6 +794,52 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
             [str(portable_cli.resolve()), "run-test-mcp-server"],
         )
 
+    def test_playwright_provider_connection_environment_is_allowlisted(self) -> None:
+        settings = AppSettings(
+            default_automation_project_root=str(self.root_path / "projects")
+        )
+
+        with patch.dict(
+            "deep_agent.tools.playwright.mcp_provider.os.environ",
+            {
+                "PATH": "/runtime/bin",
+                "HOME": "/runtime/home",
+                "TMPDIR": "/runtime/tmp",
+                "LANG": "en_US.UTF-8",
+                "NODE_OPTIONS": "--enable-source-maps",
+                "PLAYWRIGHT_BROWSERS_PATH": "/runtime/browsers",
+                "MASTER_LLM__FAMILY": "generic",
+                "MASTER_LLM__API_KEY": "master-secret",
+                "SPECIALIST_LLM__MODEL": "gpt-5.6-terra",
+                "SPECIALIST_LLM__API_KEY": "specialist-secret",
+                "LANGSMITH_API_KEY": "langsmith-secret",
+                "SCHEDULER_LANGGRAPH_API_KEY": "scheduler-secret",
+            },
+            clear=True,
+        ):
+            connection = PLAYWRIGHT_TEST_MCP_PROVIDER.build_connection_config(
+                settings,
+                str(self.root_path),
+            )
+
+        child_env = connection["env"]
+        self.assertEqual(child_env["PATH"], "/runtime/bin")
+        self.assertEqual(child_env["HOME"], "/runtime/home")
+        self.assertEqual(child_env["TMPDIR"], "/runtime/tmp")
+        self.assertEqual(child_env["LANG"], "en_US.UTF-8")
+        self.assertEqual(child_env["NODE_OPTIONS"], "--enable-source-maps")
+        self.assertEqual(child_env["PLAYWRIGHT_BROWSERS_PATH"], "/runtime/browsers")
+        self.assertEqual(child_env["PWTEST_HEADED"], "1")
+        for key in (
+            "MASTER_LLM__FAMILY",
+            "MASTER_LLM__API_KEY",
+            "SPECIALIST_LLM__MODEL",
+            "SPECIALIST_LLM__API_KEY",
+            "LANGSMITH_API_KEY",
+            "SCHEDULER_LANGGRAPH_API_KEY",
+        ):
+            self.assertNotIn(key, child_env)
+
     def test_playwright_provider_prefers_provisioned_workspace_cli(self) -> None:
         settings = AppSettings(
             default_automation_project_root=str(self.root_path / "projects")
@@ -834,7 +880,15 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.dict(
-                "deep_agent.tools.playwright.mcp_provider.os.environ", {}, clear=True
+                "deep_agent.tools.playwright.mcp_provider.os.environ",
+                {
+                    "PATH": "/runtime/bin",
+                    "PLAYWRIGHT_BROWSERS_PATH": "/runtime/browsers",
+                    "MASTER_LLM__API_KEY": "master-secret",
+                    "SPECIALIST_LLM__API_KEY": "specialist-secret",
+                    "GITHUB_TOKEN": "github-secret",
+                },
+                clear=True,
             ),
             patch(
                 "deep_agent.tools.playwright.mcp_provider.subprocess.run"
@@ -849,6 +903,16 @@ class MCPManagerTestCase(unittest.IsolatedAsyncioTestCase):
         run_subprocess.assert_called_once()
         _, kwargs = run_subprocess.call_args
         self.assertEqual(kwargs["env"]["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"], "1")
+        self.assertEqual(kwargs["env"]["PATH"], "/runtime/bin")
+        self.assertEqual(
+            kwargs["env"]["PLAYWRIGHT_BROWSERS_PATH"], "/runtime/browsers"
+        )
+        for key in (
+            "MASTER_LLM__API_KEY",
+            "SPECIALIST_LLM__API_KEY",
+            "GITHUB_TOKEN",
+        ):
+            self.assertNotIn(key, kwargs["env"])
 
     def test_playwright_provider_can_disable_skip_browser_download_env(self) -> None:
         settings = AppSettings(

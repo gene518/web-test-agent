@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { actionableInterrupt, isActiveRunPhase, runPhaseLabel } from "./thread-runtime";
+import {
+  actionableInterrupt,
+  checkpointInterrupt,
+  isActiveRunPhase,
+  runPhaseLabel,
+} from "./thread-runtime";
 
 describe("actionable interrupts", () => {
   it("accepts only the structured missing-parameter contract", () => {
@@ -12,6 +17,17 @@ describe("actionable interrupts", () => {
     expect(actionableInterrupt({ when: "breakpoint" })).toBeUndefined();
     expect(actionableInterrupt([])).toBeUndefined();
     expect(actionableInterrupt({ value: { question: "缺少字段" } })).toBeUndefined();
+  });
+
+  it("uses only task interrupts from the final checkpoint", () => {
+    expect(checkpointInterrupt({ tasks: [] })).toBeUndefined();
+    expect(checkpointInterrupt({
+      tasks: [{
+        interrupts: [{
+          value: { question: "请提供账号", missing_param: "account" },
+        }],
+      }],
+    })).toMatchObject({ question: "请提供账号", missing_param: "account" });
   });
 });
 

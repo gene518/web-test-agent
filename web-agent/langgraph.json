@@ -5,5 +5,10 @@
     "web-autotest-agent": "./deep_agent/app.py:agent_graph",
     "web-autotest-thread-title": "./deep_agent/app.py:title_graph",
     "web-autotest-scheduled-run": "./deep_agent/app.py:scheduled_run_graph"
+  },
+  "http": {
+    "app": "./deep_agent/app.py:http_app",
+    "disable_store": true,
+    "disable_mcp": true
   }
 }

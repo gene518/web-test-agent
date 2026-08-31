@@ -580,15 +580,41 @@ class SchedulerServiceTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_playwright_runner_disables_auto_opening_html_report(self) -> None:
         run_request = self._run_request()
 
-        with patch(
-            "deep_agent.scheduler.runner.asyncio.create_subprocess_exec",
-            return_value=FakeProcess(),
-        ) as create_process:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/runtime/bin",
+                    "HOME": "/runtime/home",
+                    "PLAYWRIGHT_BROWSERS_PATH": "/runtime/browsers",
+                    "MASTER_LLM__API_KEY": "master-secret",
+                    "SPECIALIST_LLM__API_KEY": "specialist-secret",
+                    "LANGSMITH_API_KEY": "langsmith-secret",
+                    "GITHUB_TOKEN": "github-secret",
+                },
+                clear=True,
+            ),
+            patch(
+                "deep_agent.scheduler.runner.asyncio.create_subprocess_exec",
+                return_value=FakeProcess(),
+            ) as create_process,
+        ):
             result = await PlaywrightTaskRunner().run(run_request)
 
         self.assertEqual(result.exit_code, 0)
         process_env = create_process.call_args.kwargs["env"]
+        self.assertEqual(process_env["PATH"], "/runtime/bin")
+        self.assertEqual(process_env["HOME"], "/runtime/home")
+        self.assertEqual(process_env["PLAYWRIGHT_BROWSERS_PATH"], "/runtime/browsers")
         self.assertEqual(process_env["PLAYWRIGHT_HTML_OPEN"], "never")
+        self.assertEqual(process_env["PW_SCHEDULE_TASK_ID"], run_request.task_id)
+        for key in (
+            "MASTER_LLM__API_KEY",
+            "SPECIALIST_LLM__API_KEY",
+            "LANGSMITH_API_KEY",
+            "GITHUB_TOKEN",
+        ):
+            self.assertNotIn(key, process_env)
         if os.name == "posix":
             self.assertTrue(create_process.call_args.kwargs["start_new_session"])
 

@@ -18,6 +18,9 @@ from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from deep_agent.scheduler.logs import append_project_log, log_timestamp
+from deep_agent.tools.playwright.runtime_environment import (
+    build_playwright_child_environment,
+)
 
 
 MAX_CAPTURED_OUTPUT_LINES = 5000
@@ -143,14 +146,17 @@ class PlaywrightTaskRunner:
         else:
             command = ["npx", "playwright", "test", *run_request.locations]
 
-        env = os.environ.copy()
-        env["PWTEST_HEADED"] = "1" if run_request.headed else "0"
-        env["PW_TEST_REPORT_NAME"] = report_name
-        env["PLAYWRIGHT_HTML_OPEN"] = "never"
-        env["PW_SCHEDULE_TASK_ID"] = run_request.task_id
-        env["PW_SCHEDULE_PROJECT_NAME"] = run_request.project_name
-        env["PW_SCHEDULED_FOR"] = run_request.scheduled_minute.isoformat(
-            timespec="minutes"
+        env = build_playwright_child_environment(
+            {
+                "PWTEST_HEADED": "1" if run_request.headed else "0",
+                "PW_TEST_REPORT_NAME": report_name,
+                "PLAYWRIGHT_HTML_OPEN": "never",
+                "PW_SCHEDULE_TASK_ID": run_request.task_id,
+                "PW_SCHEDULE_PROJECT_NAME": run_request.project_name,
+                "PW_SCHEDULED_FOR": run_request.scheduled_minute.isoformat(
+                    timespec="minutes"
+                ),
+            }
         )
 
         started_at_clock = monotonic()
@@ -405,6 +411,8 @@ class LangGraphScheduledTaskRunner:
                 graph_id=self._graph_id,
                 if_exists="do_nothing",
                 metadata={
+                    "graph_id": "web-autotest-agent",
+                    "run_graph_id": self._graph_id,
                     "thread_title": (
                         f"定时测试：{run_request.display_name} "
                         f"{run_request.scheduled_minute.isoformat(timespec='minutes')}"

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from deep_agent.core.config import AppSettings
 from deep_agent.core.runtime_logging import get_logger, log_title
 from deep_agent.scheduler.cron import CronExpression
+from deep_agent.scheduler.deployment_state import SchedulerDeploymentState
 from deep_agent.scheduler.logs import append_project_log as _append_project_log
 from deep_agent.scheduler.logs import log_timestamp as _log_timestamp
 from deep_agent.scheduler.models import ScheduledProjectConfig
@@ -50,6 +51,7 @@ class SchedulerService:
         task_runner: ScheduledTaskRunner | None = None,
         summary_node: ScheduledRunSummaryStage | None = None,
         current_time_factory: Callable[[], datetime] | None = None,
+        deployment_state: SchedulerDeploymentState | None = None,
     ) -> None:
         """初始化调度服务。"""
 
@@ -65,6 +67,9 @@ class SchedulerService:
         self._summary_node = summary_node or self._fallback_summary_node
         self._current_time_factory = current_time_factory or (
             lambda: datetime.now().astimezone()
+        )
+        self._deployment_state = (
+            deployment_state or SchedulerDeploymentState.from_environment()
         )
         self._pending_runs: deque[PendingScheduledRun] = deque()
         self._last_scheduled_minutes: dict[tuple[str, str], str] = {}
@@ -89,6 +94,7 @@ class SchedulerService:
             log_title("初始化", "调度服务"),
             self._config_path,
         )
+        self._publish_deployment_state()
         try:
             while not self._stop_event.is_set():
                 await self.poll_once()
@@ -114,6 +120,10 @@ class SchedulerService:
         if self._stop_event.is_set():
             return
         await self._harvest_finished_run()
+
+        if self._deployment_state.maintenance_active():
+            self._publish_deployment_state()
+            return
 
         try:
             config_model = load_scheduler_config(self._config_path)
@@ -174,6 +184,7 @@ class SchedulerService:
                 await self._harvest_finished_run()
 
             self._shutdown_complete = True
+            self._publish_deployment_state(online=False)
 
     async def drain(self) -> None:
         """等待当前活动任务和已排队任务执行完毕，便于测试验证。"""
@@ -386,7 +397,9 @@ class SchedulerService:
             self._stop_event.is_set()
             or self._active_run_task is not None
             or not self._pending_runs
+            or self._deployment_state.maintenance_active()
         ):
+            self._publish_deployment_state()
             return
 
         self._active_run = self._pending_runs.popleft()
@@ -410,6 +423,7 @@ class SchedulerService:
         self._active_run_task = asyncio.create_task(
             self._task_runner.run(self._active_run)
         )
+        self._publish_deployment_state()
 
     async def _harvest_finished_run(self) -> None:
         """收割活动任务，并在释放串行锁前完成总结阶段。"""
@@ -470,6 +484,16 @@ class SchedulerService:
             self._active_run = None
             self._active_run_task = None
             self._active_run_started_at = None
+            self._publish_deployment_state()
+
+    def _publish_deployment_state(self, *, online: bool = True) -> None:
+        """把 updater 需要的最小状态写入共享卷。"""
+
+        self._deployment_state.publish(
+            active_run=self._active_run.display_name if self._active_run else None,
+            pending_runs=len(self._pending_runs),
+            online=online,
+        )
 
     async def _record_run_result(
         self,

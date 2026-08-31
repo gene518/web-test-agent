@@ -35,7 +35,9 @@ async def _run() -> None:
     configure_logging_from_env()
     argument_parser = build_argument_parser()
     args = argument_parser.parse_args()
-    settings = get_settings()
+    # Scheduler 只通过内部 Agent API 委派工作，不会构造聊天模型，因此不能要求
+    # 注入模型凭据。
+    settings = get_settings(validate_models=False)
     config_path = args.config or settings.resolved_scheduler_config_path
     scheduler_service = SchedulerService(
         settings=settings,

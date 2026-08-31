@@ -22,14 +22,14 @@ export function isLangGraphInfo(value: unknown): boolean {
   );
 }
 
-async function fetchBackendInfo(port: number): Promise<{
+async function fetchBackendInfo(url: string): Promise<{
   response: Response;
   info: unknown;
 }> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), INFO_PROBE_TIMEOUT_MS);
   try {
-    const response = await fetch(`${apiUrl(port)}/info`, { signal: controller.signal });
+    const response = await fetch(`${url}/info`, { signal: controller.signal });
     const info: unknown = response.ok ? await response.json().catch(() => null) : null;
     return { response, info };
   } finally {
@@ -39,6 +39,17 @@ async function fetchBackendInfo(port: number): Promise<{
 
 export function apiUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
+}
+
+export function browserLangGraphApiUrl(): string {
+  const configured = import.meta.env.VITE_LANGGRAPH_API_URL?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  if (typeof globalThis.location === "undefined") return "/api/langgraph";
+  return `${globalThis.location.origin}/api/langgraph`;
+}
+
+export function runtimeLangGraphApiUrl(port: number): string {
+  return isTauri() ? apiUrl(port) : browserLangGraphApiUrl();
 }
 
 export function loadClientConfig(): ClientConfig {
@@ -78,12 +89,13 @@ export async function getBackendStatus(config: ClientConfig): Promise<BackendSta
       port: config.backendPort,
     });
   }
+  const resolvedApiUrl = browserLangGraphApiUrl();
   try {
-    const { response, info } = await fetchBackendInfo(config.backendPort);
+    const { response, info } = await fetchBackendInfo(resolvedApiUrl);
     if (!response.ok) {
       return {
         state: "error",
-        apiUrl: apiUrl(config.backendPort),
+        apiUrl: resolvedApiUrl,
         projectRoot: config.projectRoot,
         message: `后端返回 HTTP ${response.status}`,
       };
@@ -91,23 +103,23 @@ export async function getBackendStatus(config: ClientConfig): Promise<BackendSta
     if (!isLangGraphInfo(info)) {
       return {
         state: "conflict",
-        apiUrl: apiUrl(config.backendPort),
+        apiUrl: resolvedApiUrl,
         projectRoot: config.projectRoot,
-        message: `端口 ${config.backendPort} 上的服务不是 LangGraph 后端。`,
+        message: "当前 H5 地址未连接到有效的 LangGraph 服务。",
       };
     }
     return {
       state: "running",
-      apiUrl: apiUrl(config.backendPort),
-      projectRoot: config.projectRoot,
-      message: "浏览器预览模式",
+      apiUrl: resolvedApiUrl,
+      projectRoot: "/data/projects",
+      message: "H5 服务已连接",
     };
   } catch {
     return {
       state: "stopped",
-      apiUrl: apiUrl(config.backendPort),
+      apiUrl: resolvedApiUrl,
       projectRoot: config.projectRoot,
-      message: "浏览器预览模式不会自动启动后端。",
+      message: "H5 后端暂时不可用，请稍后重试。",
     };
   }
 }
@@ -135,7 +147,14 @@ export async function revealPathInFileManager(
   path: string,
 ): Promise<void> {
   if (!isTauri()) {
-    throw new Error("浏览器预览模式无法打开本地路径，请在桌面客户端中使用此功能。");
+    if (typeof globalThis.location === "undefined") {
+      throw new Error("当前浏览器地址不可用，无法打开产物预览。");
+    }
+    const previewUrl = new URL("/api/artifacts/preview", globalThis.location.origin);
+    previewUrl.searchParams.set("path", path);
+    if (baseDir) previewUrl.searchParams.set("base_dir", baseDir);
+    globalThis.open(previewUrl.toString(), "_blank", "noopener,noreferrer");
+    return;
   }
   await invoke("reveal_path_in_file_manager", { projectRoot, baseDir, path });
 }

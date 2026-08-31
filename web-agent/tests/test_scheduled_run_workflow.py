@@ -314,6 +314,8 @@ class ScheduledRunWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.report_path, "/tmp/report.json")
         self.assertEqual(first.conversation_thread_id, second.conversation_thread_id)
         metadata = client.threads.created[0]["metadata"]
+        self.assertEqual(metadata["graph_id"], "web-autotest-agent")
+        self.assertEqual(metadata["run_graph_id"], "web-autotest-scheduled-run")
         self.assertTrue(metadata["readonly"])
         self.assertEqual(metadata["thread_type"], "scheduled_run")
         self.assertEqual(client.threads.created[0]["if_exists"], "do_nothing")

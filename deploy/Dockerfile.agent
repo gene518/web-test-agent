@@ -1,0 +1,53 @@
+FROM ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a AS uv
+
+FROM mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+
+ARG BUILD_SHA=0000000000000000000000000000000000000000
+LABEL org.opencontainers.image.source="https://github.com/gene518/web-test-agent" \
+      org.opencontainers.image.revision="${BUILD_SHA}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/home/pwuser \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    NPM_CONFIG_CACHE=/tmp/npm-cache \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/web-agent-venv \
+    WEB_TEST_AGENT_NODE_EXECUTABLE=/usr/bin/node \
+    WEB_TEST_AGENT_PLAYWRIGHT_CLI=/opt/playwright-runtime/node_modules/playwright/cli.js \
+    WEB_TEST_AGENT_PLAYWRIGHT_MODULES=/opt/playwright-runtime/node_modules
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/playwright-runtime
+RUN npm init --yes \
+    && npm install --save-exact @playwright/test@1.61.1 \
+    && npm cache clean --force
+
+WORKDIR /app
+COPY web-agent/pyproject.toml web-agent/uv.lock web-agent/README.md ./
+COPY web-agent/langgraph.json ./langgraph.json
+COPY web-agent/scheduler_tasks.example.json ./scheduler_tasks.example.json
+COPY web-agent/deep_agent ./deep_agent
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv UV_HTTP_RETRIES=5 UV_HTTP_TIMEOUT=300 \
+    uv sync --frozen --extra dev \
+    && mkdir -p /app/.langgraph_api /data/projects /data/config /scheduler-state \
+    && chown -R pwuser:pwuser /app/.langgraph_api /data /home/pwuser /scheduler-state
+
+USER pwuser
+EXPOSE 2024
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=8 \
+  CMD /opt/web-agent-venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2024/info', timeout=3)" || exit 1
+
+CMD ["/opt/web-agent-venv/bin/langgraph", "dev", "--host", "0.0.0.0", "--port", "2024", "--no-browser", "--no-reload", "--n-jobs-per-worker", "4"]

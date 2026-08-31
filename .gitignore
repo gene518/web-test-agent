@@ -74,6 +74,8 @@ node_modules/
 /web-agent/baidu-web/
 /web-agent/tests/debug/*.log
 /output/
+/deploy/data/
+/deploy/deployment.env
 
 # --- 启动脚本缓存 ------------------------------------------
 /start/script/.cache/

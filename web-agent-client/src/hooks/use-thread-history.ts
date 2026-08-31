@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Client } from "@langchain/langgraph-sdk";
 import { errorMessage } from "../lib/errors";
 import type { ThreadSummary } from "../lib/message-utils";
@@ -18,17 +18,22 @@ export function useThreadHistory({
   onError,
 }: UseThreadHistoryOptions) {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
-  const [nextOffset, setNextOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  const nextOffsetRef = useRef(0);
+  const requestRevisionRef = useRef(0);
+  const requestInFlightRef = useRef(false);
 
   const fetchPage = useCallback(
-    async (offset: number, append: boolean) => {
-      if (!enabled) return;
-      setLoading(true);
+    async (offset: number, append: boolean, pageSize = THREAD_PAGE_SIZE) => {
+      if (!enabled || requestInFlightRef.current) return;
+      requestInFlightRef.current = true;
+      const requestRevision = ++requestRevisionRef.current;
+      const showLoading = append || nextOffsetRef.current === 0;
+      if (showLoading) setLoading(true);
       try {
         const result = await client.threads.search({
-          limit: THREAD_PAGE_SIZE,
+          limit: pageSize + 1,
           offset,
           sortBy: "updated_at",
           sortOrder: "desc",
@@ -38,7 +43,9 @@ export function useThreadHistory({
             first_message: "values.messages[0]",
           },
         });
-        const filtered = (result as ThreadSummary[])
+        if (requestRevision !== requestRevisionRef.current) return;
+        const rawPage = (result as ThreadSummary[]).slice(0, pageSize);
+        const filtered = rawPage
           .filter((thread) => {
             const graphId = thread.metadata?.graph_id ?? thread.metadata?.assistant_id;
             return !graphId || graphId === ASSISTANT_ID;
@@ -50,19 +57,30 @@ export function useThreadHistory({
             (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
           );
         });
-        setNextOffset(offset + result.length);
-        setHasMore(result.length === THREAD_PAGE_SIZE);
+        nextOffsetRef.current = append ? offset + rawPage.length : rawPage.length;
+        setHasMore(result.length > pageSize);
       } catch (error) {
-        onError(`读取历史对话失败：${errorMessage(error)}`);
+        if (requestRevision === requestRevisionRef.current) {
+          onError(`读取历史对话失败：${errorMessage(error)}`);
+        }
       } finally {
-        setLoading(false);
+        if (requestRevision === requestRevisionRef.current) {
+          requestInFlightRef.current = false;
+          if (showLoading) setLoading(false);
+        }
       }
     },
     [client, enabled, onError],
   );
 
-  const refresh = useCallback(() => fetchPage(0, false), [fetchPage]);
-  const loadMore = useCallback(() => fetchPage(nextOffset, true), [fetchPage, nextOffset]);
+  const refresh = useCallback(
+    () => fetchPage(0, false, Math.max(nextOffsetRef.current, THREAD_PAGE_SIZE)),
+    [fetchPage],
+  );
+  const loadMore = useCallback(
+    () => fetchPage(nextOffsetRef.current, true),
+    [fetchPage],
+  );
   const patchThread = useCallback(
     (threadId: string, patch: Partial<ThreadSummary>) => {
       setThreads((current) => {
@@ -83,7 +101,32 @@ export function useThreadHistory({
   }, []);
 
   useEffect(() => {
+    requestRevisionRef.current += 1;
+    requestInFlightRef.current = false;
+    nextOffsetRef.current = 0;
+    setThreads([]);
+    setHasMore(false);
+    setLoading(false);
     if (enabled) void refresh();
+    return () => {
+      requestRevisionRef.current += 1;
+      requestInFlightRef.current = false;
+    };
+  }, [client, enabled, refresh]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const timer = window.setInterval(refreshWhenVisible, 5_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [enabled, refresh]);
 
   return {

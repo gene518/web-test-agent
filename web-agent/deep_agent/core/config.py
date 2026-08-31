@@ -480,8 +480,8 @@ def _disabled_openai_params(connection: ResolvedModelConnection) -> dict[str, No
     return {}
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> AppSettings:
+@lru_cache(maxsize=2)
+def get_settings(*, validate_models: bool = True) -> AppSettings:
     """返回全局单例配置对象。
 
     Returns:
@@ -507,11 +507,12 @@ def get_settings() -> AppSettings:
         log_title("初始化", "配置加载"),
         summarize_settings(settings),
     )
-    from deep_agent.model.diagnostics import collect_model_diagnostics
+    if validate_models:
+        from deep_agent.model.diagnostics import collect_model_diagnostics
 
-    logger.info(
-        "%s 模型适配诊断 models=%s",
-        log_title("初始化", "模型诊断"),
-        collect_model_diagnostics(settings),
-    )
+        logger.info(
+            "%s 模型适配诊断 models=%s",
+            log_title("初始化", "模型诊断"),
+            collect_model_diagnostics(settings),
+        )
     return settings

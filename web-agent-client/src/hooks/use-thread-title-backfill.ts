@@ -35,8 +35,26 @@ export function useThreadTitleBackfill({
   onUpdated,
 }: UseThreadTitleBackfillOptions): void {
   const attemptedRef = useRef(new Set<string>());
-  const inFlightRef = useRef<string | undefined>(undefined);
+  const inFlightRef = useRef<{
+    threadId: string;
+    controller: AbortController;
+  } | undefined>(undefined);
   const [revision, setRevision] = useState(0);
+
+  useEffect(() => {
+    if (enabled && !foregroundActive) return;
+    const active = inFlightRef.current;
+    if (!active) return;
+    attemptedRef.current.delete(active.threadId);
+    active.controller.abort();
+  }, [enabled, foregroundActive]);
+
+  useEffect(() => () => {
+    const active = inFlightRef.current;
+    if (!active) return;
+    attemptedRef.current.delete(active.threadId);
+    active.controller.abort();
+  }, [client]);
 
   useEffect(() => {
     if (!enabled || foregroundActive || inFlightRef.current) return;
@@ -50,7 +68,7 @@ export function useThreadTitleBackfill({
     const sourceText = threadFirstHumanText(thread);
     if (!sourceText) return;
     const controller = new AbortController();
-    inFlightRef.current = thread.thread_id;
+    inFlightRef.current = { threadId: thread.thread_id, controller };
     attemptedRef.current.add(thread.thread_id);
 
     const backfill = async () => {
@@ -77,11 +95,12 @@ export function useThreadTitleBackfill({
           attemptedRef.current.delete(thread.thread_id);
         }
       } finally {
-        if (inFlightRef.current === thread.thread_id) inFlightRef.current = undefined;
+        if (inFlightRef.current?.threadId === thread.thread_id) {
+          inFlightRef.current = undefined;
+        }
         setRevision((current) => current + 1);
       }
     };
     void backfill();
-    return () => controller.abort();
   }, [client, enabled, foregroundActive, onUpdated, revision, threads]);
 }

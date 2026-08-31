@@ -1,0 +1,31 @@
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
+
+ARG VITE_DEPLOYMENT_MODE=container
+ENV VITE_DEPLOYMENT_MODE=${VITE_DEPLOYMENT_MODE}
+
+WORKDIR /build
+RUN corepack enable && corepack prepare pnpm@10.5.1 --activate
+COPY web-agent-client/package.json web-agent-client/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web-agent-client/ ./
+RUN pnpm build
+
+FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+
+ARG BUILD_SHA=0000000000000000000000000000000000000000
+LABEL org.opencontainers.image.source="https://github.com/gene518/web-test-agent" \
+      org.opencontainers.image.revision="${BUILD_SHA}"
+
+ENV XDG_CONFIG_HOME=/tmp/caddy-config \
+    XDG_DATA_HOME=/tmp/caddy-data
+
+RUN setcap -r /usr/bin/caddy
+
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /build/dist /srv
+
+USER 1000:1000
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=5 \
+  CMD wget -q -T 3 -O /dev/null http://127.0.0.1:8080/health || exit 1

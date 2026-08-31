@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Client, Message, ThreadState } from "@langchain/langgraph-sdk";
+import type { Client, Message } from "@langchain/langgraph-sdk";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { activeRunIds } from "../lib/session-actions";
 import { buildSubmitRequest } from "../lib/session-actions";
@@ -8,6 +8,7 @@ import { errorMessage } from "../lib/errors";
 import { conversationMessages, mergeMessages, type CanonicalMessage } from "../lib/message-utils";
 import {
   actionableInterrupt,
+  checkpointInterrupt,
   isActiveRunPhase,
   type ActionableInterrupt,
   type RunPhase,
@@ -57,11 +58,6 @@ function isDisplayMessagesEvent(value: unknown): value is DisplayMessagesEvent {
     Array.isArray((value as { messages?: unknown }).messages);
 }
 
-function stateInterrupt(state: ThreadState<AgentState> | undefined): ActionableInterrupt | undefined {
-  if (!state) return undefined;
-  return actionableInterrupt(state.tasks.flatMap((task) => task.interrupts ?? []));
-}
-
 export function ThreadSessionController({
   sessionKey,
   threadId,
@@ -78,6 +74,10 @@ export function ThreadSessionController({
   const [runId, setRunId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [checkedRuns, setCheckedRuns] = useState(threadId === null);
+  const [finishedInterrupt, setFinishedInterrupt] = useState<{
+    known: boolean;
+    value?: ActionableInterrupt;
+  }>({ known: false });
   const [reconnectRevision, setReconnectRevision] = useState(0);
   const phaseRef = useRef<RunPhase>(phase);
   const threadIdRef = useRef(threadId);
@@ -158,8 +158,11 @@ export function ThreadSessionController({
       setNotice((current) => (
         current?.startsWith("恢复执行流失败") ? undefined : current
       ));
+      const finalInterrupt = checkpointInterrupt(state);
+      interruptRef.current = finalInterrupt;
+      setFinishedInterrupt({ known: true, value: finalInterrupt });
       setPhase(
-        (stateInterrupt(state) ?? interruptRef.current)
+        finalInterrupt
           ? "awaiting_input"
           : remainingRunId
             ? "running"
@@ -184,7 +187,12 @@ export function ThreadSessionController({
     },
   });
 
-  const interrupt = actionableInterrupt(stream.interrupt);
+  const streamInterrupt = actionableInterrupt(stream.interrupt);
+  // The SDK can retain an earlier stream interrupt after a final checkpoint lands.
+  // Once a run has finished, the checkpoint is authoritative until the next submit.
+  const interrupt = finishedInterrupt.known
+    ? finishedInterrupt.value
+    : streamInterrupt;
   interruptRef.current = interrupt;
   const streamValues = stream.values;
   const values = Object.keys(streamValues).length > 0
@@ -214,6 +222,7 @@ export function ThreadSessionController({
     discoveryCompleteRef.current = threadId === null;
     knownRunIdsRef.current.clear();
     setCheckedRuns(threadId === null);
+    setFinishedInterrupt({ known: false });
   }, [threadId]);
 
   useEffect(() => {
@@ -285,6 +294,7 @@ export function ThreadSessionController({
     });
     pendingTextRef.current = text;
     setNotice(undefined);
+    setFinishedInterrupt({ known: false });
     setPhase("submitting");
     void stream.submit(request.values as AgentState, {
       ...(request.options as Parameters<typeof stream.submit>[1]),

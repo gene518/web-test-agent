@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const containerMode = process.env.VITE_DEPLOYMENT_MODE === "container";
+const devServerPort = containerMode ? 14320 : 1420;
+const devServerUrl = `http://127.0.0.1:${devServerPort}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   outputDir: "./test-results",
@@ -8,7 +12,7 @@ export default defineConfig({
   fullyParallel: false,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:1420",
+    baseURL: devServerUrl,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
@@ -23,8 +27,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm dev --host 127.0.0.1",
-    url: "http://127.0.0.1:1420",
+    command: `pnpm dev --host 127.0.0.1 --port ${devServerPort}`,
+    url: devServerUrl,
     reuseExistingServer: true,
     timeout: 60_000,
   },

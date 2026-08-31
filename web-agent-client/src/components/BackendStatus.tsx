@@ -52,7 +52,7 @@ export function BackendBanner({
           <FolderOpen size={16} />选择项目目录
         </button>
       )}
-      {status.projectRoot && !isPending && (
+      {isTauri() && status.projectRoot && !isPending && (
         <button onClick={() => void onRestart()} disabled={busy}>
           <RefreshCw size={16} />重新启动
         </button>

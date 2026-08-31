@@ -12,12 +12,28 @@ from deep_agent.core.config import (
     AppSettings,
     _default_relative_path_root,
     _discover_default_env_file,
+    get_settings,
     load_project_env_file,
 )
 from deep_agent.model.errors import ModelConfigurationError
 
 
 class ProjectEnvLoadingTestCase(unittest.TestCase):
+    def tearDown(self) -> None:
+        get_settings.cache_clear()
+
+    def test_runtime_only_settings_skip_model_diagnostics(self) -> None:
+        settings = AppSettings(_env_file=None)
+        with (
+            patch("deep_agent.core.config.AppSettings", return_value=settings),
+            patch("deep_agent.core.config.load_project_env_file"),
+            patch("deep_agent.core.config.configure_logging_from_env"),
+            patch("deep_agent.core.config.configure_logging"),
+            patch("deep_agent.model.diagnostics.collect_model_diagnostics") as diagnostics,
+        ):
+            self.assertIs(get_settings(validate_models=False), settings)
+        diagnostics.assert_not_called()
+
     def test_portable_layout_discovers_package_config_without_injected_env(
         self,
     ) -> None:

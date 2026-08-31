@@ -11,6 +11,7 @@ from deep_agent.core.runtime_logging import (
     log_title,
 )
 from deep_agent.core.local_runtime_cleanup import cancel_stale_inmemory_runs_on_start
+from deep_agent.http_artifacts import build_artifact_http_app
 from deep_agent.scheduled_run_workflow import build_scheduled_run_workflow
 from deep_agent.thread_title_workflow import build_thread_title_workflow
 from deep_agent.web_autotest_agent_workflow import build_web_autotest_agent_workflow
@@ -31,7 +32,8 @@ logger.info(
 agent_graph = build_web_autotest_agent_workflow()
 title_graph = build_thread_title_workflow()
 scheduled_run_graph = build_scheduled_run_workflow()
+http_app = build_artifact_http_app()
 logger.info(
-    "%s LangGraph 主图、标题图与定时执行图对象构建完成。",
+    "%s LangGraph 图对象与 H5 只读产物路由构建完成。",
     log_title("初始化", "应用启动"),
 )
