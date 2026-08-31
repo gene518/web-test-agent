@@ -16,6 +16,16 @@ from deep_agent.helpers.artifacts import build_stage_summary
 from deep_agent.tools.playwright import PLAYWRIGHT_TEST_MCP_SERVER_NAME
 
 
+def _test_specialist_model() -> dict[str, str]:
+    """返回 Plan 测试所需的最小 Specialist 模型配置，避免依赖本机 `.env`。"""
+
+    return {
+        "family": "generic",
+        "channel": "generic_openai",
+        "model": "test-specialist",
+    }
+
+
 def _canonical_stage_summary(result: dict) -> str:
     """按阶段 Finalizer 的规范兜底格式检查 Plan 原始结果。"""
 
@@ -99,6 +109,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.root_path = Path(self.temp_dir.name)
         self.settings = AppSettings(
             default_automation_project_root=str(self.root_path / "projects"),
+            specialist_llm=_test_specialist_model(),
         )
         self.tools = [
             DummyTool(name="browser_navigate"),
@@ -546,6 +557,7 @@ class PlanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         settings = AppSettings(
             default_automation_project_root=str(self.root_path / "projects"),
             specialist_recursion_limit=123,
+            specialist_llm=_test_specialist_model(),
         )
         agent = PlanAgent(settings, mcp_manager=fake_manager)
         state = {
