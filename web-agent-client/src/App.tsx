@@ -87,6 +87,27 @@ function firstMessageTitle(snapshot: ThreadSessionSnapshot | undefined): string 
   return firstHuman ? summarizeThreadTitle(messageText(firstHuman)) : undefined;
 }
 
+/**
+ * 判断 Controller 回传的快照是否真正发生可见状态变化。
+ *
+ * Session Controller 会在 LangGraph SDK 推送事件后上报快照；父组件只保存变化后的快照，
+ * 防止 SDK 对等价对象重新包装时触发父子组件的重复渲染。
+ */
+function isSameSessionSnapshot(
+  previous: ThreadSessionSnapshot | undefined,
+  next: ThreadSessionSnapshot,
+): boolean {
+  return previous?.threadId === next.threadId &&
+    previous.values === next.values &&
+    previous.messages === next.messages &&
+    previous.interrupt === next.interrupt &&
+    previous.phase === next.phase &&
+    previous.runId === next.runId &&
+    previous.notice === next.notice &&
+    previous.isThreadLoading === next.isThreadLoading &&
+    previous.checkedRuns === next.checkedRuns;
+}
+
 function App() {
   const initialSessionRef = useRef<SessionDescriptor | undefined>(undefined);
   if (!initialSessionRef.current) initialSessionRef.current = createSession();
@@ -154,7 +175,7 @@ function App() {
 
   const handleSnapshot = useCallback((snapshot: ThreadSessionSnapshot) => {
     setSessionSnapshots((current) => (
-      current[snapshot.sessionKey] === snapshot
+      isSameSessionSnapshot(current[snapshot.sessionKey], snapshot)
         ? current
         : { ...current, [snapshot.sessionKey]: snapshot }
     ));

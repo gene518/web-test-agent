@@ -223,11 +223,16 @@ test("history titles fall back to messages and hydrate the selected conversation
   let stateRequests = 0;
   let searchSelect: string[] = [];
   let searchExtract: Record<string, string> = {};
+  const consoleErrors: string[] = [];
   const threadId = "history-detail-regression";
   const headers = {
     "access-control-allow-origin": "*",
     "content-type": "application/json",
   };
+
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
 
   await page.route("**/api/langgraph/**", async (route) => {
     const url = new URL(route.request().url());
@@ -278,8 +283,16 @@ test("history titles fall back to messages and hydrate the selected conversation
               { id: "ai-history", type: "ai", content: "历史回答正文" },
             ],
           },
-          next: [],
-          tasks: [],
+          next: ["complete_params"],
+          tasks: [{
+            interrupts: [{
+              value: {
+                agent_type: "healer",
+                missing_param: "project_name",
+                question: "请提供自动化工程名称。",
+              },
+            }],
+          }],
           checkpoint: { thread_id: threadId, checkpoint_ns: "", checkpoint_id: "checkpoint-1" },
           metadata: {},
           created_at: "2026-07-17T08:01:00Z",
@@ -303,6 +316,8 @@ test("history titles fall back to messages and hydrate the selected conversation
   await expect(page.getByText("历史回答正文", { exact: true })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "对话输入框" })).toBeEnabled();
   await expect.poll(() => stateRequests).toBe(1);
+  await expect(page.getByText("请提供自动化工程名称。", { exact: true })).toBeVisible();
+  expect(consoleErrors.filter((message) => message.includes("Maximum update depth"))).toEqual([]);
   expect(searchSelect).not.toContain("values");
   expect(searchSelect).not.toContain("interrupts");
   expect(searchExtract).toEqual({

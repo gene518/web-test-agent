@@ -50,6 +50,25 @@ type ThreadSessionControllerProps = {
   onRestoreDraft: (sessionKey: string, text: string) => void;
 };
 
+/**
+ * 将 SDK 每次读取时重新包装的中断数据稳定为同一引用。
+ *
+ * LangGraph SDK 会为历史 checkpoint 中的 interrupt 创建新对象；本控制器把快照上报给
+ * App 后，若该对象每次都不同会导致父组件持续回写 sessionSnapshots。此 Hook 由会话快照
+ * 构建逻辑消费，保证内容未变化时不会把无意义的对象引用变化扩散到父组件。
+ */
+function useStableActionableInterrupt(value: unknown): ActionableInterrupt | undefined {
+  const nextInterrupt = actionableInterrupt(value);
+  const signature = nextInterrupt ? JSON.stringify(nextInterrupt) : "";
+  const previousRef = useRef<{ signature: string; value?: ActionableInterrupt }>({
+    signature: "",
+  });
+
+  if (previousRef.current.signature === signature) return previousRef.current.value;
+  previousRef.current = { signature, value: nextInterrupt };
+  return nextInterrupt;
+}
+
 function isDisplayMessagesEvent(value: unknown): value is DisplayMessagesEvent {
   return typeof value === "object" &&
     value !== null &&
@@ -94,6 +113,7 @@ export function ThreadSessionController({
   threadIdRef.current = threadId;
 
   const setPhase = useCallback((next: RunPhase) => {
+    if (phaseRef.current === next) return;
     phaseRef.current = next;
     setPhaseState(next);
   }, []);
@@ -188,7 +208,7 @@ export function ThreadSessionController({
     },
   });
 
-  const streamInterrupt = actionableInterrupt(stream.interrupt);
+  const streamInterrupt = useStableActionableInterrupt(stream.interrupt);
   // The SDK can retain an earlier stream interrupt after a final checkpoint lands.
   // Once a run has finished, the checkpoint is authoritative until the next submit.
   const interrupt = finishedInterrupt.known
