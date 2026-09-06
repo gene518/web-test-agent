@@ -141,8 +141,8 @@ export function conversationMessages(
   liveMessages: unknown[] = [],
 ): CanonicalMessage[] {
   return mergeMessages(
-    values?.display_messages ?? [],
     values?.messages ?? [],
+    values?.display_messages ?? [],
     liveMessages,
   );
 }

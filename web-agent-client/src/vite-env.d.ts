@@ -1,7 +1,6 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_DEPLOYMENT_MODE?: "container";
   readonly VITE_LANGGRAPH_API_URL?: string;
 }
 

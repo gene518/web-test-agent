@@ -25,7 +25,6 @@ import {
   type ThreadSessionHandle,
   type ThreadSessionSnapshot,
 } from "./components/ThreadSessionController";
-import { UpdateBadge } from "./components/UpdateBadge";
 import { useThreadHistory } from "./hooks/use-thread-history";
 import { useThreadTitleBackfill } from "./hooks/use-thread-title-backfill";
 import {
@@ -67,7 +66,6 @@ type SessionDescriptor = {
 };
 
 const MAX_CACHED_IDLE_SESSIONS = 8;
-const IS_CONTAINER_DEPLOYMENT = import.meta.env.VITE_DEPLOYMENT_MODE === "container";
 
 const INITIAL_STATUS: BackendStatus = {
   state: "checking",
@@ -454,7 +452,6 @@ function App() {
             </div>
           </div>
           <div className="header-actions">
-            <UpdateBadge enabled={IS_CONTAINER_DEPLOYMENT} />
             <BackendBadge status={backend} />
             {selectedRunning && selectedThreadId && !selectedThreadReadonly && (
               <button className="cancel-button" onClick={() => void selectedHandle?.cancel()} disabled={selectedSnapshot?.phase === "cancelling"}>

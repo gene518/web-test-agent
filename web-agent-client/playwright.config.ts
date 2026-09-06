@@ -1,7 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const containerMode = process.env.VITE_DEPLOYMENT_MODE === "container";
-const devServerPort = containerMode ? 14320 : 1420;
+const devServerPort = 1420;
 const devServerUrl = `http://127.0.0.1:${devServerPort}`;
 
 export default defineConfig({

@@ -10,7 +10,12 @@ from pathlib import Path
 
 class StartScriptEncodingTestCase(unittest.TestCase):
     def test_macos_start_command_is_executable(self) -> None:
-        script_path = Path(__file__).resolve().parents[2] / "start" / "macos-start.command"
+        script_path = (
+            Path(__file__).resolve().parents[2]
+            / "start"
+            / "desktop"
+            / "macos-start.command"
+        )
         self.assertTrue(script_path.exists(), "macos-start.command 必须存在。")
         if os.name != "nt":
             self.assertTrue(
@@ -19,7 +24,12 @@ class StartScriptEncodingTestCase(unittest.TestCase):
             )
 
     def test_windows_start_script_is_powershell_entry(self) -> None:
-        script_path = Path(__file__).resolve().parents[2] / "start" / "windows-start.ps1"
+        script_path = (
+            Path(__file__).resolve().parents[2]
+            / "start"
+            / "desktop"
+            / "windows-start.ps1"
+        )
         script_bytes = script_path.read_bytes()
         self.assertTrue(script_bytes, "windows-start.ps1 不能为空。")
         self.assertTrue(
@@ -41,22 +51,26 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertNotIn("FrontendDir", script_text)
         self.assertIn("web-agent-client", script_text)
 
-    def test_start_scripts_separate_user_client_and_internal_backend_modes(self) -> None:
+    def test_start_scripts_separate_user_client_and_internal_backend_modes(
+        self,
+    ) -> None:
         project_root = Path(__file__).resolve().parents[2]
-        macos_script = (project_root / "start" / "macos-start.command").read_text(
-            encoding="utf-8"
-        )
-        windows_script = (project_root / "start" / "windows-start.ps1").read_text(
-            encoding="utf-8-sig"
-        )
+        macos_script = (
+            project_root / "start" / "desktop" / "macos-start.command"
+        ).read_text(encoding="utf-8")
+        windows_script = (
+            project_root / "start" / "desktop" / "windows-start.ps1"
+        ).read_text(encoding="utf-8-sig")
 
         self.assertNotIn("FRONTEND_DIR", macos_script)
         self.assertIn("web-agent-client", macos_script)
+        self.assertIn('PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"', macos_script)
+        self.assertIn('BACKEND_LOG_FILE="$START_DIR/logs/backend.log"', macos_script)
         self.assertIn("deep_agent/assets/demo", macos_script)
         self.assertIn("pnpm tauri dev", macos_script)
         self.assertIn("stop_existing_client_vite_server", macos_script)
         self.assertIn("is_client_vite_listener", macos_script)
-        self.assertIn('CLIENT_DEV_PORT=1420', macos_script)
+        self.assertIn("CLIENT_DEV_PORT=1420", macos_script)
         self.assertIn("backend)", macos_script)
         self.assertIn('"backend" {', windows_script)
         self.assertIn('"tauri", "dev"', windows_script)
@@ -65,24 +79,29 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertIn("CARGO_BUILD_TARGET", windows_script)
         self.assertIn('$ErrorActionPreference = "Continue"', windows_script)
         self.assertIn('$ScriptPath.StartsWith("\\\\?\\")', windows_script)
+        self.assertIn(
+            "$ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)",
+            windows_script,
+        )
+        self.assertIn('Join-Path $ScriptDir "logs\\backend.log"', windows_script)
 
-    def test_backend_start_commands_enable_configurable_thread_concurrency(self) -> None:
+    def test_backend_start_commands_enable_configurable_thread_concurrency(
+        self,
+    ) -> None:
         project_root = Path(__file__).resolve().parents[2]
-        macos_script = (project_root / "start" / "macos-start.command").read_text(
-            encoding="utf-8"
-        )
-        windows_script = (project_root / "start" / "windows-start.ps1").read_text(
-            encoding="utf-8-sig"
-        )
+        macos_script = (
+            project_root / "start" / "desktop" / "macos-start.command"
+        ).read_text(encoding="utf-8")
+        windows_script = (
+            project_root / "start" / "desktop" / "windows-start.ps1"
+        ).read_text(encoding="utf-8-sig")
         portable_builder = (
-            project_root / "start" / "build-windows-x64-portable.ps1"
+            project_root / "start" / "desktop" / "build-windows-x64-portable.ps1"
         ).read_text(encoding="utf-8-sig")
 
         self.assertIn("BACKEND_JOBS_PER_WORKER=4", macos_script)
-        self.assertIn('^[1-9][0-9]*$', macos_script)
-        self.assertIn(
-            '--n-jobs-per-worker "$BACKEND_JOBS_PER_WORKER"', macos_script
-        )
+        self.assertIn("^[1-9][0-9]*$", macos_script)
+        self.assertIn('--n-jobs-per-worker "$BACKEND_JOBS_PER_WORKER"', macos_script)
         self.assertIn("$script:BackendJobsPerWorker = 4", windows_script)
         self.assertIn("[int]::TryParse", windows_script)
         self.assertIn(
@@ -97,7 +116,9 @@ class StartScriptEncodingTestCase(unittest.TestCase):
 
     def test_windows_portable_builder_contains_all_runtime_layers(self) -> None:
         project_root = Path(__file__).resolve().parents[2]
-        builder_path = project_root / "start" / "build-windows-x64-portable.ps1"
+        builder_path = (
+            project_root / "start" / "desktop" / "build-windows-x64-portable.ps1"
+        )
         builder_bytes = builder_path.read_bytes()
         self.assertTrue(
             builder_bytes.startswith(b"\xef\xbb\xbf"),
@@ -154,31 +175,53 @@ class StartScriptEncodingTestCase(unittest.TestCase):
         self.assertEqual(set(configured_fields), expected_fields)
         self.assertEqual(len(configured_fields), len(expected_fields))
 
-        macos_script = (project_root / "start" / "macos-start.command").read_text(
-            encoding="utf-8"
-        )
+        macos_script = (
+            project_root / "start" / "desktop" / "macos-start.command"
+        ).read_text(encoding="utf-8")
         for role in ("MASTER", "SPECIALIST"):
             for field in ("FAMILY", "CHANNEL", "MODEL"):
                 self.assertIn(
                     f'require_model_config "{role}_LLM__{field}"', macos_script
                 )
 
-    def test_start_directory_keeps_only_supported_source_files(self) -> None:
+    def test_start_directory_separates_desktop_and_container_entries(self) -> None:
         project_root = Path(__file__).resolve().parents[2]
         start_dir = project_root / "start"
         source_files = {
             path.name
             for path in start_dir.iterdir()
-            if path.is_file() and not path.name.startswith(".") and path.suffix != ".log"
+            if path.is_file()
+            and not path.name.startswith(".")
+            and path.suffix != ".log"
         }
+        self.assertEqual(source_files, set())
+        desktop_dir = start_dir / "desktop"
+        container_dir = start_dir / "container"
+        self.assertTrue(desktop_dir.is_dir())
+        self.assertTrue(container_dir.is_dir())
         self.assertEqual(
-            source_files,
+            {path.name for path in desktop_dir.iterdir() if path.is_file()},
             {
                 "build-windows-x64-portable.ps1",
                 "macos-start.command",
                 "windows-start.ps1",
             },
         )
+        self.assertTrue((container_dir / "start-container.sh").is_file())
+        self.assertTrue((container_dir / "README.md").is_file())
+        container_script = (container_dir / "start-container.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("WEB_TEST_AGENT_CONTAINER_ENV_FILE", container_script)
+        self.assertIn("WEB_TEST_AGENT_MODEL_ENV_FILE", container_script)
+        self.assertIn('--env-file "$MODEL_ENV_FILE"', container_script)
+        self.assertIn('--env-file "$DEPLOY_ENV_FILE"', container_script)
+        self.assertIn(
+            'print_service_group "核心运行组（Agent / Scheduler）"', container_script
+        )
+        self.assertIn('print_service_group "访问入口组（Web）"', container_script)
+        self.assertNotIn("updater", container_script.lower())
+        self.assertNotIn("docker compose pull", container_script)
 
     def test_langgraph_config_does_not_redeclare_env_file_loading(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "langgraph.json"

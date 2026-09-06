@@ -109,15 +109,15 @@ SPECIALIST_LLM__THINKING=disabled
 
 ```bash
 # macOS，只启动后端
-bash start/macos-start.command backend
+bash start/desktop/macos-start.command backend
 ```
 
 ```powershell
 # Windows PowerShell，只启动后端
-.\start\windows-start.ps1 -Mode backend
+.\start\desktop\windows-start.ps1 -Mode backend
 ```
 
-默认地址为 `http://127.0.0.1:2024`，可在启动脚本进程中通过 `BACKEND_PORT` 覆盖。源码启动默认允许每个 worker 同时处理 4 个会话任务，可通过 `BACKEND_JOBS_PER_WORKER` 覆盖；Windows 便携版固定为 4。后端日志写入仓库根目录的 `start/backend.log`。
+默认地址为 `http://127.0.0.1:2024`，可在启动脚本进程中通过 `BACKEND_PORT` 覆盖。源码启动默认允许每个 worker 同时处理 4 个会话任务，可通过 `BACKEND_JOBS_PER_WORKER` 覆盖；Windows 便携版固定为 4。桌面源码后端日志写入仓库根目录的 `start/desktop/logs/backend.log`。
 
 手动开发启动：
 
@@ -233,4 +233,4 @@ uv run pytest -q tests/test_scheduler_summary.py
 - 结构化数据使用 Pydantic/类型契约，配置文件使用 JSON 解析和原子替换。
 - 新增后端行为应补 pytest，共享行为需要覆盖取消、异常、路径边界和并发情况。
 
-Git 只使用仓库的 `main` 长期分支；关键节点使用 `git tag -a` 创建 annotated tag。Codex worktree 保持 detached HEAD，完成后 Handoff 回本地 `main`，不创建临时发布分支。完整规则见 [AGENTS.md](../AGENTS.md)。
+Git 只使用仓库的 `main` 长期分支；关键节点使用 `git tag -a` 创建 annotated tag。Codex worktree 保持 detached HEAD，完成后 Handoff 回本地 `main`，不创建临时发布分支。完整项目级操作规范见 [AGENTS.md](../AGENTS.md)。

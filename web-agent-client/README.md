@@ -1,6 +1,6 @@
-# Web Test Agent 桌面客户端
+# Web Test Agent 客户端
 
-`web-agent-client/` 是仓库配套的 macOS / Windows 客户端，使用 Tauri v2、React、Vite 和 `@langchain/langgraph-sdk`。它直接连接 `web-agent/` 暴露的 LangGraph Server，不复制模型配置、消息或后端业务逻辑。整体架构见 [仓库 README](../README.md)。
+`web-agent-client/` 同时支持 macOS / Windows Tauri 客户端和 Docker H5，使用 Tauri v2、React、Vite 和 `@langchain/langgraph-sdk`。它直接连接 `web-agent/` 暴露的 LangGraph Server，不复制模型配置、消息或后端业务逻辑。整体架构见 [仓库 README](../README.md)。
 
 当前客户端提供以下能力：
 
@@ -73,12 +73,12 @@ Windows x64 免安装包是独立的发布形态，不受上述源码开发环�
 
 ```bash
 # macOS
-bash start/macos-start.command start
+bash start/desktop/macos-start.command start
 ```
 
 ```powershell
 # Windows PowerShell
-.\start\windows-start.ps1 -Mode start
+.\start\desktop\windows-start.ps1 -Mode start
 ```
 
 `start` 模式会准备客户端依赖并执行 Tauri 开发启动；客户端再通过平台脚本的内部 `backend` 模式启动后端，因此不会发生递归。源码后端默认使用 `BACKEND_JOBS_PER_WORKER=4`，可在启动脚本进程中覆盖；Windows 便携版固定为 4。关闭客户端或执行对应脚本的 `end` 模式会停止本次开发客户端和后端。
@@ -98,9 +98,9 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-客户端会自动向上查找仓库根目录；安装后的应用无法自动定位时，会提示选择包含 `web-agent/langgraph.json` 和 `start/` 平台脚本的目录。选择结果和后端端口保存在客户端本机，默认端口是 `2024`。
+客户端会自动向上查找仓库根目录；安装后的应用无法自动定位时，会提示选择包含 `web-agent/langgraph.json` 和 `start/desktop/` 平台脚本的目录。选择结果和后端端口保存在客户端本机，默认端口是 `2024`。
 
-仅预览 React 界面时可运行 `pnpm dev`。浏览器预览不会启动或停止后端，会直接尝试连接 `http://127.0.0.1:2024`。
+仅预览 React 界面时可运行 `pnpm dev`。普通浏览器不会启动或停止后端，默认连接当前 origin 下的 `/api/langgraph`；Vite 会把该路径代理到 `127.0.0.1:2024`，测试环境也可用 `VITE_LANGGRAPH_API_URL` 显式覆盖。
 
 ## 后端生命周期
 
@@ -112,7 +112,7 @@ pnpm tauri dev
 4. 等待 `/info` 就绪，再开放会话操作。
 5. 应用退出时停止本次客户端管理的后端。
 
-后端日志仍写入仓库的 `start/backend.log`，客户端“后端日志”窗口展示该文件最后 200 行。窗口会解析 ANSI 转义序列，并提供 `macOS 控制台`、`深色`、`浅色` 三种持久化主题。
+后端日志仍写入仓库的 `start/desktop/logs/backend.log`，客户端“后端日志”窗口展示该文件最后 200 行。窗口会解析 ANSI 转义序列，并提供 `macOS 控制台`、`深色`、`浅色` 三种持久化主题。
 
 ## 阶段总结和产物打开
 
@@ -133,7 +133,7 @@ Plan、Generator 和 Healer 每个阶段结束后，后端会输出项目目录�
 - Windows 便携模式 `config/.env` 的 `DEFAULT_AUTOMATION_PROJECT_ROOT`。
 - 对应配置未填写时的默认自动化根 `~/webautotest`。
 
-当 `DEFAULT_AUTOMATION_PROJECT_ROOT` 是相对路径时，源码模式相对 `web-agent/` 解析，便携模式相对便携包根目录解析。基准目录必须真实存在且位于某个可信根内；目标文件或目录也必须存在。原生端会去除 `:line[:column]` 位置后缀，规范化路径，并拒绝 NUL、`..`、符号链接逃逸以及不在可信根内的绝对路径。浏览器预览模式不能调用系统文件管理器，会显示明确提示。
+当 `DEFAULT_AUTOMATION_PROJECT_ROOT` 是相对路径时，源码模式相对 `web-agent/` 解析，便携模式相对便携包根目录解析。基准目录必须真实存在且位于某个可信根内；目标文件或目录也必须存在。原生端会去除 `:line[:column]` 位置后缀，规范化路径，并拒绝 NUL、`..`、符号链接逃逸以及不在可信根内的绝对路径。Docker H5 则在新标签打开同源 `/api/artifacts/preview`，服务端只允许 `/data/projects` 下的非敏感普通文件和目录，并提供受限预览及文件下载。
 
 Scheduler 对话总结只反映“配置是否写入”，不代表测试已执行。独立 Scheduler 服务不由客户端自动常驻启动；其每次真实运行的分析报告位于 `<project_dir>/<test_root_dir>/scheduler-reports/<task-id>-<digest>/`，同时提供按次命名的 `.json` / `.md` 和 `latest.json` / `latest.md`。报告内容、常驻进程启动方式和配置见 [后端 README](../web-agent/README.md)。
 
@@ -200,4 +200,4 @@ git push origin <tag-name>
 
 Codex worktree 保持 detached HEAD，通过 Handoff 把已完成工作移回本地 `main`，不使用 "Create branch here"。未经用户明确要求，不创建或推送其他分支，不强推 `main`，不改写已发布 tag。
 
-完整 Git 约束见 [AGENTS.md](../AGENTS.md)。
+完整项目级操作规范见 [AGENTS.md](../AGENTS.md)。

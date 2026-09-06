@@ -88,6 +88,8 @@ export function ThreadSessionController({
   const knownRunIdsRef = useRef(new Set<string>());
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
+  // 初始 checkpoint 只在会话首次挂载时交给 SDK，避免把流式快照回传后再次触发 SDK 状态初始化。
+  const initialValuesRef = useRef(initialValues);
 
   threadIdRef.current = threadId;
 
@@ -121,7 +123,7 @@ export function ThreadSessionController({
     threadId,
     messagesKey: "display_messages",
     fetchStateHistory: false,
-    initialValues,
+    initialValues: initialValuesRef.current,
     onThreadId: (id) => onThreadBound(sessionKey, id),
     onCreated: (run) => {
       discoveryCompleteRef.current = true;
@@ -132,7 +134,6 @@ export function ThreadSessionController({
     },
     onMetadataEvent: markRunning,
     onUpdateEvent: markRunning,
-    onToolEvent: markRunning,
     onCustomEvent: (event, options) => {
       markRunning();
       if (!isDisplayMessagesEvent(event)) return;
@@ -197,7 +198,7 @@ export function ThreadSessionController({
   const streamValues = stream.values;
   const values = Object.keys(streamValues).length > 0
     ? streamValues
-    : initialValues ?? EMPTY_AGENT_STATE;
+    : initialValuesRef.current ?? EMPTY_AGENT_STATE;
   const messages = useMemo(
     () => conversationMessages(values),
     [values],

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-START_DIR="$PROJECT_ROOT/start"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+START_DIR="$SCRIPT_DIR"
 BACKEND_DIR="$PROJECT_ROOT/web-agent"
 CLIENT_DIR="$PROJECT_ROOT/web-agent-client"
 PLAYWRIGHT_PROJECT_DIR="$BACKEND_DIR/deep_agent/assets/demo"
@@ -12,7 +12,7 @@ START_SCRIPT_PATH="$SCRIPT_DIR/macos-start.command"
 # 平台相关的持久化状态目录：遵循 macOS 约定放在 ~/Library/Application Support，
 # 不再污染项目 start/ 目录。
 APP_STATE_DIR="${APP_STATE_DIR:-$HOME/Library/Application Support/WebAutoTestAgent}"
-BACKEND_LOG_FILE="$START_DIR/backend.log"
+BACKEND_LOG_FILE="$START_DIR/logs/backend.log"
 
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="${BACKEND_PORT:-2024}"
@@ -33,7 +33,7 @@ STOP_STEP_INDEX=0
 STOP_TOTAL_STEPS=3
 PYTHON_BIN=""
 
-mkdir -p "$APP_STATE_DIR"
+mkdir -p "$APP_STATE_DIR" "$(dirname "$BACKEND_LOG_FILE")"
 
 log() {
   printf "%s\n" "$*"

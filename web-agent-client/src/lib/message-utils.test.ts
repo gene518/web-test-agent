@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Thread } from "@langchain/langgraph-sdk";
 import {
   buildToolInvocations,
+  conversationMessages,
   historicalConversationMessages,
   mergeMessages,
   summarizeThreadTitle,
@@ -32,6 +33,20 @@ describe("message normalization", () => {
     );
 
     expect(messages.map((message) => message.content)).toEqual(["历史问题", "历史回答"]);
+  });
+
+  it("keeps display-only intent classification after the triggering user message", () => {
+    const messages = conversationMessages({
+      messages: [{ id: "human-1", type: "human", content: "帮我生成测试计划" }],
+      display_messages: [{
+        id: "intent-1",
+        type: "ai",
+        content: "",
+        tool_calls: [{ id: "intent-call", name: "IntentClassification", args: {} }],
+      }],
+    });
+
+    expect(messages.map((message) => message.id)).toEqual(["human-1", "intent-1"]);
   });
 });
 

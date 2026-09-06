@@ -1,8 +1,5 @@
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
 
-ARG VITE_DEPLOYMENT_MODE=container
-ENV VITE_DEPLOYMENT_MODE=${VITE_DEPLOYMENT_MODE}
-
 WORKDIR /build
 RUN corepack enable && corepack prepare pnpm@10.5.1 --activate
 COPY web-agent-client/package.json web-agent-client/pnpm-lock.yaml ./

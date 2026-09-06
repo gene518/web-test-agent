@@ -41,8 +41,8 @@ COPY web-agent/deep_agent ./deep_agent
 RUN --mount=type=cache,target=/root/.cache/uv \
     UV_CACHE_DIR=/root/.cache/uv UV_HTTP_RETRIES=5 UV_HTTP_TIMEOUT=300 \
     uv sync --frozen --extra dev \
-    && mkdir -p /app/.langgraph_api /data/projects /data/config /scheduler-state \
-    && chown -R pwuser:pwuser /app/.langgraph_api /data /home/pwuser /scheduler-state
+    && mkdir -p /app/.langgraph_api /data/projects /data/config \
+    && chown -R pwuser:pwuser /app/.langgraph_api /data /home/pwuser
 
 USER pwuser
 EXPOSE 2024

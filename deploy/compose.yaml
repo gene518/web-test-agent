@@ -37,6 +37,9 @@ services:
     platform: linux/amd64
     init: true
     restart: unless-stopped
+    labels:
+      com.web-test-agent.group: core-runtime
+      com.web-test-agent.group-title: 核心运行组
     environment:
       <<: [*runtime-environment, *model-environment]
     command: ["/opt/web-agent-venv/bin/langgraph", "dev", "--host", "0.0.0.0", "--port", "2024", "--no-browser", "--no-reload", "--n-jobs-per-worker", "4"]
@@ -68,19 +71,18 @@ services:
     platform: linux/amd64
     init: true
     restart: unless-stopped
+    labels:
+      com.web-test-agent.group: core-runtime
+      com.web-test-agent.group-title: 核心运行组
     depends_on:
       agent:
         condition: service_healthy
     environment:
       <<: *runtime-environment
-      SCHEDULER_MAINTENANCE_FILE: /update-control/maintenance.json
-      SCHEDULER_STATUS_FILE: /scheduler-state/scheduler-status.json
     command: ["/opt/web-agent-venv/bin/web-agent-scheduler", "--config", "/data/config/scheduler_tasks.json"]
     volumes:
       - ${PROJECTS_HOST_PATH:?请设置项目目录的宿主机绝对路径}:/data/projects
       - ${CONFIG_HOST_PATH:?请设置配置目录的宿主机绝对路径}:/data/config:ro
-      - update_state:/update-control:ro
-      - scheduler_state:/scheduler-state
     tmpfs: ["/tmp:size=2g,mode=1777"]
     shm_size: 1gb
     read_only: true
@@ -94,44 +96,6 @@ services:
       retries: 5
     networks: [internal]
 
-  updater:
-    image: ${UPDATER_IMAGE:-web-test-agent-updater:local}
-    build:
-      context: ..
-      dockerfile: deploy/updater/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      agent:
-        condition: service_healthy
-    environment:
-      AGENT_INTERNAL_URL: http://agent:2024
-      BUILD_SHA: ${DEPLOYED_SHA:-0000000000000000000000000000000000000000}
-      COMPOSE_FILE: /deployment/compose.yaml
-      COMPOSE_PROJECT_NAME: web-test-agent
-      COSIGN_CERTIFICATE_IDENTITY: ${COSIGN_CERTIFICATE_IDENTITY:-https://github.com/gene518/web-test-agent/.github/workflows/ci.yml@refs/heads/main}
-      GHCR_IMAGE_PREFIX: ${GHCR_IMAGE_PREFIX:-ghcr.io/gene518/web-test-agent}
-      GHCR_TOKEN: ${GHCR_TOKEN:-}
-      GHCR_USERNAME: ${GHCR_USERNAME:-}
-      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-gene518/web-test-agent}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      INTERNAL_NETWORK: web-test-agent-internal
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?请设置 PUBLIC_ORIGIN}
-      UPDATE_CSRF_SECRET: ${UPDATE_CSRF_SECRET:?请设置 UPDATE_CSRF_SECRET}
-      UPDATE_INTERNAL_TOKEN: ${UPDATE_INTERNAL_TOKEN:?请设置 UPDATE_INTERNAL_TOKEN}
-      UPDATE_STATE_DIR: /state
-      SCHEDULER_STATUS_FILE: /scheduler-state/scheduler-status.json
-    expose: ["8090"]
-    volumes:
-      - update_state:/state
-      - scheduler_state:/scheduler-state:ro
-      - ${DEPLOY_HOST_PATH:?请设置 deploy 目录的宿主机绝对路径}:/deployment:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    read_only: true
-    tmpfs: ["/tmp:size=64m,mode=1777"]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    networks: [internal]
-
   web:
     image: ${WEB_IMAGE:-web-test-agent-web:local}
     build:
@@ -140,15 +104,12 @@ services:
       args:
         BUILD_SHA: ${DEPLOYED_SHA:-0000000000000000000000000000000000000000}
     restart: unless-stopped
+    labels:
+      com.web-test-agent.group: access-entry
+      com.web-test-agent.group-title: 访问入口组
     depends_on:
       agent:
         condition: service_healthy
-      updater:
-        condition: service_healthy
-    environment:
-      H5_BASIC_AUTH_HASH: ${H5_BASIC_AUTH_HASH:?请设置 H5_BASIC_AUTH_HASH}
-      H5_BASIC_AUTH_USER: ${H5_BASIC_AUTH_USER:?请设置 H5_BASIC_AUTH_USER}
-      UPDATE_INTERNAL_TOKEN: ${UPDATE_INTERNAL_TOKEN:?请设置 UPDATE_INTERNAL_TOKEN}
     ports:
       - ${H5_BIND_ADDRESS:-0.0.0.0}:${H5_PORT:-8080}:8080
     read_only: true
@@ -160,10 +121,6 @@ services:
 volumes:
   langgraph_state:
     name: web-test-agent-langgraph-state
-  update_state:
-    name: web-test-agent-update-state
-  scheduler_state:
-    name: web-test-agent-scheduler-state
 
 networks:
   internal:

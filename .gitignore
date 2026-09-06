@@ -39,7 +39,7 @@ venv/
 
 # --- 日志 ---------------------------------------------------
 *.log
-start/backend.log
+start/desktop/logs/
 
 # --- LangGraph 本地运行时数据 ------------------------------
 .langgraph_api/
@@ -75,7 +75,6 @@ node_modules/
 /web-agent/tests/debug/*.log
 /output/
 /deploy/data/
-/deploy/deployment.env
 
 # --- 启动脚本缓存 ------------------------------------------
 /start/script/.cache/

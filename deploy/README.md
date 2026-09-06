@@ -1,100 +1,131 @@
 # 单机 VPS H5 部署
 
-本目录提供“不使用 Nginx、单台 VPS、Docker Compose”的私有化方案。Caddy 是唯一公开服务，监听 `8080` 并提供 H5 静态文件、Basic Auth 和三个同源代理：
+本目录提供“不使用 Nginx、单台 VPS、Docker Compose”的私有化方案。Caddy 是唯一公开服务，监听 `8080` 并提供 H5 静态文件和两个同源代理：
 
 - `/api/langgraph/*` -> `agent:2024`
-- `/api/artifacts/*` -> Agent 的只读产物预览/下载路由
-- `/api/update/*` -> `updater:8090`
+- `/api/artifacts/*` -> Agent 的只读产物预览与下载路由
 
-Agent、scheduler 和 updater 不发布宿主机端口，只加入 `web-test-agent-internal` bridge 网络。Tauri 桌面启动与本地端口逻辑保持不变。
+正常运行时只有三个常驻容器和两个镜像：
 
-## 安全警告
+| 分组 | 容器 | 镜像与职责 |
+| --- | --- | --- |
+| 核心运行组 | `agent`、`scheduler` | 共用 Agent 镜像；分别运行 LangGraph 服务和定时调度进程 |
+| 访问入口组 | `web` | 使用 Web 镜像；提供 H5 和反向代理 |
 
-当前目标明确要求公网 HTTP，因此 Basic Auth 的用户名和密码可被链路上的第三方窃听。它只阻止无意访问，**不提供传输安全**。只应在额外受控网络、VPS 防火墙或可信 VPN 内使用；真正暴露公网前应改用 HTTPS。
+该方案没有 Updater 容器、Docker socket、浏览器内版本检查或自动重启流程。版本升级由部署人员明确更新源码后重新构建，避免把宿主机 Docker 控制权交给 Web 可达服务。
+
+## H5 网络边界
+
+H5 可以启动 Agent、消耗模型额度并查看测试产物，但 Web 入口不提供登录或其他访问认证。默认 `H5_BIND_ADDRESS=127.0.0.1`，仅允许部署主机本机访问。
+
+需要从其他设备访问时，可将 `H5_BIND_ADDRESS` 改为 `0.0.0.0`，但只能部署在 VPS 防火墙白名单、可信 VPN 或其他受控网络中。当前目标使用 HTTP 且没有入口认证；直接暴露到不可信公网前必须增加 HTTPS 和外层访问控制。
 
 Artifact HTTP 接口只读，并将目标约束到 `/data/projects` 的真实路径；目录穿越、符号链接逃逸、隐藏目录、`node_modules`、认证状态和常见密钥文件均返回 404。HTML、SVG 等主动内容不会直接以内联原始响应执行。
 
-## Docker socket 权限（重要）
+### 腾讯云域名入口
 
-在线更新器挂载了宿主机的 `/var/run/docker.sock`，以便拉取已签名镜像并重建 Compose 服务。这等同于授予 updater **宿主机级 Docker 控制权**：一旦 updater 进程或其可达控制面被攻破，攻击者可通过 Docker 创建高权限容器、挂载宿主机文件系统并取得主机控制。`read_only`、`cap_drop` 和 `no-new-privileges` 不会限制 Docker socket 所赋予的能力，不能把它们当作隔离边界。
+2026-09-06，按部署所有者明确要求，`https://tencent.geneecho.top` 向所有 IPv4 来源开放，未添加登录认证。这是共享实例：所有访问者可以使用同一模型额度、访问共享对话与产物；HTTPS 只保护浏览器到入口的传输，不提供用户隔离。该实例是上述默认私有部署边界的显式例外。
 
-因此应把该部署放在专用 VPS 上，并限制管理员、网络和 Docker daemon 访问。若需要强隔离，必须移除原始 Docker socket，改为单独部署的、严格只允许预定义更新操作的宿主机更新 helper 或 socket proxy；当前 Compose 方案尚未提供这样的 helper。
+服务器源码位于 `/home/ubuntu/web-test-agent`。三个业务容器保持不变；宿主机另运行 Ubuntu 软件源安装的 `caddy.service`，代理到 `127.0.0.1:8080`。远端 `deploy/.env` 使用 `H5_BIND_ADDRESS=127.0.0.1`、`H5_PORT=8080`。腾讯云防火墙对全部 IPv4 放行 TCP 80/443，不放行 8080；80 自动跳转 HTTPS。无需 SSH 隧道，访问地址不带端口。
+
+宿主机 `/etc/caddy/Caddyfile` 内容如下（与容器内的 `deploy/Caddyfile` 职责不同）：
+
+```caddyfile
+{
+    admin 127.0.0.1:2019
+}
+
+tencent.geneecho.top {
+    encode zstd gzip
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+}
+```
+
+Caddy 自动申请并续期证书，证书和 ACME 状态持久化到 `/var/lib/caddy/.local/share/caddy`；应与 `/etc/caddy/Caddyfile` 一同备份，保持域名解析及 80/443 可达。该 systemd 服务独立于 Compose，日常检查和重载：
+
+```bash
+sudo caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+sudo systemctl status caddy --no-pager
+sudo journalctl -u caddy -n 50 --no-pager
+curl -fsS https://tencent.geneecho.top/health
+curl -fsS https://tencent.geneecho.top/api/langgraph/info
+```
+
+2026-09-06，Master 和 Specialist 均切换为 `gpt-5.6-terra`，已从运行容器验证真实模型响应、JSON 输出和工具调用续接。模型凭据仅保留在 `web-agent/.env` 与 Agent 容器环境中，不在文档中记录。
 
 ## 首次启动
 
-要求 Docker Engine 和 Compose v2，宿主机 CPU 为 x86_64。Agent 明确使用 `linux/amd64`，Playwright 与 MCP 均固定为 `1.61.1`，容器内以非 root `pwuser` 运行。
+要求 Docker Engine 和 Compose v2，宿主机 CPU 为 x86_64。Agent 使用 `linux/amd64`，Playwright 与 MCP 固定为 `1.61.1`，容器内以非 root `pwuser` 运行。
 
 ```bash
-cd deploy
-# `.env` 含模型、GitHub 和更新密钥；创建时就限制为当前部署用户可读。
+# 在仓库根目录执行。`web-agent/.env` 包含模型凭据，两份部署配置均只允许当前部署用户读取。
 umask 077
-cp .env.example .env
-chmod 600 .env
+cp web-agent/.env.example web-agent/.env
+cp deploy/.env.example deploy/.env
+chmod 600 web-agent/.env deploy/.env
+cd deploy
 
-# 容器内 Agent 使用 UID/GID 1001。目录和 scheduler 配置不应向其他宿主机用户开放。
+# UID/GID 1001 是 Agent 镜像内 pwuser 的数字身份。
 sudo install -d -o 1001 -g 1001 -m 0750 data data/projects data/config
 sudo install -o 1001 -g 1001 -m 0640 \
   ../web-agent/scheduler_tasks.example.json data/config/scheduler_tasks.json
 
-# 把下面三个绝对路径写入 .env，不能保留相对路径。
+# 输出需要写入 deploy/.env 的两个宿主机绝对路径。
 deploy_dir="$(pwd -P)"
-echo "DEPLOY_HOST_PATH=$deploy_dir"
 echo "PROJECTS_HOST_PATH=$deploy_dir/data/projects"
 echo "CONFIG_HOST_PATH=$deploy_dir/data/config"
 
-# 生成 Basic Auth hash；写进 .env 时把每个 $ 改成 $$。
-docker run --rm caddy:2.10.2-alpine \
-  caddy hash-password --plaintext '替换为强密码'
-
-# 为 UPDATE_INTERNAL_TOKEN 和 UPDATE_CSRF_SECRET 分别生成不同值。
-openssl rand -hex 32
-openssl rand -hex 32
 ```
 
-编辑 `.env`，至少填写：
+模型连接只在 `web-agent/.env` 中配置。Master 和 Specialist 各自保留完整的 family、channel、model、API key、base URL 和 thinking 字段；两者可以使用同一服务和密钥。
 
-- `PUBLIC_ORIGIN`：浏览器实际访问的完整 HTTP origin，例如 `http://203.0.113.10:8080`，不能带结尾 `/`。
-- `DEPLOY_HOST_PATH`、`PROJECTS_HOST_PATH`、`CONFIG_HOST_PATH`：上一步输出的宿主机绝对路径。在线更新的 reconciler 通过 Docker socket 调用宿主 daemon，相对路径会绑定到错误位置。
-- `H5_BASIC_AUTH_USER`、`H5_BASIC_AUTH_HASH`。
-- 两组模型的 family、channel、model、API key 和 base URL。
-- `UPDATE_INTERNAL_TOKEN`、`UPDATE_CSRF_SECRET`。
+仅修改模型配置后，在仓库根目录执行 `bash start/container/start-container.sh up`，Compose 会重新创建配置变化的 Agent 容器并等待健康检查；直接执行 `docker compose restart` 不会重新读取环境变量。同步维护脱敏的 `web-agent/.env.example`，并核对新容器实际加载的模型名和真实模型响应。
 
-Compose 只把模型连接传入 Agent；scheduler 仅获得运行时配置并通过内部 API 请求 Agent 执行分析。Basic Auth、`UPDATE_*`、GitHub 和 GHCR 凭据不会进入可执行浏览器与模型工具的容器。`.env` 由 Compose 用于插值，不作为广域 `env_file` 注入。
+`deploy/.env` 只需要配置：
 
-`.env` 必须保持 `0600`，部署目录建议仅部署用户可访问（例如 `chmod 750 deploy`）。Playwright 官方镜像中的 `pwuser` 是 UID/GID `1001:1001`。首次启动命令将 `data/`、`data/projects/`、`data/config/` 设为该用户拥有的 `0750` 目录，并把 `scheduler_tasks.json` 设为 `0640`。`PROJECTS_HOST_PATH` 必须允许该用户读写，`CONFIG_HOST_PATH` 必须允许 Agent 读写（scheduler 以只读方式挂载）；否则生成脚本、报告或更新定时配置会失败。需要让另一位宿主机运维用户管理这些文件时，应通过受控组或 `sudo` 授权，而不是放宽为 world-readable 或 world-writable。
+- `H5_BIND_ADDRESS`、`H5_PORT`：H5 的宿主机监听地址和端口。
+- `PROJECTS_HOST_PATH`：测试工程、脚本和报告的宿主机绝对路径。
+- `CONFIG_HOST_PATH`：Scheduler 配置的宿主机绝对路径。
 
-随后启动：
+Compose 只把模型连接传入 Agent；Scheduler 获得运行所需的非密钥配置，并通过内部地址 `http://agent:2024` 创建监控对话。两份配置文件仅用于 Compose 插值，不作为广域 `env_file` 注入。
+
+两份 `.env` 必须保持 `0600`。`PROJECTS_HOST_PATH` 必须允许 UID 1001 读写，`CONFIG_HOST_PATH` 由 Agent 读写、Scheduler 只读挂载；否则生成脚本、报告或定时配置会失败。
+
+随后回到仓库根目录启动：
 
 ```bash
-docker compose config --quiet
-docker compose build
-docker compose up -d --wait
-docker compose ps
-curl http://127.0.0.1:8080/health
+cd ..
+bash start/container/start-container.sh bootstrap
+bash start/container/start-container.sh status
 ```
 
-访问 `PUBLIC_ORIGIN` 并输入 Basic Auth 凭据。`/health` 仅供本机/容器健康检查，不返回业务数据，因此不要求认证。
+## 运行、升级与持久化
 
-## 运行与持久化
+- `web-test-agent-langgraph-state` 保存 checkpoint、线程和 store。
+- `PROJECTS_HOST_PATH` 保存测试工程、Playwright 脚本及分析报告。
+- `CONFIG_HOST_PATH/scheduler_tasks.json` 由 Agent 写入、Scheduler 读取。
+- Agent 与 Scheduler 共用项目目录和同一版本的 Agent 镜像。
 
-- `web-test-agent-langgraph-state` 保存 `.langgraph_api` checkpoint、线程和 store。这里使用无需 LangSmith 部署许可证的 `langgraph dev --no-reload`，只支持单机单 Agent 副本。
-- `PROJECTS_HOST_PATH` 保存测试工程、脚本、Playwright 报告和 scheduler 分析报告。
-- `CONFIG_HOST_PATH/scheduler_tasks.json` 由 Agent 写入、scheduler 读取。
-- `web-test-agent-update-state` 保存更新操作、部署 revision 和 maintenance gate；scheduler 只读挂载该卷。
-- `web-test-agent-scheduler-state` 仅由 scheduler 写入活动状态，updater 只读挂载，避免浏览器执行容器修改更新控制状态。Agent 镜像预置由非 root `pwuser` 持有的 `/scheduler-state`，首次创建空 named volume 时也具备正确写权限。
-- Agent 与 scheduler 使用共享项目目录和同一镜像；scheduler 通过内部地址 `http://agent:2024` 创建监控对话。
+版本升级由部署人员在维护窗口中执行：
 
-更新开始后 updater 创建 maintenance gate。scheduler 从只读控制卷观察 gate，让当前执行自然结束、暂停启动后续任务，并向独立状态卷原子发布 `scheduler-status.json`；活动 LangGraph 与 scheduler 任务均清空后，updater 才重建服务。更新器只接受同一 `CI` 工作流中、`main` push 的成功发布 job 产生的签名 GHCR 镜像，失败时恢复上一组不可变镜像。
+```bash
+git pull --ff-only origin main
+bash start/container/start-container.sh bootstrap
+```
 
-GitHub 侧应保护 `main`，仅允许受控主体推送并要求 CI 通过。容器发布是 `CI` 内的最后一个 job，依赖后端、前端、Windows 启动和 Windows 客户端检查全部成功；它固定检出当前 CI run 的精确 SHA，而非可变的 `main` 分支名。Cosign keyless 签名身份固定为 `.github/workflows/ci.yml@refs/heads/main`。
+`bootstrap` 会从当前检出的源码重新构建镜像并等待三个服务健康。CI 仍为 `main` 的 Agent/Web 发布镜像生成不可变 digest 和 cosign 签名，但本地启动不自动拉取或安装任何远程版本。
 
 常用运维命令：
 
 ```bash
-docker compose logs -f agent scheduler web updater
-docker compose restart scheduler
-docker compose down                 # 保留 named volumes 和宿主机数据
-docker compose down --volumes       # 会删除会话和更新状态，慎用
+bash start/container/start-container.sh logs
+bash start/container/start-container.sh logs agent scheduler
+bash start/container/start-container.sh status
+bash start/container/start-container.sh down
 ```
 
-不要横向扩容 `agent`：本方案的 `.langgraph_api` 是单进程本地持久层。备份时至少保存三个 named volume、`data/` 和 `.env`；`.env` 含密钥，不得提交 Git。
+删除 named volume 会丢失会话状态，启动脚本不提供该破坏性操作。备份时至少保存 `web-test-agent-langgraph-state`、`deploy/data/`、`web-agent/.env` 和 `deploy/.env`。

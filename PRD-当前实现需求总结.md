@@ -181,6 +181,15 @@ Web AutoTest Agent 是一个面向 Web 自动化测试场景的多阶段智能�
 - Specialist 内置文件工具被限制在当前项目目录内，并屏蔽 `node_modules`、`test-results` 和大体积调试产物。
 - 日志覆盖配置加载、图构建、模型初始化、节点入参、节点出参、路由、MCP 连接、工具事件和关键完成事件。
 
+### 5.6 启动与部署入口
+
+- `start/desktop/` 保留原有 macOS / Windows 桌面源码启动和 Windows x64 便携包构建方式；桌面源码日志统一写入 `start/desktop/logs/`。
+- `start/container/` 提供单机 VPS Docker Compose 运维入口和操作说明，支持首次 `bootstrap`、日常 `up/down`、日志、按职责分组的状态展示与配置检查。
+- 容器入口复用 `web-agent/.env` 中的模型和应用配置；`deploy/.env` 只维护 H5 监听地址和两个宿主机数据目录，H5 入口不提供登录认证。
+- 腾讯云实例由宿主机 Caddy 提供 `https://tencent.geneecho.top`，自动续期证书，转发到本机 `127.0.0.1:8080`；业务仍为三个容器。按部署所有者明确要求，80/443 允许所有 IPv4 来源，当前为无登录的共享实例，不具备用户数据隔离。
+- 正常运行时只有三个常驻容器、两个镜像：Agent 与 Scheduler 共用 Agent 镜像，Web 使用独立镜像并作为唯一访问入口。
+- 项目不提供 Updater 容器、Docker socket、浏览器内版本检测或自动重启；版本升级由部署人员更新源码后重新构建。
+
 ## 6. 桌面客户端交互现状
 
 ### 6.1 线程与时间线展示

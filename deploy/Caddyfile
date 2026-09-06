@@ -11,16 +11,8 @@
 		uri replace /health/agent /info
 		reverse_proxy agent:2024
 	}
-	route /health/update {
-		uri replace /health/update /health
-		reverse_proxy updater:8090
-	}
 
 	route {
-		basic_auth {
-			{$H5_BASIC_AUTH_USER} {$H5_BASIC_AUTH_HASH}
-		}
-
 		header {
 			-Server
 			Content-Security-Policy "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'"
@@ -28,21 +20,6 @@
 			Referrer-Policy "no-referrer"
 			X-Content-Type-Options "nosniff"
 			X-Frame-Options "DENY"
-		}
-
-		@langgraph_write {
-			path /api/langgraph/*
-			method POST PUT PATCH DELETE
-		}
-		handle @langgraph_write {
-			forward_auth updater:8090 {
-				uri /gate
-				header_up X-Internal-Token {$UPDATE_INTERNAL_TOKEN}
-			}
-			uri strip_prefix /api/langgraph
-			reverse_proxy agent:2024 {
-				flush_interval -1
-			}
 		}
 
 		handle_path /api/langgraph/* {
@@ -54,12 +31,6 @@
 		handle /api/artifacts/* {
 			uri strip_prefix /api
 			reverse_proxy agent:2024
-		}
-
-		handle_path /api/update/* {
-			reverse_proxy updater:8090 {
-				header_up X-Internal-Token {$UPDATE_INTERNAL_TOKEN}
-			}
 		}
 
 		handle {

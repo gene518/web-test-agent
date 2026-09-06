@@ -4,7 +4,6 @@ import react from "@vitejs/plugin-react";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const langGraphTarget = process.env.VITE_LANGGRAPH_DEV_TARGET || "http://127.0.0.1:2024";
-const updaterTarget = process.env.VITE_UPDATER_DEV_TARGET || "http://127.0.0.1:8090";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -40,11 +39,6 @@ export default defineConfig(async () => ({
         target: langGraphTarget,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
-      },
-      "/api/update": {
-        target: updaterTarget,
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/update/, ""),
       },
     },
   },

@@ -1,5 +1,7 @@
 # Web AutoTest Agent 工程说明
 
+> **开发与 AI Agent 规范：** 全项目统一以 [AGENTS.md](AGENTS.md) 为准。
+
 ## 1. 项目介绍
 
 本项目是一个面向 Web 自动化测试的智能体工程，整体目标是把"理解测试需求、生成测试计划、生成 Playwright 脚本、调试修复失败脚本、定时执行测试"串成可持续使用的闭环。
@@ -48,16 +50,20 @@
 ```text
 web-test-agent/  # 仓库根目录。
 ├── README.md  # 当前工程说明文档。
-├── DEVELOPMENT_GUIDE.md  # 开发规范和协作约束。
-├── doc/  # 产品需求文档。
-│   └── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
+├── AGENTS.md  # 全项目开发与协作规范，所有 AI Agent 必须遵守。
+├── PRD-当前实现需求总结.md  # 当前版本需求与能力边界说明。
 ├── .github/  # GitHub 自动化配置。
+│   ├── dependabot.yml  # 禁用 Dependabot 自动创建更新 Pull Request。
 │   └── workflows/
-│       └── ci.yml  # 持续集成流程。
-├── start/  # 启动根目录，平台脚本直接放在这里。
-│   ├── macos-start.command  # macOS 一键启动客户端和后端，支持 start / end / logs。
-│   ├── windows-start.ps1  # Windows 一键启动客户端和后端，支持 start / end / logs。
-│   └── build-windows-x64-portable.ps1  # Windows x64 便携包构建脚本。
+│       └── ci.yml  # 持续集成、构建、发布和镜像签名流程。
+├── start/  # 启动入口，按桌面源码与容器部署分目录维护。
+│   ├── desktop/  # 原有 macOS / Windows 桌面源码启动和便携包构建入口。
+│   │   ├── macos-start.command  # macOS 一键启动客户端和后端，支持 start / end / logs。
+│   │   ├── windows-start.ps1  # Windows 一键启动客户端和后端，支持 start / end / logs。
+│   │   └── build-windows-x64-portable.ps1  # Windows x64 便携包构建脚本。
+│   └── container/  # 单机 VPS Docker Compose 启动和运维入口。
+│       ├── start-container.sh  # bootstrap / up / down / logs / status / config。
+│       └── README.md  # 容器启动操作说明。
 ├── web-agent/  # 后端智能体工程。
 │   ├── pyproject.toml  # Python 包配置与命令入口。
 │   ├── uv.lock  # Python 依赖锁文件。
@@ -230,12 +236,12 @@ cp web-agent/.env.example web-agent/.env
 
 ```bash
 # macOS
-bash start/macos-start.command start
+bash start/desktop/macos-start.command start
 ```
 
 ```powershell
 # Windows PowerShell
-.\start\windows-start.ps1 -Mode start
+.\start\desktop\windows-start.ps1 -Mode start
 ```
 
 启动脚本会检查工具链、同步依赖、准备 Playwright Chromium，然后运行 Tauri 开发客户端。客户端会管理自己在 `127.0.0.1:2024` 上启动的本地 LangGraph 后端；源码启动默认允许每个 worker 并发处理 4 个会话任务，可通过 `BACKEND_JOBS_PER_WORKER` 覆盖，Windows 便携版固定为 4。如端口已被当前仓库 `web-agent` 启动的 LangGraph 服务占用，可通过“重新启动”安全接管。其他外部服务（包括其他仓库的 LangGraph 实例）仍会被保留并报告冲突。
@@ -243,16 +249,34 @@ bash start/macos-start.command start
 停止或查看日志：
 
 ```bash
-bash start/macos-start.command end
-bash start/macos-start.command logs
+bash start/desktop/macos-start.command end
+bash start/desktop/macos-start.command logs
 ```
 
 ```powershell
-.\start\windows-start.ps1 -Mode end
-.\start\windows-start.ps1 -Mode logs
+.\start\desktop\windows-start.ps1 -Mode end
+.\start\desktop\windows-start.ps1 -Mode logs
 ```
 
 也可分别启动后端和客户端，详见 [后端 README](web-agent/README.md) 和 [客户端 README](web-agent-client/README.md)。
+
+### 6.3 单机 VPS H5
+
+容器方案不使用 Nginx，由 Caddy 在 `8080` 提供 H5 和同源 API。正常运行时只有三个常驻容器：核心运行组的 Agent、Scheduler 共用 Agent 镜像，访问入口组的 Web 使用独立镜像且是唯一暴露宿主机端口的服务。浏览器版自动使用当前 origin 下的 `/api/langgraph`，文件引用打开受限的只读预览/下载页；Tauri 仍使用本机后端和 Finder/文件资源管理器。
+
+```bash
+# 首次从当前源码构建并启动
+bash start/container/start-container.sh bootstrap
+
+# 后续启动、查看状态或日志
+bash start/container/start-container.sh up
+bash start/container/start-container.sh status
+bash start/container/start-container.sh logs
+```
+
+容器启动复用 `web-agent/.env` 中的模型与应用配置，`deploy/.env` 只保存 H5 监听地址和数据目录参数。该方案没有 Updater、Docker socket 或浏览器内升级入口；版本变更由部署人员更新源码后重新构建。H5 不提供登录认证，默认只应绑定 `127.0.0.1`；需要远程访问时，必须置于受控网络中，直接暴露到不可信公网前必须增加 HTTPS 和外层访问控制。首次配置、UID 1001、持久化和日常操作见 [容器启动说明](start/container/README.md)与[部署说明](deploy/README.md)。
+
+腾讯云当前另由宿主机 `caddy.service` 为 `https://tencent.geneecho.top` 提供 HTTPS，转发到三个业务容器的本机入口 `127.0.0.1:8080`，证书状态持久化在宿主机。按部署所有者明确要求，该实例开放所有 IPv4 来源且未启用登录认证，是上述默认私有部署策略的显式例外；访问者共享数据和模型额度。入口配置、备份和运维命令见 [腾讯云域名入口](deploy/README.md#腾讯云域名入口)。
 
 ## 7. 配置和运行目录
 
@@ -262,7 +286,7 @@ bash start/macos-start.command logs
 - 单个自动化工程：`<DEFAULT_AUTOMATION_PROJECT_ROOT>/<project_name>/`。
 - Plan 计划：`test_case/aaaplanning_{plan-name}/aaa_{plan-name}.md`。
 - Generator 脚本：`test_case/{plan-name}/*.spec.ts`，同目录保留测试计划。
-- 后端日志：源码启动时为 `start/backend.log`；Windows 便携包为 `data/logs/backend.log`。
+- 后端日志：桌面源码启动时为 `start/desktop/logs/backend.log`；Windows 便携包为 `data/logs/backend.log`。
 - Scheduler 默认配置：`web-agent/scheduler_tasks.json`。
 
 当参数中使用相对 `project_dir` 时，后端会相对自动化根目录解析；`project_name` 只允许单个安全目录名。Scheduler 的 `test_root_dir` 和 `locations` 必须是项目内相对路径，不允许 `..`、符号链接逃逸或 glob。
@@ -310,7 +334,7 @@ Plan、Generator、Healer 和 Scheduler 配置阶段都会输出结构稳定的�
 
 Scheduler 的对话阶段总结只表示定时任务配置已成功写入或写入失败，不表示测试已执行。真正的定时运行由独立 `web-agent-scheduler` 进程完成，执行结束后另行生成第 8 节所述 JSON / Markdown 分析报告。
 
-该功能仅在 Tauri 桌面客户端可用，`pnpm dev` 的浏览器预览不能打开本地路径。原生端只允许两类可信根：已验证的仓库根目录，以及源码 `web-agent/.env` 或便携包 `config/.env` 中 `DEFAULT_AUTOMATION_PROJECT_ROOT` 指向的目录；未配置时后者默认为 `~/webautotest`。基准目录必须是某个可信根中的真实目录，目标必须已存在；规范化后会拒绝 `..`、NUL、符号链接逃逸和模型输出的任意系统路径。
+Tauri 原生端使用 Finder/文件资源管理器，并只允许两类可信根：已验证的仓库根目录，以及源码 `web-agent/.env` 或便携包 `config/.env` 中 `DEFAULT_AUTOMATION_PROJECT_ROOT` 指向的目录。H5 容器端改为打开同源只读预览页，可信根固定为 `/data/projects`，同时拒绝隐藏目录、凭据文件和主动内容直出。两端都会要求基准目录真实存在，并在规范化后拒绝 `..`、NUL、符号链接逃逸和模型输出的任意系统路径。
 
 ## 10. 验证
 
@@ -361,4 +385,4 @@ git tag -a <tag-name> -m "<milestone description>"
 git push origin <tag-name>
 ```
 
-Codex 管理的 worktree 保持 detached HEAD，完成后通过 Handoff 回到本地 `main`，不点击 "Create branch here"。未经用户明确允许，不创建或推送其他分支；不强制推送 `main`，不改写已发布 tag。详细约束见 [AGENTS.md](AGENTS.md)。
+Codex 管理的 worktree 保持 detached HEAD，完成后通过 Handoff 回到本地 `main`，不点击 "Create branch here"。未经用户明确允许，不创建或推送其他分支；不强制推送 `main`，不改写已发布 tag。完整项目级操作规范见 [AGENTS.md](AGENTS.md)。

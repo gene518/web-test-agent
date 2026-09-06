@@ -418,7 +418,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("web-agent-client-root-{unique}"));
         fs::create_dir_all(root.join("web-agent")).unwrap();
-        fs::create_dir_all(root.join("start")).unwrap();
+        fs::create_dir_all(root.join("start/desktop")).unwrap();
         fs::write(root.join("web-agent/langgraph.json"), "{}").unwrap();
         fs::write(start_script(&root, platform), "").unwrap();
         root
@@ -439,14 +439,14 @@ mod tests {
         let root = Path::new("/repo");
         let mac = build_launch_spec(root, Platform::MacOs, 2024);
         assert_eq!(mac.program, "bash");
-        assert!(mac.args[0].ends_with("start/macos-start.command"));
+        assert!(mac.args[0].ends_with("start/desktop/macos-start.command"));
         assert_eq!(mac.args[1], "backend");
         let windows = build_launch_spec(Path::new(r"C:\repo"), Platform::Windows, 2024);
         assert_eq!(windows.program, "powershell.exe");
         assert!(windows
             .args
             .iter()
-            .any(|arg| arg.ends_with("windows-start.ps1")));
+            .any(|arg| arg.ends_with("start/desktop/windows-start.ps1")));
         assert_eq!(windows.args.last().map(String::as_str), Some("backend"));
     }
 

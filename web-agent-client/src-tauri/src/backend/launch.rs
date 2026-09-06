@@ -49,8 +49,8 @@ pub(super) fn current_platform() -> Result<Platform, String> {
 
 pub(super) fn start_script(root: &Path, platform: Platform) -> PathBuf {
     match platform {
-        Platform::MacOs => root.join("start/macos-start.command"),
-        Platform::Windows => root.join("start/windows-start.ps1"),
+        Platform::MacOs => root.join("start/desktop/macos-start.command"),
+        Platform::Windows => root.join("start/desktop/windows-start.ps1"),
     }
 }
 
@@ -232,7 +232,7 @@ pub(super) fn build_launch_spec(root: &Path, platform: Platform, port: u16) -> L
             args: vec![script, "backend".to_string()],
             working_dir: root.to_path_buf(),
             environment: vec![("BACKEND_PORT".to_string(), port.to_string())],
-            process_log: root.join("start/backend-bootstrap.log"),
+            process_log: root.join("start/desktop/logs/backend-bootstrap.log"),
         },
         Platform::Windows => LaunchSpec {
             program: "powershell.exe".to_string(),
@@ -247,7 +247,7 @@ pub(super) fn build_launch_spec(root: &Path, platform: Platform, port: u16) -> L
             ],
             working_dir: root.to_path_buf(),
             environment: vec![("BACKEND_PORT".to_string(), port.to_string())],
-            process_log: root.join("start/backend-bootstrap.log"),
+            process_log: root.join("start/desktop/logs/backend-bootstrap.log"),
         },
     }
 }
@@ -255,7 +255,7 @@ pub(super) fn build_launch_spec(root: &Path, platform: Platform, port: u16) -> L
 pub(super) fn backend_log_path(root: &Path) -> PathBuf {
     portable_runtime(root)
         .map(|runtime| runtime.backend_log)
-        .unwrap_or_else(|| root.join("start/backend.log"))
+        .unwrap_or_else(|| root.join("start/desktop/logs/backend.log"))
 }
 
 pub(super) fn configure_background_process(command: &mut Command) {
